@@ -1,0 +1,15 @@
+{
+  "name": "pandavideo-browser-selftest",
+  "private": true,
+  "scripts": {
+    "test": "node player-edge.cjs && node player-stability.cjs && node autoplay-dplayer.cjs && node touch-controls.cjs && node player-flow.cjs && node check.cjs",
+    "test:web": "node web-sync.cjs",
+    "test:real": "node real-stream.cjs"
+  },
+  "dependencies": {
+    "playwright": "1.65.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

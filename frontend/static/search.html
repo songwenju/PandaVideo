@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>熊猫视频 · 搜索</title><meta name="theme-color" content="#E8F8F8">
+  <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v=31"><link rel="stylesheet" href="/suixinkan.css?v=1">
+  <script src="/poster.js?v=6" defer></script><script src="/site.js?v=1" defer></script><script src="/app.js?v=35" defer></script>
+</head>
+<body class="suixinkan-page" data-page="search">
+  <a class="skip-link" href="#mainContent">跳到主要内容</a><header class="topbar" id="siteHeader"></header>
+  <main id="mainContent" class="search-page">
+    <div class="page-heading"><a class="back-link" href="/" aria-label="返回首页">←</a><h1>搜索</h1></div>
+    <section class="search-section" aria-label="搜索影片">
+      <form id="searchForm"><label class="sr-only" for="query">片名或关键词</label>
+        <div class="search-row"><input id="query" name="query" type="search" autocomplete="off" placeholder="搜索电影、电视剧" required>
+          <button class="primary-button" id="searchButton" type="submit">搜索</button></div>
+      </form>
+    </section>
+    <section class="result-section" id="search-results" aria-live="polite" aria-busy="false" hidden>
+      <div class="result-header"><h2>搜索结果</h2><p id="intentText"></p></div>
+      <div class="notice hidden" id="notice" role="status"></div><div id="sourceResults" hidden></div>
+      <div class="empty-state" id="emptyState"><span>暂无搜索结果</span></div><div class="result-list" id="resultList"></div>
+    </section>
+    <p class="search-hint">输入片名或部分关键词，查找可观看或下载的影片。</p>
+  </main><div id="nasDialogRoot"></div>
+</body>
+</html>

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>熊猫视频 · 最近热播</title><meta name="theme-color" content="#E8F8F8">
+  <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v=31"><link rel="stylesheet" href="/suixinkan.css?v=1">
+  <script src="/poster.js?v=6" defer></script><script src="/site.js?v=1" defer></script>
+  <script src="/app.js?v=35" defer></script><script src="/hot.js?v=1" defer></script>
+</head>
+<body class="suixinkan-page" data-page="hot">
+  <a class="skip-link" href="#mainContent">跳到主要内容</a><header class="topbar" id="siteHeader"></header>
+  <main id="mainContent">
+    <a class="page-search-link" href="/search.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/></svg>搜索电影、电视剧</a>
+    <div class="page-heading"><h1>最近热播</h1></div>
+    <div class="browse-types" role="group" aria-label="热播类型"><button type="button" data-hot-type="tv" aria-pressed="true">剧集</button><button type="button" data-hot-type="movie" aria-pressed="false">电影</button></div>
+    <p class="douban-list-status" id="hotStatus" role="status">正在加载影片…</p><div class="browse-grid" id="hotResults" aria-busy="true"></div>
+    <div class="douban-pagination"><button id="hotPrevious" type="button" disabled>上一页</button><span id="hotPage">第 1 页</span><button id="hotNext" type="button" disabled>下一页</button><button id="hotRetry" type="button">刷新</button></div>
+  </main><div id="nasDialogRoot"></div>
+</body>
+</html>

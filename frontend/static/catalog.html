@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>熊猫视频 · 分类</title><meta name="theme-color" content="#E8F8F8">
+  <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v=31"><link rel="stylesheet" href="/suixinkan.css?v=1">
+  <script src="/poster.js?v=6" defer></script><script src="/site.js?v=1" defer></script>
+  <script src="/app.js?v=35" defer></script><script src="/catalog.js?v=9" defer></script>
+</head>
+<body class="suixinkan-page" data-page="catalog">
+  <a class="skip-link" href="#mainContent">跳到主要内容</a><header class="topbar" id="siteHeader"></header>
+  <main id="mainContent" class="catalog-page platform-catalog">
+    <a class="page-search-link" href="/search.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/></svg>搜索电影、电视剧</a>
+    <div class="page-heading"><h1>分类</h1></div>
+    <section id="browse" aria-labelledby="browseTitle">
+      <h2 id="browseTitle" class="sr-only">影视分类，支持组合筛选</h2>
+      <div class="filter-surface">
+        <div class="browse-types" role="group" aria-label="作品类型">
+          <button type="button" data-browse-type="movie" aria-pressed="true">电影</button>
+          <button type="button" data-browse-type="tv" aria-pressed="false">电视剧</button>
+          <button type="button" data-browse-type="documentary" aria-pressed="false">纪录片</button>
+          <button type="button" data-browse-type="animation" aria-pressed="false">动画</button>
+        </div>
+        <button id="filterToggle" type="button" hidden aria-expanded="true" aria-controls="filterPanel">收起筛选</button>
+        <div class="browse-filters" id="filterPanel">
+          <div class="filter-row"><span class="filter-label" id="genreLabel">题材</span>
+            <select id="browseGenre" hidden aria-label="题材">
+              <option value="all">全部题材</option><option value="drama">剧情</option><option value="comedy">喜剧</option>
+              <option value="action">动作</option><option value="romance">爱情</option><option value="scifi">科幻</option><option value="mystery">悬疑</option>
+              <option value="finance">金融</option><option value="nature">自然</option><option value="biography">传记</option><option value="war">战争</option>
+            </select><div class="filter-options" id="genreOptions" role="group" aria-labelledby="genreLabel"></div>
+          </div>
+          <div class="filter-row year-row"><span class="filter-label" id="yearLabel">年份</span>
+            <select id="browseYear" hidden aria-label="年份"><option value="all">全部年份</option></select>
+            <div class="filter-options year-options" id="yearOptions" role="group" aria-labelledby="yearLabel"></div>
+            <button id="yearMore" type="button" hidden aria-expanded="true">更多年份</button>
+          </div>
+        </div>
+      </div>
+      <div class="browse-toolbar"><div class="sort-options" id="sortOptions" role="group" aria-label="作品排序"></div>
+        <select id="browseSort" hidden aria-label="排序"><option value="hot">近期热门</option><option value="rating">评分最高</option><option value="latest">最新上映</option></select>
+      </div>
+      <p class="douban-list-status" id="browseStatus" role="status">正在加载影片…</p><div class="browse-grid" id="browseResults" aria-busy="true"></div>
+      <div class="douban-pagination"><button id="browsePrevious" type="button" disabled>上一页</button><span id="browsePage">第 1 页</span><button id="browseNext" type="button" disabled>下一页</button><button id="browseRetry" type="button">刷新</button></div>
+    </section>
+  </main><div id="nasDialogRoot"></div>
+</body>
+</html>

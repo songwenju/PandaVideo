@@ -1,0 +1,1861 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>荐片 macOS 5.0.4 · 实际 ASAR 功能、网络接口与播放缓存链路</title>
+<style>
+/* ======== Reset & Base ======== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #f8f9fa; --surface: #ffffff; --border: #e1e4e8;
+  --text: #24292e; --text-muted: #586069; --text-light: #6a737d;
+  --link: #0366d6; --accent: #0366d6;
+  --sidebar-bg: #1a1d23; --sidebar-text: #cdd9e5;
+  --sidebar-link: #8ab4f8; --sidebar-active: #58a6ff;
+  --sidebar-hover-bg: #2d333b;
+  --header-bg: #161b22; --code-bg: #1e1e2e; --code-border: #30363d;
+  --shadow: 0 1px 3px rgba(0,0,0,.12), 0 1px 2px rgba(0,0,0,.08);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.10);
+  --radius: 6px;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+               Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
+               "Noto Sans Mono", monospace;
+  --sidebar-width: 260px;
+}
+html { font-size: 16px; scroll-behavior: smooth; }
+body { font-family: var(--font-body); background: var(--bg); color: var(--text); line-height: 1.7; min-height: 100vh; }
+
+/* ======== Layout ======== */
+.layout { display: flex; min-height: 100vh; }
+.sidebar {
+  width: var(--sidebar-width); flex-shrink: 0; background: var(--sidebar-bg);
+  position: fixed; top: 0; left: 0; bottom: 0; overflow-y: auto; z-index: 100;
+  display: flex; flex-direction: column;
+}
+.sidebar-header { padding: 20px 18px 14px; border-bottom: 1px solid #30363d; }
+.sidebar-logo { font-size: 11px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 6px; }
+.sidebar-title { font-size: 14px; font-weight: 600; color: var(--sidebar-text); line-height: 1.4; word-break: break-word; }
+.sidebar-nav { padding: 12px 0 24px; flex: 1; }
+.sidebar-nav ul { list-style: none; padding: 0; margin: 0; }
+.sidebar-nav li { margin: 0; }
+.sidebar-nav a {
+  display: block; padding: 5px 18px; font-size: 13px; color: var(--sidebar-text);
+  text-decoration: none; line-height: 1.5; border-left: 3px solid transparent;
+  transition: all .15s; word-break: break-word;
+}
+.sidebar-nav a:hover { background: var(--sidebar-hover-bg); color: var(--sidebar-active); }
+.sidebar-nav a.active { border-left-color: var(--sidebar-active); color: var(--sidebar-active); background: var(--sidebar-hover-bg); font-weight: 500; }
+.sidebar-nav .toc-h1 { padding-left: 18px; font-weight: 600; font-size: 13px; }
+.sidebar-nav .toc-h2 { padding-left: 24px; }
+.sidebar-nav .toc-h3 { padding-left: 36px; font-size: 12px; color: var(--text-light); }
+.sidebar-nav .toc-h4 { padding-left: 48px; font-size: 12px; color: #4a5568; }
+
+.main-wrapper { margin-left: var(--sidebar-width); flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.page-header { background: var(--header-bg); padding: 28px 48px 24px; border-bottom: 1px solid #30363d; }
+.page-meta { font-size: 12px; color: #8b949e; margin-bottom: 8px; display: flex; gap: 16px; flex-wrap: wrap; }
+.page-meta span { display: flex; align-items: center; gap: 4px; }
+.page-header h1 { font-size: 26px; font-weight: 700; color: #e6edf3; line-height: 1.35; margin: 0; }
+.content-area { max-width: 900px; width: 100%; margin: 0 auto; padding: 36px 48px 72px; }
+
+/* ======== Typography ======== */
+.content-area h1, .content-area h2, .content-area h3,
+.content-area h4, .content-area h5, .content-area h6 {
+  color: var(--text); line-height: 1.35; font-weight: 600;
+  margin-top: 32px; margin-bottom: 12px; scroll-margin-top: 80px;
+}
+.content-area h1 { font-size: 24px; padding-bottom: 10px; border-bottom: 2px solid var(--border); }
+.content-area h2 { font-size: 20px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.content-area h3 { font-size: 17px; }
+.content-area h4 { font-size: 15px; color: var(--text-muted); }
+.content-area p { margin-bottom: 14px; }
+.content-area a { color: var(--link); text-decoration: none; }
+.content-area a:hover { text-decoration: underline; }
+.content-area ul, .content-area ol { margin: 0 0 14px 24px; padding: 0; }
+.content-area li { margin-bottom: 5px; }
+.content-area li > ul, .content-area li > ol { margin-top: 5px; margin-bottom: 5px; }
+.content-area blockquote {
+  margin: 0 0 16px; padding: 12px 18px;
+  border-left: 4px solid var(--accent); background: #f1f8ff;
+  border-radius: 0 var(--radius) var(--radius) 0; color: var(--text-muted);
+}
+.content-area blockquote p { margin: 0; }
+.content-area hr { border: none; border-top: 2px solid var(--border); margin: 32px 0; }
+
+/* ======== Code ======== */
+.content-area code {
+  font-family: var(--font-mono); font-size: .875em;
+  background: #f3f4f6; padding: 2px 6px;
+  border-radius: 4px; color: #c0392b; border: 1px solid #e1e4e8;
+}
+.codehilite {
+  margin: 0 0 20px; border-radius: var(--radius);
+  overflow: hidden; border: 1px solid var(--code-border);
+  box-shadow: var(--shadow); position: relative;
+}
+.codehilite pre {
+  margin: 0; padding: 18px 20px; overflow-x: auto;
+  font-family: var(--font-mono); font-size: 13.5px;
+  line-height: 1.65; background: var(--code-bg) !important; color: #cdd9e5;
+}
+.codehilite pre code {
+  background: none !important; padding: 0 !important;
+  border: none !important; color: inherit !important; font-size: inherit !important;
+}
+.codehilite[data-lang]::before {
+  content: attr(data-lang); display: block;
+  padding: 4px 12px; background: #2d333b; color: #8b949e;
+  font-family: var(--font-mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .6px;
+  border-bottom: 1px solid var(--code-border);
+}
+
+/* ======== Tables ======== */
+.content-area table {
+  width: 100%; border-collapse: collapse; margin: 0 0 20px;
+  font-size: 14px; border-radius: var(--radius); overflow: hidden;
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+.content-area th {
+  background: #f1f3f5; font-weight: 600; text-align: left;
+  padding: 10px 14px; border-bottom: 2px solid var(--border);
+  color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px;
+}
+.content-area td { padding: 9px 14px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+.content-area tr:last-child td { border-bottom: none; }
+.content-area tbody tr:hover { background: #f8f9fa; }
+
+/* ======== Risk Badges ======== */
+.risk-critical, .badge-critical { background: #ff3b30; color: #fff; }
+.risk-high,     .badge-high     { background: #ff6b35; color: #fff; }
+.risk-medium,   .badge-medium   { background: #ff9f0a; color: #fff; }
+.risk-low,      .badge-low      { background: #34c759; color: #fff; }
+.risk-info,     .badge-info     { background: #007aff; color: #fff; }
+td:has(> strong) strong {
+  display: inline-block; padding: 2px 8px; border-radius: 12px;
+  font-size: 12px; font-weight: 600;
+}
+
+/* ======== Admonition ======== */
+.admonition { margin: 0 0 20px; padding: 14px 18px; border-radius: var(--radius); border-left: 5px solid #0366d6; background: #f1f8ff; }
+.admonition.warning  { border-left-color: #ff9f0a; background: #fffbec; }
+.admonition.danger,
+.admonition.error    { border-left-color: #ff3b30; background: #fff5f5; }
+.admonition.tip,
+.admonition.success  { border-left-color: #34c759; background: #f0fff4; }
+.admonition-title    { font-weight: 700; margin-bottom: 6px; text-transform: uppercase; font-size: 12px; letter-spacing: .5px; }
+
+/* ======== Mermaid ======== */
+.mermaid { text-align: center; margin: 20px 0; padding: 20px; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; }
+
+/* ======== Print ======== */
+@media print {
+  .sidebar { display: none !important; }
+  .main-wrapper { margin-left: 0 !important; }
+  .page-header { background: #fff !important; }
+  .page-header h1 { color: #000 !important; }
+  .codehilite pre { background: #f8f8f8 !important; border: 1px solid #ddd; }
+  a[href^="data:"]::after { content: " [附件]"; font-size: .8em; color: #555; }
+  a[href^="http"]::after  { content: " (" attr(href) ")"; font-size: .8em; color: #555; }
+  #src-popover, #src-modal-bg { display: none !important; }
+}
+
+/* ======== Responsive ======== */
+@media (max-width: 768px) {
+  :root { --sidebar-width: 0px; }
+  .sidebar { transform: translateX(-260px); transition: transform .3s; }
+  .sidebar.open { transform: translateX(0); width: 260px; }
+  .main-wrapper { margin-left: 0; }
+  .content-area { padding: 20px 18px 48px; }
+  .page-header { padding: 20px 18px; }
+}
+
+/* ======== Pygments (monokai) ======== */
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #49483e }
+.codehilite { background: #272822; color: #F8F8F2 }
+.codehilite .c { color: #959077 } /* Comment */
+.codehilite .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.codehilite .esc { color: #F8F8F2 } /* Escape */
+.codehilite .g { color: #F8F8F2 } /* Generic */
+.codehilite .k { color: #66D9EF } /* Keyword */
+.codehilite .l { color: #AE81FF } /* Literal */
+.codehilite .n { color: #F8F8F2 } /* Name */
+.codehilite .o { color: #FF4689 } /* Operator */
+.codehilite .x { color: #F8F8F2 } /* Other */
+.codehilite .p { color: #F8F8F2 } /* Punctuation */
+.codehilite .ch { color: #959077 } /* Comment.Hashbang */
+.codehilite .cm { color: #959077 } /* Comment.Multiline */
+.codehilite .cp { color: #959077 } /* Comment.Preproc */
+.codehilite .cpf { color: #959077 } /* Comment.PreprocFile */
+.codehilite .c1 { color: #959077 } /* Comment.Single */
+.codehilite .cs { color: #959077 } /* Comment.Special */
+.codehilite .gd { color: #FF4689 } /* Generic.Deleted */
+.codehilite .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.codehilite .gr { color: #FF4689 } /* Generic.Error */
+.codehilite .gh { color: #F8F8F2 } /* Generic.Heading */
+.codehilite .gi { color: #A6E22E } /* Generic.Inserted */
+.codehilite .go { color: #66D9EF } /* Generic.Output */
+.codehilite .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.codehilite .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #959077 } /* Generic.Subheading */
+.codehilite .gt { color: #66D9EF } /* Generic.Traceback */
+.codehilite .kc { color: #66D9EF } /* Keyword.Constant */
+.codehilite .kd { color: #66D9EF } /* Keyword.Declaration */
+.codehilite .kn { color: #FF4689 } /* Keyword.Namespace */
+.codehilite .kp { color: #66D9EF } /* Keyword.Pseudo */
+.codehilite .kr { color: #66D9EF } /* Keyword.Reserved */
+.codehilite .kt { color: #66D9EF } /* Keyword.Type */
+.codehilite .ld { color: #E6DB74 } /* Literal.Date */
+.codehilite .m { color: #AE81FF } /* Literal.Number */
+.codehilite .s { color: #E6DB74 } /* Literal.String */
+.codehilite .na { color: #A6E22E } /* Name.Attribute */
+.codehilite .nb { color: #A6E22E } /* Name.Builtin */
+.codehilite .nc { color: #A6E22E } /* Name.Class */
+.codehilite .no { color: #66D9EF } /* Name.Constant */
+.codehilite .nd { color: #A6E22E } /* Name.Decorator */
+.codehilite .ni { color: #F8F8F2 } /* Name.Entity */
+.codehilite .ne { color: #A6E22E } /* Name.Exception */
+.codehilite .nf { color: #A6E22E } /* Name.Function */
+.codehilite .nl { color: #F8F8F2 } /* Name.Label */
+.codehilite .nn { color: #F8F8F2 } /* Name.Namespace */
+.codehilite .nx { color: #A6E22E } /* Name.Other */
+.codehilite .py { color: #F8F8F2 } /* Name.Property */
+.codehilite .nt { color: #FF4689 } /* Name.Tag */
+.codehilite .nv { color: #F8F8F2 } /* Name.Variable */
+.codehilite .ow { color: #FF4689 } /* Operator.Word */
+.codehilite .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.codehilite .w { color: #F8F8F2 } /* Text.Whitespace */
+.codehilite .mb { color: #AE81FF } /* Literal.Number.Bin */
+.codehilite .mf { color: #AE81FF } /* Literal.Number.Float */
+.codehilite .mh { color: #AE81FF } /* Literal.Number.Hex */
+.codehilite .mi { color: #AE81FF } /* Literal.Number.Integer */
+.codehilite .mo { color: #AE81FF } /* Literal.Number.Oct */
+.codehilite .sa { color: #E6DB74 } /* Literal.String.Affix */
+.codehilite .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.codehilite .sc { color: #E6DB74 } /* Literal.String.Char */
+.codehilite .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #E6DB74 } /* Literal.String.Doc */
+.codehilite .s2 { color: #E6DB74 } /* Literal.String.Double */
+.codehilite .se { color: #AE81FF } /* Literal.String.Escape */
+.codehilite .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.codehilite .si { color: #E6DB74 } /* Literal.String.Interpol */
+.codehilite .sx { color: #E6DB74 } /* Literal.String.Other */
+.codehilite .sr { color: #E6DB74 } /* Literal.String.Regex */
+.codehilite .s1 { color: #E6DB74 } /* Literal.String.Single */
+.codehilite .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.codehilite .bp { color: #A6E22E } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #A6E22E } /* Name.Function.Magic */
+.codehilite .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.codehilite .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.codehilite .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.codehilite .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.codehilite .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+
+/* ======== Attachment Panel ======== */
+
+/* ======== Attachment Panel ======== */
+.att-panel {
+  margin-top: 40px; border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow);
+}
+.att-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 18px; background: #f1f3f5;
+  border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.att-title { font-weight: 700; font-size: 15px; color: var(--text); }
+.att-count {
+  font-size: 12px; color: var(--text-muted); background: var(--border);
+  padding: 2px 8px; border-radius: 10px;
+}
+.att-zip-btn {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 14px; background: var(--accent); color: #fff !important;
+  text-decoration: none !important; border-radius: 6px;
+  font-size: 13px; font-weight: 600; transition: opacity .15s;
+}
+.att-zip-btn:hover { opacity: .85; }
+.att-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+  margin: 0 !important; box-shadow: none !important; border: none !important;
+}
+.att-table th {
+  background: #f8f9fa; padding: 7px 14px; font-size: 11px;
+  border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: .5px;
+}
+.att-table td { padding: 7px 14px; border-bottom: 1px solid #f4f4f4; vertical-align: middle; }
+.att-table tr:last-child td { border-bottom: none; }
+.att-table tbody tr:hover { background: #fafbfc; }
+.att-name { display: flex; align-items: center; gap: 8px; }
+.att-ext {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; background: #e8f0fe; color: #1967d2;
+  font-family: var(--font-mono); flex-shrink: 0; text-transform: lowercase;
+}
+.att-link {
+  color: var(--link); text-decoration: none;
+  font-family: var(--font-mono); font-size: 12px; word-break: break-all;
+}
+.att-link:hover { text-decoration: underline; }
+.att-size { color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
+.att-note { font-size: 11px; color: #888; }
+
+/* ======== Dynamic Video Evidence ======== */
+.video-gallery {
+  margin-top: 40px;
+}
+.video-gallery-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 14px; border-bottom: 1px solid var(--border); padding-bottom: 8px;
+}
+.video-gallery-header h2 {
+  margin: 0; padding: 0; border: none; font-size: 20px;
+}
+.video-gallery-header span {
+  color: var(--text-muted); font-size: 12px; background: #f1f3f5;
+  border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px;
+}
+.video-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+.video-evidence-card {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: hidden; background: #fff; box-shadow: var(--shadow);
+}
+.evidence-video {
+  width: 100%; max-height: 520px; display: block; background: #000;
+}
+.video-card-meta {
+  padding: 10px 12px; border-top: 1px solid var(--border);
+}
+.video-card-title,
+.video-card-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-top: 6px; font-size: 12px; color: var(--text-muted);
+}
+.video-card-title {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text);
+  overflow-wrap: anywhere;
+}
+.video-card-actions a {
+  color: var(--link); font-weight: 600; white-space: nowrap;
+}
+
+
+/* ======== Source Viewer ======== */
+
+/* ======== Source Viewer (Popover + Modal) ======== */
+.codehilite[data-src-id] { cursor: pointer; position: relative; }
+.codehilite[data-src-id]::after {
+  content: '⎆ src';
+  position: absolute; top: 6px; right: 10px;
+  font-size: 10px; font-family: var(--font-mono);
+  color: #58a6ff; opacity: .55;
+  pointer-events: none; transition: opacity .15s;
+}
+.codehilite[data-src-id]:hover::after { opacity: 1; }
+
+/* ─── Popover ─────────────────────────────────────────────────── */
+#src-popover {
+  position: fixed; z-index: 9000;
+  background: #0d1117; border: 1px solid #30363d;
+  border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,.55);
+  width: 700px; max-width: min(700px, 92vw);
+  max-height: 380px; overflow: hidden;
+  display: none; flex-direction: column;
+  font-size: 12px; pointer-events: auto;
+}
+#src-popover.visible { display: flex; }
+#src-pop-hdr {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; background: #161b22;
+  border-bottom: 1px solid #30363d; flex-shrink: 0;
+}
+#src-pop-path {
+  font-family: var(--font-mono); font-size: 11px; color: #8ab4f8;
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#src-pop-lines { font-size: 10px; color: #8b949e; font-family: var(--font-mono); white-space: nowrap; }
+#src-pop-x {
+  background: none; border: none; color: #6e7681; cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 1px 5px; margin-left: 4px;
+}
+#src-pop-x:hover { color: #e6edf3; }
+#src-pop-body { overflow: auto; flex: 1; }
+#src-pop-body .src-hl { margin: 0; border-radius: 0; border: none; box-shadow: none; }
+#src-pop-body .src-hl pre {
+  margin: 0; padding: 10px 14px;
+  font-size: 12px; line-height: 1.55;
+  background: #0d1117 !important;
+}
+#src-pop-ftr {
+  padding: 6px 12px; border-top: 1px solid #30363d;
+  background: #161b22; display: flex;
+  justify-content: space-between; align-items: center;
+  flex-shrink: 0;
+}
+#src-pop-abs { font-size: 10px; color: #4a5568; font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; }
+#src-pop-open {
+  font-size: 11px; font-family: var(--font-mono); color: #58a6ff;
+  background: none; border: 1px solid #30363d; cursor: pointer;
+  padding: 3px 10px; border-radius: 4px; white-space: nowrap; flex-shrink: 0;
+}
+#src-pop-open:hover { background: #1f2937; }
+
+/* ─── Modal ───────────────────────────────────────────────────── */
+#src-modal-bg {
+  position: fixed; inset: 0; z-index: 9500;
+  background: rgba(0,0,0,.72);
+  display: none; align-items: center; justify-content: center;
+}
+#src-modal-bg.visible { display: flex; }
+#src-modal {
+  background: #0d1117; border: 1px solid #30363d;
+  border-radius: 10px; box-shadow: 0 24px 72px rgba(0,0,0,.7);
+  width: min(960px, 94vw); height: min(86vh, 820px);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#src-modal-hdr {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 18px; background: #161b22;
+  border-bottom: 1px solid #30363d; flex-shrink: 0;
+}
+#src-modal-path {
+  font-family: var(--font-mono); font-size: 13px; color: #8ab4f8;
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#src-modal-meta { font-size: 11px; color: #8b949e; font-family: var(--font-mono); white-space: nowrap; }
+#src-modal-x {
+  background: none; border: none; color: #6e7681; cursor: pointer;
+  font-size: 20px; line-height: 1; padding: 2px 7px; margin-left: 8px;
+}
+#src-modal-x:hover { color: #e6edf3; }
+#src-modal-body { overflow: auto; flex: 1; }
+#src-modal-body .src-hl { margin: 0; border-radius: 0; border: none; box-shadow: none; min-height: 100%; }
+#src-modal-body .src-hl pre {
+  margin: 0; padding: 16px 20px;
+  font-size: 13px; line-height: 1.65;
+  background: #0d1117 !important; min-height: 100%;
+}
+#src-modal-ftr {
+  padding: 8px 18px; border-top: 1px solid #30363d;
+  background: #161b22; display: flex; align-items: center; gap: 12px;
+  flex-shrink: 0;
+}
+#src-modal-ftr-path {
+  font-size: 11px; font-family: var(--font-mono); color: #4a5568;
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.src-copy-btn {
+  font-size: 11px; font-family: var(--font-mono); color: #8ab4f8;
+  background: none; border: 1px solid #30363d; cursor: pointer;
+  padding: 4px 10px; border-radius: 4px; white-space: nowrap; flex-shrink: 0;
+}
+.src-copy-btn:hover { background: #1f2937; }
+
+/* Highlighted lines inside src-hl blocks */
+.src-hl .hll { background: rgba(255,210,0,.14) !important; display: block; }
+.src-hl .ln  { color: #3d4451 !important; user-select: none; min-width: 3em; padding-right: 18px; display: inline-block; }
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.src-hl .hll { background-color: #49483e }
+.src-hl { background: #272822; color: #F8F8F2 }
+.src-hl .c { color: #959077 } /* Comment */
+.src-hl .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.src-hl .esc { color: #F8F8F2 } /* Escape */
+.src-hl .g { color: #F8F8F2 } /* Generic */
+.src-hl .k { color: #66D9EF } /* Keyword */
+.src-hl .l { color: #AE81FF } /* Literal */
+.src-hl .n { color: #F8F8F2 } /* Name */
+.src-hl .o { color: #FF4689 } /* Operator */
+.src-hl .x { color: #F8F8F2 } /* Other */
+.src-hl .p { color: #F8F8F2 } /* Punctuation */
+.src-hl .ch { color: #959077 } /* Comment.Hashbang */
+.src-hl .cm { color: #959077 } /* Comment.Multiline */
+.src-hl .cp { color: #959077 } /* Comment.Preproc */
+.src-hl .cpf { color: #959077 } /* Comment.PreprocFile */
+.src-hl .c1 { color: #959077 } /* Comment.Single */
+.src-hl .cs { color: #959077 } /* Comment.Special */
+.src-hl .gd { color: #FF4689 } /* Generic.Deleted */
+.src-hl .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.src-hl .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.src-hl .gr { color: #FF4689 } /* Generic.Error */
+.src-hl .gh { color: #F8F8F2 } /* Generic.Heading */
+.src-hl .gi { color: #A6E22E } /* Generic.Inserted */
+.src-hl .go { color: #66D9EF } /* Generic.Output */
+.src-hl .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.src-hl .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.src-hl .gu { color: #959077 } /* Generic.Subheading */
+.src-hl .gt { color: #66D9EF } /* Generic.Traceback */
+.src-hl .kc { color: #66D9EF } /* Keyword.Constant */
+.src-hl .kd { color: #66D9EF } /* Keyword.Declaration */
+.src-hl .kn { color: #FF4689 } /* Keyword.Namespace */
+.src-hl .kp { color: #66D9EF } /* Keyword.Pseudo */
+.src-hl .kr { color: #66D9EF } /* Keyword.Reserved */
+.src-hl .kt { color: #66D9EF } /* Keyword.Type */
+.src-hl .ld { color: #E6DB74 } /* Literal.Date */
+.src-hl .m { color: #AE81FF } /* Literal.Number */
+.src-hl .s { color: #E6DB74 } /* Literal.String */
+.src-hl .na { color: #A6E22E } /* Name.Attribute */
+.src-hl .nb { color: #A6E22E } /* Name.Builtin */
+.src-hl .nc { color: #A6E22E } /* Name.Class */
+.src-hl .no { color: #66D9EF } /* Name.Constant */
+.src-hl .nd { color: #A6E22E } /* Name.Decorator */
+.src-hl .ni { color: #F8F8F2 } /* Name.Entity */
+.src-hl .ne { color: #A6E22E } /* Name.Exception */
+.src-hl .nf { color: #A6E22E } /* Name.Function */
+.src-hl .nl { color: #F8F8F2 } /* Name.Label */
+.src-hl .nn { color: #F8F8F2 } /* Name.Namespace */
+.src-hl .nx { color: #A6E22E } /* Name.Other */
+.src-hl .py { color: #F8F8F2 } /* Name.Property */
+.src-hl .nt { color: #FF4689 } /* Name.Tag */
+.src-hl .nv { color: #F8F8F2 } /* Name.Variable */
+.src-hl .ow { color: #FF4689 } /* Operator.Word */
+.src-hl .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.src-hl .w { color: #F8F8F2 } /* Text.Whitespace */
+.src-hl .mb { color: #AE81FF } /* Literal.Number.Bin */
+.src-hl .mf { color: #AE81FF } /* Literal.Number.Float */
+.src-hl .mh { color: #AE81FF } /* Literal.Number.Hex */
+.src-hl .mi { color: #AE81FF } /* Literal.Number.Integer */
+.src-hl .mo { color: #AE81FF } /* Literal.Number.Oct */
+.src-hl .sa { color: #E6DB74 } /* Literal.String.Affix */
+.src-hl .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.src-hl .sc { color: #E6DB74 } /* Literal.String.Char */
+.src-hl .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.src-hl .sd { color: #E6DB74 } /* Literal.String.Doc */
+.src-hl .s2 { color: #E6DB74 } /* Literal.String.Double */
+.src-hl .se { color: #AE81FF } /* Literal.String.Escape */
+.src-hl .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.src-hl .si { color: #E6DB74 } /* Literal.String.Interpol */
+.src-hl .sx { color: #E6DB74 } /* Literal.String.Other */
+.src-hl .sr { color: #E6DB74 } /* Literal.String.Regex */
+.src-hl .s1 { color: #E6DB74 } /* Literal.String.Single */
+.src-hl .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.src-hl .bp { color: #A6E22E } /* Name.Builtin.Pseudo */
+.src-hl .fm { color: #A6E22E } /* Name.Function.Magic */
+.src-hl .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.src-hl .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.src-hl .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.src-hl .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.src-hl .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- Sidebar -->
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-logo">RTR Analysis Report</div>
+    <div class="sidebar-title">荐片 macOS 5.0.4 · 实际 ASAR 功能、网络接口与播放缓存链路</div>
+  </div>
+  <div class="sidebar-nav">
+    <ul>
+<li><a href="#荐片-macOS-5-0-4---实际-ASAR-功能-网络接口与播放缓存链路" class="toc-h1">荐片 macOS 5.0.4 · 实际 ASAR 功能、网络接口与播放缓存链路</a></li>
+<ul>
+<li><a href="#结论" class="toc-h2">结论</a></li>
+<li><a href="#样本与证据口径" class="toc-h2">样本与证据口径</a></li>
+<li><a href="#主要页面与功能" class="toc-h2">主要页面与功能</a></li>
+<ul>
+<li><a href="#C-PAGES" class="toc-h3">C-PAGES</a></li>
+</ul>
+<li><a href="#域名与请求用途" class="toc-h2">域名与请求用途</a></li>
+<ul>
+<li><a href="#C-DOMAINS" class="toc-h3">C-DOMAINS</a></li>
+</ul>
+<li><a href="#请求封装-鉴权与加密" class="toc-h2">请求封装、鉴权与加密</a></li>
+<ul>
+<li><a href="#C-AUTH" class="toc-h3">C-AUTH</a></li>
+</ul>
+<li><a href="#核心网络接口清单" class="toc-h2">核心网络接口清单</a></li>
+<li><a href="#播放器与本地引擎" class="toc-h2">播放器与本地引擎</a></li>
+<ul>
+<li><a href="#C-PLAY" class="toc-h3">C-PLAY</a></li>
+</ul>
+<li><a href="#下载-缓存与本地状态" class="toc-h2">下载、缓存与本地状态</a></li>
+<ul>
+<li><a href="#C-DOWNLOAD" class="toc-h3">C-DOWNLOAD</a></li>
+</ul>
+<li><a href="#收藏与历史" class="toc-h2">收藏与历史</a></li>
+<ul>
+<li><a href="#C-HISTORY" class="toc-h3">C-HISTORY</a></li>
+</ul>
+<li><a href="#设置与更新" class="toc-h2">设置与更新</a></li>
+<ul>
+<li><a href="#C-UPDATE" class="toc-h3">C-UPDATE</a></li>
+</ul>
+<li><a href="#交付与证据索引" class="toc-h2">交付与证据索引</a></li>
+</ul>
+</ul>
+    
+    
+    <li style="margin-top:16px;padding:0 18px">
+      <div style="font-size:10px;color:#6e7681;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px">附件</div>
+    </li>
+    <li><a href="#attachments" class="toc-h2">📦 附件下载</a></li>
+  </div>
+</nav>
+
+<!-- Main -->
+<div class="main-wrapper">
+  <header class="page-header">
+    <div class="page-meta">
+      <span>📅 2026-11-11 17:40</span>
+      <span>📄 jianpian_report.md</span>
+      <span>📎 27 个附件</span>
+      
+    </div>
+    <h1>荐片 macOS 5.0.4 · 实际 ASAR 功能、网络接口与播放缓存链路</h1>
+  </header>
+
+  <div class="content-area" id="content">
+    <h1 id="荐片-macOS-5-0-4---实际-ASAR-功能-网络接口与播放缓存链路">荐片 macOS 5.0.4 · 实际 ASAR 功能、网络接口与播放缓存链路<a class="headerlink" href="#荐片-macOS-5-0-4---实际-ASAR-功能-网络接口与播放缓存链路" title="Permanent link">&para;</a></h1>
+<p>目标：用户指定的 <code>com.jianpian.macos</code>；附件 <code>app.asar</code>；分析日期：2026-11-11。附件内 <code>package.json</code> 确认名称 <code>jianpian</code>、版本 <code>5.0.4</code>、入口 <code>src/main/index.js</code>，但 ASAR 不含 <code>Info.plist</code>，无法独立核对 bundle identifier、应用签名或 Electron 运行时版本。</p>
+<h2 id="结论">结论<a class="headerlink" href="#结论" title="Permanent link">&para;</a></h2>
+<p><strong>本附件实现了服务端驱动的影视浏览、分类、搜索、详情及播放器；非 HTTP 播放依赖包外 <code>JPEngine2</code>，下载逻辑存在但正常界面入口未确认。所有网络结论为静态代码确认，动态验证请求为 0。</strong></p>
+<table>
+<thead>
+<tr>
+<th>关键发现</th>
+<th>关注标识与意义</th>
+<th>证据与边界</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>首页、分类、搜索、详情、短视频、上映表、专题、排行榜、求片榜、个人中心存在真实路由与调用点</td>
+<td>重点关注：本 macOS 附件的产品功能</td>
+<td>E2/E3；不是同名 Android 实现</td>
+</tr>
+<tr>
+<td>业务服务器经缓存、固定域名、远程列表、DNS TXT 和日期派生候选发现</td>
+<td>重点关注：接口域名不能固定成一个常量</td>
+<td>E3；实际选中域名未验证</td>
+</tr>
+<tr>
+<td>业务签名为 MD5(版本号 + 秒级时间戳 + 初始化 secret)，用户 token 按原始 URL 规则注入</td>
+<td>重点关注：请求契约与初始化依赖</td>
+<td>E3；secret 实际值和服务端鉴权效果未知</td>
+</tr>
+<tr>
+<td>HTTP 媒体直接播放，其他资源经本地引擎生成 MP4 地址；FTP 类型可进入下载调度</td>
+<td>重点关注：媒体控制面与传输面分离</td>
+<td>E2/E3；未提供原生引擎，不能还原上游节点协议</td>
+</tr>
+<tr>
+<td>收藏与历史使用云端接口；启动更新和手动检查更新使用不同的平台字段选择</td>
+<td>持续观察：登录依赖及 macOS 更新兼容性</td>
+<td>E3；不宣称云端保存或安装已成功</td>
+</tr>
+</tbody>
+</table>
+<p>质量状态：<code>limited</code>，限制来自缺少 macOS 运行环境、完整应用外壳和 <code>JPEngine2</code>。报告不把未覆盖范围写成“未发现”，不对本功能研究做风险定级。质量冻结结果另附 <code>quality_status.json</code>，不能由发布成功推断证据门禁通过。</p>
+<h2 id="样本与证据口径">样本与证据口径<a class="headerlink" href="#样本与证据口径" title="Permanent link">&para;</a></h2>
+<ul>
+<li>ASAR：10,417,170 字节；SHA-256：<code>c8b0d5c2fe0843da97d2a763d329cc4bae079e71456450e3f6eb531236d191d5</code>；MD5：<code>f4600dbb8935c85637d3e5bf11d86ca2</code>。</li>
+<li>已校验 ASAR 路径与字节边界并解包 786 个文件，无 <code>unpacked</code> 外置条目或链接条目；这不意味着应用没有包外依赖，启动代码明确引用包外引擎。</li>
+<li>56 个 <code>dist/assets/*.js</code> 均通过 JavaScript 语法解析；格式化副本与原文件逐词法 token 校验结果见 <code>source_verification.json</code>。没有执行附件业务代码，没有请求业务服务器，也没有下载影视资源。</li>
+<li>截图仅为 182×40 的“荐片”图标与名称，不能证明页面、播放状态或版本。平台和 bundle identifier 以用户提供信息为准。</li>
+<li>静态实现 E2：存在可复核函数；静态链路 E3：找到入口、条件及请求/播放 sink；动态 E4/E5：本次均没有。<code>caller_found</code> 仅说明找到调用点，不保证开关开启或用户能进入该分支。</li>
+<li>本环境实测为 Linux，没有授权 macOS 目标会话及 macOS 应用外壳；未提供 <code>JPEngine2</code>。因此无法进行真实启动、界面复现、抓包、媒体播放或缓存落盘验证，也没有用 Android 应用代替。</li>
+</ul>
+<p>以下 <code>F:</code> 表示 <code>formatted/dist/assets/</code> 内的可读派生副本；<code>S:</code> 表示 <code>extracted/src/</code>；<code>H:</code> 表示 <code>extracted/dist/index.html</code>。原压缩代码在 <code>extracted/dist/assets/</code>，大部分函数位于原文件第 1 行；报告行号均明确引用 F 副本，不能冒充原开发源码行号。</p>
+<h2 id="主要页面与功能">主要页面与功能<a class="headerlink" href="#主要页面与功能" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>页面或功能</th>
+<th>静态实现与入口</th>
+<th>主要文件证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>首页与分类导航</td>
+<td><code>/</code> 默认跳到 <code>/category?id=88&amp;name=推荐</code>；导航由 homeCategory 返回，另追加短视频与发现</td>
+<td>F:index-B33oKSXv.js:21281；F:Home-HYqkCKsk.js:48</td>
+</tr>
+<tr>
+<td>分类首页</td>
+<td>轮播 <code>/slide/list</code>、子类 <code>/customTags/list</code>、推荐模块 <code>/pc_dyTag/list</code>；按模板取影视卡片，每组默认 count=8，第一页混入人工推荐 hand_data，支持分页/换一换</td>
+<td>F:Category-aMbhBLHJ.js:284、310、319、325、341</td>
+</tr>
+<tr>
+<td>全部分类</td>
+<td><code>/videos/category</code> 读取筛选项 <code>{key,data:[{id,name}]}</code>；选值作为动态查询键，分页请求 crumb/list；<code>fcate_pid=67</code> 走 shortList；500ms 防抖和 AbortController 取消旧请求</td>
+<td>F:CategoryFilter-lllrC5Dm.js:137、163、190</td>
+</tr>
+<tr>
+<td>搜索</td>
+<td><code>/search/:keyword</code>；分类标签、关键词高亮、总数与滚动加载；按 key/category_id/page 搜索；搜索输入候选和本地搜索历史另在顶部 Search 组件</td>
+<td>F:Search-Cfs0L6Gc.js:175、196；F:Action-DoKrXy2x.js:214、266</td>
+</tr>
+<tr>
+<td>长视频详情</td>
+<td><code>/detail/:id</code>；评分、类型、导演、主演、地区、年代、介绍、相关推荐、来源线路、分集、收藏、评论；按 source.id 与 episode.weight 选择</td>
+<td>F:Detail-D9nBaeLj.js:574、608、650、711；简介渲染:494</td>
+</tr>
+<tr>
+<td>在线播放</td>
+<td>详情组装 sources，Video.js 显示播放、暂停、进度、音量、倍速、上下集、换源、全屏、画中画及跳片头片尾；30 秒无就绪事件触发播放错误并尝试后续线路</td>
+<td>F:VideoPlayer-9YDDWVER.js:27470、27542、27566、27618、27691；F:Detail-D9nBaeLj.js:634、747</td>
+</tr>
+<tr>
+<td>短视频及短详情</td>
+<td><code>/short-video</code>、<code>/short-detail/:id</code>；列表 <code>/play</code> 与详情 <code>/detail</code> 提供 URL；垂直滑动、合集、点赞、收藏、分享、评论；URL 直接交给公共播放器</td>
+<td>F:ShortVideo-CDQMB1dB.js:251、312、665、690；F:ShortDetail-Be5VM2Wq.js:319、343</td>
+</tr>
+<tr>
+<td>发现</td>
+<td><code>/discover</code> 展示上映表、专题、排行榜、求片榜，默认上映表；另存在片单、放映室相关路由，但不是所有路由都有可见导航项</td>
+<td>F:Discover-BzZ-VgvP.js:46；F:index-B33oKSXv.js:21311</td>
+</tr>
+<tr>
+<td>上映表、专题、榜单、求片</td>
+<td>上映表按年份与分页消费嵌套 sub；专题列表与详情可收藏；周榜按 category_id；求片列表、提交申请与点赞</td>
+<td>F:HistoryRelease-DWD5fN7t.js:57、78；F:SpecialDetail-D8YInbxV.js；F:Ranking-DPccmXn-.js:96；F:RequestRanking-C1EjNOvp.js</td>
+</tr>
+<tr>
+<td>收藏与观看历史</td>
+<td><code>/profile</code>；影片/专题/片单收藏，分页及批量删除；历史按 collection 分组删除，点击回到详情；进度上报仅登录时触发</td>
+<td>F:Profile-Cor6JmxC.js:202、256、265、647、690；F:Detail-D9nBaeLj.js:724</td>
+</tr>
+<tr>
+<td>下载/缓存</td>
+<td>详情内嵌选集下载组件及持久化任务队列，但开关 l 初始 false，仅找到关闭赋值，未找到开启入口；未找到常规下载管理页面。顶部 download-popup 是移动端下载二维码，不是影视任务管理</td>
+<td>F:Detail-D9nBaeLj.js:100、355、518；F:index-B33oKSXv.js:20979；F:Action-DoKrXy2x.js:1154、1453</td>
+</tr>
+<tr>
+<td>设置与反馈</td>
+<td>独立设置窗：开机自启、最小化位置、关闭行为、更新模式与恢复默认；反馈 POST content/contact/type/client。关闭行为读取 CloseStatus，自启走 Electron login-item API</td>
+<td>F:SetUp-DPMSXjnW.js:80；S:main/index.js:177；S:main/event-handlers.js:100；F:Feedback-HwIxFkQh.js</td>
+</tr>
+<tr>
+<td>更新</td>
+<td>独立检查/更新窗；启动时按 Mac 取 mac_download_url，软件包由主进程 HTTPS 下载，再 openPath 并退出；手动检查路径存在 PC 字段不一致</td>
+<td>F:index-B33oKSXv.js:21184；F:CheckUpdate-DSfI3V6P.js:54；S:main/event-handlers.js:55、87</td>
+</tr>
+</tbody>
+</table>
+<p>会员相关组件和支付封装虽存在，但全局配置 <code>vipSwitch: !1</code>。当前附件不能凭会员页面资产、协议文本或 VIP 参数宣称会员专线已开放；列表中这些请求保留静态调用/开关边界。</p>
+<h3 id="C-PAGES">C-PAGES<a class="headerlink" href="#C-PAGES" title="Permanent link">&para;</a></h3>
+<!-- CODE_EVIDENCE:CB-3 -->
+<p><strong>调用链：</strong> Home → Search route → Search.d → tg.search → Axios</p>
+<div class="codehilite"><pre><span></span><code><span class="w">                    </span><span class="nx">D</span><span class="p">(</span><span class="o">!</span><span class="mf">0</span><span class="p">);</span>
+<span class="w">                    </span><span class="kd">const</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="nx">data</span><span class="o">:</span><span class="w"> </span><span class="nx">i</span><span class="p">,</span>
+<span class="w">                        </span><span class="nx">total</span><span class="o">:</span><span class="w"> </span><span class="nx">y</span>
+<span class="w">                    </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">B</span><span class="p">.</span><span class="nx">search</span><span class="p">({</span>
+<span class="w">                        </span><span class="nx">id</span><span class="o">:</span><span class="w"> </span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">value</span><span class="p">[</span><span class="nx">r</span><span class="p">.</span><span class="nx">value</span><span class="p">])</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="mf">0</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="nx">t</span><span class="p">.</span><span class="nx">id</span><span class="p">,</span>
+<span class="w">                        </span><span class="nx">key</span><span class="o">:</span><span class="w"> </span><span class="nx">p</span><span class="p">.</span><span class="nx">value</span><span class="p">,</span>
+<span class="w">                        </span><span class="nx">page</span><span class="o">:</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">value</span>
+<span class="w">                    </span><span class="p">});</span>
+<span class="w">                    </span><span class="p">(</span><span class="nx">i</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="mf">0</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="nx">i</span><span class="p">.</span><span class="nx">length</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">0</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="p">(</span><span class="nx">s</span><span class="p">.</span><span class="nx">value</span><span class="p">.</span><span class="nx">push</span><span class="p">(...</span><span class="nx">i</span><span class="p">),</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">value</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="nx">P</span><span class="p">().</span><span class="nx">error</span><span class="p">(</span><span class="s2">"没有更多了"</span><span class="p">),</span><span class="w"> </span><span class="nx">l</span><span class="p">.</span><span class="nx">value</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">y</span>
+<span class="w">                </span><span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="nx">i</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">i</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong>证明关系：</strong> 证明搜索以分类、关键词和页码调用业务接口并消费结果。
+<strong>证据边界：</strong> 不证明接口当前可用或界面运行结果，搜索响应为客户端消费契约。
+<strong>定位：</strong> Search.d；E-3；formatted/dist/assets/Search-Cfs0L6Gc.js:193；Bundle B-3；Path P-3。</p>
+<h2 id="域名与请求用途">域名与请求用途<a class="headerlink" href="#域名与请求用途" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>用途</th>
+<th>域名或 URL 模板</th>
+<th>请求、数据及确认边界</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>固定业务候选</td>
+<td><code>https://japi.zxfmj.com</code></td>
+<td>不是唯一或实测主域；候选探活 GET <code>/api/v2/settings/appAuthConfig</code>，noSignature=true，成功以公共 code=1 契约判定</td>
+<td>F:index-B33oKSXv.js:12421、12436、12481</td>
+</tr>
+<tr>
+<td>域名列表分发</td>
+<td><code>https://jdomain.oss-accelerate.aliyuncs.com/domain.txt</code></td>
+<td>Axios GET，无业务签名/token；响应代码预期为逗号分隔文本，保存 API_DOMAINS</td>
+<td>同文件:12426、12472、12506</td>
+</tr>
+<tr>
+<td>TXT 查询一</td>
+<td><code>https://dns.alidns.com/resolve</code></td>
+<td>GET，Accept=application/dns-json，name=pyvemnlu.cc，type=16；读取 Answer[0].data，先 JSON.parse 再 split(',')</td>
+<td>同文件:12423、12453</td>
+</tr>
+<tr>
+<td>TXT 查询二/三</td>
+<td><code>https://doh.pub/dns-query</code>、<code>https://1.1.1.1/dns-query</code></td>
+<td>沿用同一 DNS JSON 请求，不代表两端当前兼容该响应格式或实际成功</td>
+<td>同文件:12423、12453</td>
+</tr>
+<tr>
+<td>DNS 查询目标</td>
+<td><code>pyvemnlu.cc</code></td>
+<td>是查询参数 name，不是证实被直接 HTTP 请求的业务主机</td>
+<td>同文件:12422、12463</td>
+</tr>
+<tr>
+<td>远程域名候选</td>
+<td><code>https://{随机6位字母数字}.{候选域}</code>；IP 候选用 <code>http://{IP[:port]}</code></td>
+<td>先 LAST_VALID_API_DOMAIN/API_DOMAINS，再固定域名，再远程列表、TXT、最后日期派生候选；具体候选/选中域名没有实测值</td>
+<td>同文件:12449、12481、12506</td>
+</tr>
+<tr>
+<td>日期派生候选</td>
+<td><code>MD5(本地YYYY-MM-DD + 包内5个JP前缀常量).substring(9,19)+'.com'</code></td>
+<td>随机子域与日期派生域名用于连接发现，不是视频内容加密；这是构造逻辑，不证明这些域已注册/在线</td>
+<td>同文件:12428、12497</td>
+</tr>
+<tr>
+<td>图片与广告图片</td>
+<td><code>https://{imgDomain候选}{原路径+query+hash}</code></td>
+<td>GET 图片；两个配置接口返回 imgDomain 逗号列表；即便原图片为完整 URL，也替换主机；5秒超时/失败换候选；实际 CDN 主机未知</td>
+<td>同文件:21460、21476、21518</td>
+</tr>
+<tr>
+<td>统计脚本</td>
+<td><code>https://d.alicdn.com/alilog/mlog/aplus/203467608.js</code></td>
+<td>HTML 注入异步脚本，浏览器 GET；每次路由切换调用 aplus.sendPV；脚本本体不在附件，不能据此列举全部上报接口</td>
+<td>H:10、16；F:index-B33oKSXv.js:21400</td>
+</tr>
+<tr>
+<td>统计兼容重定向</td>
+<td><code>file://umini.shujupie.com/*</code> → <code>https://umini.shujupie.com/*</code></td>
+<td>主进程仅注册重定向规则；没有本次请求路径、方法或 payload 证据，不能当作已经发送的接口</td>
+<td>S:main/index.js:221</td>
+</tr>
+<tr>
+<td>本地媒体引擎</td>
+<td><code>http://127.0.0.1:{port}</code>，默认 port=5800</td>
+<td>POST 控制 API 与 GET 播放流；端口从 tmp/JPEngine2.lock 读取；不是外部业务主机</td>
+<td>F:index-B33oKSXv.js:15039；S:preload/index.js:43</td>
+</tr>
+<tr>
+<td>影视媒体与更新包</td>
+<td>详情返回的 source_list[].url / 短视频 url / 更新 mac_download_url</td>
+<td>HTTP(S) 直链、非 HTTP 资源和 HTTPS 更新 URL 都是运行时数据；没有响应样本，不能列出实际 CDN、FTP、种子或安装包主机</td>
+<td>F:Detail-D9nBaeLj.js:658；F:ShortDetail-Be5VM2Wq.js:343；F:index-B33oKSXv.js:21184</td>
+</tr>
+<tr>
+<td>开发服务器</td>
+<td><code>http://localhost:5173</code></td>
+<td>仅 !app.isPackaged 分支，生产路径加载本地 dist/index.html；不能列为生产业务 API</td>
+<td>S:main/index.js:235</td>
+</tr>
+</tbody>
+</table>
+<p>第三方库中的 <code>w3.org</code> XML/SVG 命名空间、GitHub/LICENSE、example.com、Vue 错误文档等字面量，没有第一方业务请求链，不计入业务域名。播放器库中的字幕脚本候选见逐项附录，也不冒充本次运行请求。</p>
+<h3 id="C-DOMAINS">C-DOMAINS<a class="headerlink" href="#C-DOMAINS" title="Permanent link">&para;</a></h3>
+<!-- CODE_EVIDENCE:CB-1 -->
+<p><strong>调用链：</strong> App → getSysInit → HTTP base resolver → p7 → candidate probe</p>
+<div class="codehilite"><pre><span></span><code><span class="k">async</span><span class="w"> </span><span class="kd">function</span><span class="w"> </span><span class="nx">p7</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="nx">e</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">c7</span><span class="p">(),</span>
+<span class="w">        </span><span class="nx">t</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">u0</span><span class="p">(</span><span class="nx">e</span><span class="p">);</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">t</span><span class="p">)</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="nx">t</span><span class="p">;</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">let</span><span class="w"> </span><span class="nx">n</span><span class="w"> </span><span class="k">of</span><span class="w"> </span><span class="nx">p2</span><span class="p">)</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">d7</span><span class="p">(</span><span class="nx">n</span><span class="p">),</span><span class="w"> </span><span class="o">!!</span><span class="nx">e</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="p">(</span><span class="nx">localStorage</span><span class="p">.</span><span class="nx">setItem</span><span class="p">(</span><span class="nx">mf</span><span class="p">,</span><span class="w"> </span><span class="nb">JSON</span><span class="p">.</span><span class="nx">stringify</span><span class="p">(</span><span class="nx">e</span><span class="p">)),</span><span class="w"> </span><span class="nx">t</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">u0</span><span class="p">(</span><span class="nx">e</span><span class="p">),</span><span class="w"> </span><span class="nx">t</span><span class="p">))</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="nx">t</span><span class="p">;</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">let</span><span class="w"> </span><span class="nx">n</span><span class="w"> </span><span class="k">of</span><span class="w"> </span><span class="nx">o7</span><span class="p">)</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">f7</span><span class="p">(</span><span class="nx">n</span><span class="p">),</span><span class="w"> </span><span class="o">!!</span><span class="nx">e</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="p">(</span><span class="nx">localStorage</span><span class="p">.</span><span class="nx">setItem</span><span class="p">(</span><span class="nx">mf</span><span class="p">,</span><span class="w"> </span><span class="nb">JSON</span><span class="p">.</span><span class="nx">stringify</span><span class="p">(</span><span class="nx">e</span><span class="p">)),</span><span class="w"> </span><span class="nx">t</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">u0</span><span class="p">(</span><span class="nx">e</span><span class="p">),</span><span class="w"> </span><span class="nx">t</span><span class="p">))</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="nx">t</span><span class="p">;</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">e</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">h7</span><span class="p">(),</span><span class="w"> </span><span class="nx">t</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">u0</span><span class="p">(</span><span class="nx">e</span><span class="p">),</span><span class="w"> </span><span class="nx">t</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="kc">null</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>证明关系：</strong> 证明候选选择顺序和缓存写入逻辑。
+<strong>证据边界：</strong> 不证明候选当前存活或运行时选中了哪个域名。
+<strong>定位：</strong> p7；E-1；formatted/dist/assets/index-B33oKSXv.js:12506；Bundle B-1；Path P-1。</p>
+<h2 id="请求封装-鉴权与加密">请求封装、鉴权与加密<a class="headerlink" href="#请求封装-鉴权与加密" title="Permanent link">&para;</a></h2>
+<p>业务请求统一走 Axios 实例，普通相对 URL 拼接 <code>选中base + '/api'</code>。默认超时 10 秒、请求头 <code>platform: pc</code>（Mac 也沿用该值）、<code>content-type: application/x-www-form-urlencoded</code>。GET 参数放查询，POST 普通对象由 Axios 按该类型序列化；部分表单为 FormData。注册接口另有 15 秒超时与不重试配置。网络失败可重新发现域名并最多按 retryCount=3 递减重试；绝对 URL 不走这条域名切换重试。定位 F:index-B33oKSXv.js:12676–12835，完整方法保存在清单 JSON。</p>
+<ol>
+<li><strong>初始化与签名</strong>：<code>App.d → wo.getSysInit → GET /api/v2/sys/init</code> 配 noSignature=true，公共响应解包后读取 <code>secret</code>，交给 <code>ne.setSecret</code> 解锁等待 Promise。其他普通请求头为 <code>version=504</code>、<code>timestamp=floor(Date.now()/1000)</code>、<code>signature=MD5('504'+timestamp+secret)</code> 的十六进制字符串。计算没有拼入 URL、参数或请求体，不能称为“整包内容加密”。如果初始化失败，代码仅 catch/log，没有找到签名等待 Promise 的失败释放路径；后续签名请求可能一直等待，需运行验证。定位:12709、12797、21176。</li>
+<li><strong>token 注入</strong>：<code>U1(rawUrl)</code> 精确检查允许列表，或排除以 http 开头的绝对 URL。对需附加 token 的 <code>/v2</code> 路径，token 放请求头；其余 GET 写 params.token，POST 写 data.token 或 FormData。<code>/usersV2/*</code> 不含小写 <code>/v2</code>，因此走旧式 body/query 分支。匿名用户 token 可能为空，不能把“注入逻辑存在”解释为服务端一定要求登录。定位:7995、12706、12816。</li>
+<li><strong>精确匹配细节</strong>：允许列表中的 <code>/video/detailv2</code>、<code>/video/guessRecommend</code>，与实际含 <code>?id=</code> 的拼接字符串不相等；某些模板路径也未列在 allowlist。签名和 token 判断以代码实际字符串为准，不能按接口名称推断免鉴权。定位:7995、21858、21881。</li>
+<li><strong>token 存储</strong>：Pinia user store 将 userInfo JSON 保存至 localStorage，token 来源是 userInfo.token；昵称、头像、inviteCode/inviteImg 也有本地状态。不是在包内发现实际用户凭证，本报告不提取或公布凭证。定位:12572–12675。</li>
+<li><strong>响应契约</strong>：公共封装读取 <code>{code,msg,data,...other}</code>，code≠1 拒绝 <code>{code,msg}</code>；originalData=true 原样返回，否则返回 data；有额外顶层字段时挂到 data.other，data 为空时返回其余字段。HTTP 401 映射“请登陆”、500 映射服务端错误；这些是客户端映射，不是服务端实测状态。定位:12719–12756。</li>
+<li><strong>加密边界</strong>：CryptoJS 中确有 AES/DES/TripleDES 等通用算法实现，但本任务追踪到的第一方业务调用是 MD5 签名与日期候选计算；未找到这些业务请求的应用层 AES 加密/解密调用。播放器捆绑 HLS AES 解密库，仅证明支持加密 HLS 的库能力，不能证明实际影片使用该加密，更不能推断 DRM 或许可证服务。HTTPS 传输与应用层加密分开记录。</li>
+<li><strong>传输配置</strong>：主进程设置 disable-web-security，主窗口 sandbox=false；未在本次第一方 JavaScript 路径发现自定义证书 pin 或 TLS 验证覆盖。不能据此推断 Electron/系统验证已关闭，也不能覆盖未提供的 JPEngine2。IP 候选及 loopback 明确为 HTTP，其余固定 API 候选为 HTTPS。定位 S:main/index.js:20、145。</li>
+</ol>
+<h3 id="C-AUTH">C-AUTH<a class="headerlink" href="#C-AUTH" title="Permanent link">&para;</a></h3>
+<!-- CODE_EVIDENCE:CB-2 -->
+<p><strong>调用链：</strong> App.getSysInit → setSecret → page API → request interceptor → Axios</p>
+<div class="codehilite"><pre><span></span><code><span class="w">                </span><span class="kd">const</span><span class="w"> </span><span class="nx">n</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">Uo</span><span class="p">();</span>
+<span class="w">                </span><span class="nx">t</span><span class="p">.</span><span class="nx">method</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s2">"get"</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="nx">t</span><span class="p">.</span><span class="nx">params</span><span class="p">.</span><span class="nx">token</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">n</span><span class="p">.</span><span class="nx">token</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="nx">t</span><span class="p">.</span><span class="nx">method</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s2">"post"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="p">(</span><span class="nx">t</span><span class="p">.</span><span class="nx">data</span><span class="w"> </span><span class="ow">instanceof</span><span class="w"> </span><span class="nx">FormData</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="nx">t</span><span class="p">.</span><span class="nx">data</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="s2">"token"</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="p">.</span><span class="nx">token</span><span class="p">)</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="nx">t</span><span class="p">.</span><span class="nx">data</span><span class="p">.</span><span class="nx">token</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">n</span><span class="p">.</span><span class="nx">token</span><span class="p">)</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">t</span><span class="p">.</span><span class="nx">options</span><span class="p">.</span><span class="nx">noSignature</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="kd">const</span><span class="w"> </span><span class="nx">n</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">un</span><span class="p">(</span><span class="k">this</span><span class="p">,</span><span class="w"> </span><span class="nx">qo</span><span class="p">),</span>
+<span class="w">                    </span><span class="nx">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Math</span><span class="p">.</span><span class="nx">floor</span><span class="p">(</span><span class="ow">new</span><span class="w"> </span><span class="nb">Date</span><span class="p">().</span><span class="nx">getTime</span><span class="p">()</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mf">1e3</span><span class="p">),</span>
+<span class="w">                    </span><span class="nx">o</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"504"</span><span class="p">,</span>
+<span class="w">                    </span><span class="nx">a</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">t7</span><span class="p">.</span><span class="nx">MD5</span><span class="p">(</span><span class="nx">o</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nx">i</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nx">n</span><span class="p">).</span><span class="nx">toString</span><span class="p">();</span>
+<span class="w">                </span><span class="nx">t</span><span class="p">.</span><span class="nx">headers</span><span class="p">.</span><span class="nx">version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">o</span><span class="p">,</span><span class="w"> </span><span class="nx">t</span><span class="p">.</span><span class="nx">headers</span><span class="p">.</span><span class="nx">timestamp</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">i</span><span class="p">,</span><span class="w"> </span><span class="nx">t</span><span class="p">.</span><span class="nx">headers</span><span class="p">.</span><span class="nx">signature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">a</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="nx">t</span>
+</code></pre></div>
+
+<p><strong>证明关系：</strong> 证明 token 放置分支、MD5 输入与签名请求头。
+<strong>证据边界：</strong> 不证明服务端鉴权有效性，secret 的实际值和完整响应未知。
+<strong>定位：</strong> ys.request interceptor；E-2；formatted/dist/assets/index-B33oKSXv.js:12706；Bundle B-2；Path P-2。</p>
+<h2 id="核心网络接口清单">核心网络接口清单<a class="headerlink" href="#核心网络接口清单" title="Permanent link">&para;</a></h2>
+<p>下表所有相对路径均须前加 <code>selected_base/api</code>。全部状态为“静态确认，动态未验证”。“响应”是代码读取的最小消费结构，不是完整 schema。完整 <strong>130 个业务请求封装</strong>已提供 <code>network_interfaces.md</code>、<code>.json</code>、<code>.csv</code>：99 个有静态调用点，31 个仅封装；逐项保留 HTTP 方法、原始路径表达式、查询/请求体、特殊配置、方法体与调用点。附加网络通道另见 <code>network_auxiliary.json</code>。</p>
+<table>
+<thead>
+<tr>
+<th>用途</th>
+<th>HTTP 方法与路径</th>
+<th>主要参数</th>
+<th>客户端消费结构</th>
+<th>F:index-B33oKSXv.js</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>签名初始化</td>
+<td>GET <code>/v2/sys/init</code></td>
+<td>noSignature=true</td>
+<td>data.secret</td>
+<td>15207；调用21176</td>
+</tr>
+<tr>
+<td>应用配置</td>
+<td>GET <code>/v2/settings/appAuthConfig</code></td>
+<td>无；域名探活用绝对 URL 且免签名</td>
+<td>配置对象，客户端网站读取 er；完整结构未知</td>
+<td>15204；15175</td>
+</tr>
+<tr>
+<td>首页分类</td>
+<td>GET <code>/v2/settings/homeCategory</code></td>
+<td>无</td>
+<td>data:[{id,name,…}]</td>
+<td>21676</td>
+</tr>
+<tr>
+<td>分类子标签/模块</td>
+<td>GET <code>/customTags/list</code>、<code>/pc_dyTag/list</code>、<code>/dyTag/hand_data</code></td>
+<td>category_id</td>
+<td>子类数组；模块含 id/template/title/jump_address；hand_data 按模块 id 索引</td>
+<td>21679–21708</td>
+</tr>
+<tr>
+<td>影视模块列表</td>
+<td>GET <code>/pc_dyTag/tpl{template}_list</code></td>
+<td>id,page,count=8（首页）</td>
+<td>影视卡片数组；空数组/不足count结束</td>
+<td>21693</td>
+</tr>
+<tr>
+<td>轮播</td>
+<td>GET <code>/slide/list</code></td>
+<td>pos_id=当前分类id</td>
+<td>轮播数组；客户端读取图片、跳转地址</td>
+<td>21709</td>
+</tr>
+<tr>
+<td>搜索推荐/搜索</td>
+<td>GET <code>/search/recommend</code>；GET <code>/v2/search/videoV2</code></td>
+<td>搜索 key,category_id,page</td>
+<td>搜索 originalData:{code,msg,data:[影片],total,…}；影片读取 id/type/title/actors/years/res_categories/top_category/tvimg/description</td>
+<td>21716、21719；消费 Search:196</td>
+</tr>
+<tr>
+<td>筛选项</td>
+<td>GET <code>/crumb/filterOptions</code></td>
+<td>fcate_pid，可未传</td>
+<td>data:[{key,data:[{id,name,…}]}]</td>
+<td>21870</td>
+</tr>
+<tr>
+<td>筛选影视</td>
+<td>GET <code>/crumb/list</code> 或 <code>/crumb/shortList</code></td>
+<td>路由/筛选项动态键及page；fcate_pid=67走短视频</td>
+<td>卡片数组；读取 id/title/path 或 cover_image</td>
+<td>21911</td>
+</tr>
+<tr>
+<td>长视频详情/相关推荐</td>
+<td>GET <code>/video/detailv2?id={id}</code>；GET <code>/video/guessRecommend?id={id}&amp;page={page}</code></td>
+<td>嵌入查询字符串</td>
+<td>详情含 title/score/category/directors/actors/types/area/year/description/thumbnail/cate_id/source_list_source；推荐数组</td>
+<td>21855、21877</td>
+</tr>
+<tr>
+<td>评论</td>
+<td>GET <code>/v2/comment/list</code>；POST <code>/v2/comment/add</code></td>
+<td>列表 video_id,weight,sort=changed,page,pageSize=15；提交 video_id,weight,content,reply_comment_id</td>
+<td>评论列表数据及附加计数；完整 schema 未知</td>
+<td>13193、13207</td>
+</tr>
+<tr>
+<td>短视频列表/详情/合集</td>
+<td>GET <code>/play</code>、<code>/detail</code>、<code>/narratecollection</code></td>
+<td>type,page,count=10,order=2；vid；svid</td>
+<td>列表与短详情对象，最终播放读取 url；合集数据</td>
+<td>21637、21594、21665</td>
+</tr>
+<tr>
+<td>上映表</td>
+<td>GET <code>/discover/list</code>、<code>/discover/before</code></td>
+<td>type,year,page,pageSize；当前页20，早期页6</td>
+<td>data[0].sub[]，每项 sub_name/sub[]</td>
+<td>21860、21865</td>
+</tr>
+<tr>
+<td>专题</td>
+<td>GET <code>/special/list</code>、<code>/special/detail</code></td>
+<td>page；id</td>
+<td>专题数组/详情，收藏相关接口另列完整清单</td>
+<td>21820、21827</td>
+</tr>
+<tr>
+<td>周榜</td>
+<td>GET <code>/weekRank/options</code>、<code>/weekRank/list</code></td>
+<td>category_id</td>
+<td>分类选项{name,category_id}；影视数组含id,title,path/cover_image,types/categories,description</td>
+<td>22068、22071</td>
+</tr>
+<tr>
+<td>求片</td>
+<td>GET <code>/ask/list</code>；POST <code>/ask/user_apply</code>；POST <code>/ask/thumb</code></td>
+<td>page；title,category_id,desc；id</td>
+<td>求片列表/提交结果；完整 schema 未知</td>
+<td>22081、22091、22100</td>
+</tr>
+<tr>
+<td>收藏状态/添加</td>
+<td>GET <code>/v2/nUser/getCollectSingle</code>；POST <code>/nUser/collectVideo</code></td>
+<td>type,vid；id,type（影片1/短片2）</td>
+<td>状态值；变更结果不作为运行成功证据</td>
+<td>22114、13219</td>
+</tr>
+<tr>
+<td>收藏列表/批量取消</td>
+<td>GET <code>/nUser/getCollect</code>；POST <code>/nUser/cancelCollectVideoBatch</code></td>
+<td>page,pageSize（个人中心15）；ids=逗号串</td>
+<td>originalData:{data:[…],totalPage,…}</td>
+<td>21753、21777</td>
+</tr>
+<tr>
+<td>观看历史列表/删除</td>
+<td>GET <code>/v2/view/list</code>；POST <code>/usersV2/deleteViewCollection</code></td>
+<td>page,pageSize=15；collections=逗号串</td>
+<td>originalData.data[]，含collection/video_id/type</td>
+<td>21784、21806</td>
+</tr>
+<tr>
+<td>播放记录上报</td>
+<td>POST <code>/usersV2/viewVideo</code></td>
+<td>type,video_id,video_name,source_id,source_config_name,weight_alias,last_duration,total_duration,category_id,path</td>
+<td>返回值不直接渲染；服务端结果未知</td>
+<td>22033</td>
+</tr>
+<tr>
+<td>下载记录</td>
+<td>POST <code>/nUser/downloadVideo</code></td>
+<td>video_id,video_name,source_id,source_config_name,weight_alias,type=1</td>
+<td>记录行为，不传输影视文件；仅下载弹窗内调用点，开启入口未确认</td>
+<td>21883；Detail:157</td>
+</tr>
+<tr>
+<td>广告配置与计数</td>
+<td>GET <code>/v2/advertise/list</code>；POST <code>/v2/advertise/recordShow</code>、<code>/recordClick</code></td>
+<td>channel,client=3；ad_id,pos,client=3,channel</td>
+<td>配置含info_flow/comment/user_center等；曝光/点击记录结果</td>
+<td>12837–12876；AdImage:24、36</td>
+</tr>
+<tr>
+<td>图片/广告资源域</td>
+<td>GET <code>/v2/settings/resourceDomainConfig</code>、<code>/advertiseDomainConfig</code></td>
+<td>无</td>
+<td>data.imgDomain=逗号分隔域名</td>
+<td>15194、15216</td>
+</tr>
+<tr>
+<td>版本查询</td>
+<td>GET <code>/v2/settings/updateAd</code></td>
+<td>启动id=mac；手动检查未传id</td>
+<td>versioncode,mac_download_url,pc_download_url,text</td>
+<td>15197；21184</td>
+</tr>
+<tr>
+<td>账号</td>
+<td>POST <code>/nUser/accountLogin</code>、<code>/mailLogin</code>、<code>/phoneLogin</code>；注册走对应 <code>/v2/nUser/*Register</code></td>
+<td>account/password；mail/password；pre/phone/msg_code；具体表单见完整清单</td>
+<td>成功结果写userInfo，客户端期望token、vip_level等；完整schema未知</td>
+<td>12920–13046</td>
+</tr>
+<tr>
+<td>反馈</td>
+<td>POST <code>/feedback</code></td>
+<td>content,contact,type,client</td>
+<td>公共成功/失败契约</td>
+<td>13083</td>
+</tr>
+</tbody>
+</table>
+<p>详情媒体对象至少消费：<code>source_list_source:[{id,name,source_list:[{url,weight,source_name,time_data:{titles_duration,trailer_duration},…}]}]</code>；VIP 对象为 <code>vip_source_list_source</code> 但受关闭开关限制。选集下载还读取 source.video_id/video_name/source_id/source_config_name；这只证明客户端预期字段，不保证每个响应都包含或每种类型相同。</p>
+<h2 id="播放器与本地引擎">播放器与本地引擎<a class="headerlink" href="#播放器与本地引擎" title="Permanent link">&para;</a></h2>
+<p><strong>链路一，HTTP(S) 直链播放</strong>：分类/搜索卡片 → 长详情接口 → 来源与分集 → <code>url.startsWith('http')</code> 分支 → VideoPlayer → Video.js <code>src/load</code> → 浏览器媒体请求。附件捆绑 Video.js <code>8.22.0</code>、<code>@videojs/http-streaming 3.17.0</code>、m3u8-parser 与 MPD parser，支持 MP4/HLS/DASH 的库路径；不能仅凭库存在宣称实际影片采用 HLS/DASH。普通媒体没有业务 signature 注入；VIP 条件下 <code>R.Vhs.xhr.beforeRequest</code> 设置 token 请求头，仅证明 VHS 请求分支，不涵盖所有原生 HTML5 MP4 请求。定位 F:VideoPlayer-9YDDWVER.js:7708、15279、27562。</p>
+<p><strong>链路二，非 HTTP 播放</strong>：主进程启动包外引擎 → preload 读取临时目录 JPEngine2.lock → 本地端口 → POST create → 返回 loopback <code>/p2p/{base64url(resource)}</code> → 约2秒后以 <code>video/mp4</code> 交给 Video.js。资源编码为 UTF-8 Base64，移除 padding 并替换 <code>+ /</code> 为 <code>- _</code>，不是加密。详情代码对所有非 http 开头资源都进入引擎，不仅限 FTP；下载调度却只识别 <code>ftp://</code>。macOS 生产启动路径为 <code>path.dirname(process.execPath)</code> 下 <code>../JPEngine2</code>，ASAR 内未包含该二进制。定位 S:main/index.js:42–64；S:preload/index.js:43–51；F:index-B33oKSXv.js:7979、15039。</p>
+<h3 id="C-PLAY">C-PLAY<a class="headerlink" href="#C-PLAY" title="Permanent link">&para;</a></h3>
+<!-- CODE_EVIDENCE:CB-4 -->
+<p><strong>调用链：</strong> Detail → source_list.url → Tn.getPlayUrl → local engine → VideoPlayer</p>
+<div class="codehilite"><pre><span></span><code><span class="w">                    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">D</span><span class="p">.</span><span class="nx">startsWith</span><span class="p">(</span><span class="s2">"http"</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="nx">t</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">D</span><span class="p">,</span><span class="w"> </span><span class="nx">A</span><span class="p">.</span><span class="nx">ready</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">!</span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="nx">A</span><span class="p">.</span><span class="nx">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"资源获取中···"</span><span class="p">;</span>
+<span class="w">                        </span><span class="k">try</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                            </span><span class="nx">ge</span><span class="p">.</span><span class="nx">getPlayUrl</span><span class="p">(</span><span class="nx">D</span><span class="p">).</span><span class="nx">then</span><span class="p">(</span><span class="k">async</span><span class="w"> </span><span class="nx">E</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                                </span><span class="k">await</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nb">Promise</span><span class="p">(</span><span class="nx">Se</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">setTimeout</span><span class="p">(</span><span class="nx">Se</span><span class="p">,</span><span class="w"> </span><span class="mf">2e3</span><span class="p">)),</span><span class="w"> </span><span class="nx">A</span><span class="p">.</span><span class="nx">srcs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[{</span>
+<span class="w">                                    </span><span class="nx">src</span><span class="o">:</span><span class="w"> </span><span class="nx">E</span><span class="p">,</span>
+<span class="w">                                    </span><span class="nx">type</span><span class="o">:</span><span class="w"> </span><span class="s2">"video/mp4"</span>
+<span class="w">                                </span><span class="p">}],</span><span class="w"> </span><span class="nx">A</span><span class="p">.</span><span class="nx">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">""</span>
+<span class="w">                            </span><span class="p">}).</span><span class="k">catch</span><span class="p">(()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                                </span><span class="nx">A</span><span class="p">.</span><span class="nx">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"资源获取失败"</span>
+<span class="w">                            </span><span class="p">}).</span><span class="k">finally</span><span class="p">(()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                                </span><span class="nx">A</span><span class="p">.</span><span class="nx">ready</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">!</span><span class="mf">0</span>
+</code></pre></div>
+
+<p><strong>证明关系：</strong> 证明非 HTTP 分支取得本地播放 URL，并以 video/mp4 提供给播放器。
+<strong>证据边界：</strong> 包外 JPEngine2 未提供，不能证明上游协议、节点、资源可播或媒体真实格式。
+<strong>定位：</strong> Detail source watchEffect；E-4；formatted/dist/assets/Detail-D9nBaeLj.js:669；Bundle B-4；Path P-4。</p>
+<p>本地控制均由 <code>fetch</code> 构造 <strong>POST</strong>，默认10秒 AbortController 超时；资源作为 URL 路径参数，参数不存在则不加资源段；未显式附带签名或 token。成功响应统一读文本，HTTP 非2xx抛错。以下不是动态观测到的流量。</p>
+<table>
+<thead>
+<tr>
+<th>本地路径（主机均127.0.0.1:{port}）</th>
+<th>方法</th>
+<th>路径参数/请求体</th>
+<th>响应消费及可达性</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/api/v1/create/{resource_b64url}</code></td>
+<td>POST</td>
+<td>资源URL的编码；无业务body</td>
+<td>文本；由非HTTP播放和下载调度调用</td>
+</tr>
+<tr>
+<td><code>/p2p/{resource_b64url}</code></td>
+<td>媒体GET预期</td>
+<td>资源URL编码；Range是否使用需运行确认</td>
+<td>媒体字节，应用声明video/mp4；不是已验证MIME或响应头</td>
+</tr>
+<tr>
+<td><code>/api/v1/setpath</code></td>
+<td>POST</td>
+<td>body=下载目录原始字符串</td>
+<td>文本；配置初始化调用，同时IPC创建目录</td>
+</tr>
+<tr>
+<td><code>/api/v1/pause/{resource_b64url}</code></td>
+<td>POST</td>
+<td>无业务body</td>
+<td>文本；队列控制实现，用户界面入口未确认</td>
+</tr>
+<tr>
+<td><code>/api/v1/resume/{resource_b64url}</code></td>
+<td>POST</td>
+<td>无业务body</td>
+<td>文本；队列控制实现，用户界面入口未确认</td>
+</tr>
+<tr>
+<td><code>/api/v1/cancel/{resource_b64url}</code></td>
+<td>POST</td>
+<td>无业务body</td>
+<td>文本；移除缓存或停止当前资源分支</td>
+</tr>
+<tr>
+<td><code>/api/v1/delete/{resource_b64url}</code></td>
+<td>POST</td>
+<td>无业务body</td>
+<td>文本；移除任务后调用；引擎是否删实际文件未知</td>
+</tr>
+<tr>
+<td><code>/api/v1/get_download_speed/{resource_b64url}</code></td>
+<td>POST</td>
+<td>无业务body</td>
+<td>文本转数值用于speed；单位由引擎决定、未验证</td>
+</tr>
+<tr>
+<td><code>/api/v1/get_size/{resource_b64url}</code></td>
+<td>POST</td>
+<td>无业务body</td>
+<td>大小文本或 ERR Not Found Task</td>
+</tr>
+<tr>
+<td><code>/api/v1/get_downloaded_size/{resource_b64url}</code></td>
+<td>POST</td>
+<td>无业务body</td>
+<td>已下载大小文本；计算进度百分比</td>
+</tr>
+<tr>
+<td><code>/api/v1/set_p2p_play_timeout</code></td>
+<td>POST</td>
+<td>body=timeout的JSON序列化</td>
+<td>仅找到封装，未找到调用点</td>
+</tr>
+<tr>
+<td><code>/api/v1/get_task_list</code></td>
+<td>POST</td>
+<td>无业务body</td>
+<td>仅找到封装，响应结构未知</td>
+</tr>
+</tbody>
+</table>
+<p>引擎内部的 TCP/UDP、FTP连接、P2P/P2SP 调度、服务发现、分片协议、上游域名、校验、加密和磁盘格式均超出本附件证据。不能把 JPEngine2 名称或 ftp URL 推导为已经分析了 Native 实现。</p>
+<h2 id="下载-缓存与本地状态">下载、缓存与本地状态<a class="headerlink" href="#下载-缓存与本地状态" title="Permanent link">&para;</a></h2>
+<p>选集组件取 <code>videoDetail.source_list_source[0].source_list</code>，不是所有来源；要求登录且至少选择一集。<code>TR.download</code> 去重资源URL、写影视详情缓存及 DownlaodVideos（代码原拼写），只有 <code>ftp://</code> 被标记 type=1。每秒轮询下载大小、速度、已下载大小并计算 progress；并发默认2，MaxDownloadCount 可持久化。状态0待调度、1创建中、2下载中、3暂停、4完成、5失败。暂停/恢复/取消/删除均有实现，但没有常规界面开关或下载管理页面的可达证据。HTTP 资源被type=0排除在该FTP调度循环外，不能宣称这条队列支持HTTP下载。</p>
+<p>详情内下载弹窗的 show 来自 VideoInfo 的 <code>l = _(!1)</code>；该作用域未找到令 l.value=true 的代码，只找到关闭赋值。顶栏“扫码下载移动端”不属于影视缓存。已有本地缓存通过 <code>?cache&amp;sid&amp;eid</code> 分支读取详情；同样不能证明用户能够从常规页面进入。定位 F:Detail-D9nBaeLj.js:100–165、355、518、574、695；F:index-B33oKSXv.js:20979–21102。</p>
+<h3 id="C-DOWNLOAD">C-DOWNLOAD<a class="headerlink" href="#C-DOWNLOAD" title="Permanent link">&para;</a></h3>
+<!-- CODE_EVIDENCE:CB-5 -->
+<p><strong>调用链：</strong> embedded downloadSelect.m (opening path unconfirmed) → TR.download → task scheduler</p>
+<div class="codehilite"><pre><span></span><code><span class="w">            </span><span class="nx">localStorage</span><span class="p">.</span><span class="nx">setItem</span><span class="p">(</span><span class="sb">`cache-video-datail-</span><span class="si">${</span><span class="nx">w</span><span class="p">.</span><span class="nx">id</span><span class="si">}</span><span class="sb">`</span><span class="p">,</span><span class="w"> </span><span class="nb">JSON</span><span class="p">.</span><span class="nx">stringify</span><span class="p">(</span><span class="nx">w</span><span class="p">)),</span><span class="w"> </span><span class="nx">y</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">y</span><span class="p">.</span><span class="nx">filter</span><span class="p">(</span><span class="nx">A</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="o">!</span><span class="nx">n</span><span class="p">.</span><span class="nx">value</span><span class="p">.</span><span class="nx">find</span><span class="p">(</span><span class="nx">v</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">v</span><span class="p">.</span><span class="nx">url</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="nx">A</span><span class="p">.</span><span class="nx">url</span><span class="p">)),</span><span class="w"> </span><span class="nx">y</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">y</span><span class="p">.</span><span class="nx">map</span><span class="p">(</span><span class="nx">A</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">(</span><span class="nx">A</span><span class="p">.</span><span class="nx">cateId</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">w</span><span class="p">.</span><span class="nx">cate_id</span><span class="p">,</span><span class="w"> </span><span class="nx">A</span><span class="p">.</span><span class="nx">cover</span><span class="w"> </span><span class="o">??</span><span class="w"> </span><span class="p">(</span><span class="nx">A</span><span class="p">.</span><span class="nx">cover</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">w</span><span class="p">.</span><span class="nx">thumbnail</span><span class="p">),</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="nx">speed</span><span class="o">:</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span>
+<span class="w">                </span><span class="nx">progress</span><span class="o">:</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span>
+<span class="w">                </span><span class="nx">status</span><span class="o">:</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span>
+<span class="w">                </span><span class="nx">fileSize</span><span class="o">:</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span>
+<span class="w">                </span><span class="nx">url</span><span class="o">:</span><span class="w"> </span><span class="nx">A</span><span class="p">.</span><span class="nx">url</span><span class="p">,</span>
+<span class="w">                </span><span class="nx">type</span><span class="o">:</span><span class="w"> </span><span class="nx">A</span><span class="p">.</span><span class="nx">url</span><span class="p">.</span><span class="nx">startsWith</span><span class="p">(</span><span class="s2">"ftp://"</span><span class="p">)</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="mf">1</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span>
+<span class="w">                </span><span class="nx">videoInfo</span><span class="o">:</span><span class="w"> </span><span class="nx">A</span>
+<span class="w">            </span><span class="p">})),</span><span class="w"> </span><span class="nx">n</span><span class="p">.</span><span class="nx">value</span><span class="p">.</span><span class="nx">push</span><span class="p">(...</span><span class="nx">y</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">async</span><span class="w"> </span><span class="kd">function</span><span class="w"> </span><span class="nx">u</span><span class="p">(</span><span class="nx">y</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kd">const</span><span class="w"> </span><span class="nx">w</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">n</span><span class="p">.</span><span class="nx">value</span><span class="p">.</span><span class="nx">findIndex</span><span class="p">(</span><span class="nx">A</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">A</span><span class="p">.</span><span class="nx">url</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="nx">y</span><span class="p">);</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">w</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="o">-</span><span class="mf">1</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+</code></pre></div>
+
+<p><strong>证明关系：</strong> 证明缓存元数据持久化、URL 去重及仅 FTP 分类为可调度下载类型。
+<strong>证据边界：</strong> 选集弹窗没有发现开启入口；不能宣称本版本下载页面可用或下载已完成。
+<strong>定位：</strong> TR.download；E-5；formatted/dist/assets/index-B33oKSXv.js:21039；Bundle B-5；Path P-5。</p>
+<table>
+<thead>
+<tr>
+<th>存储位置或键</th>
+<th>内容与用途</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>localStorage API_DOMAINS / LAST_VALID_API_DOMAIN</td>
+<td>候选列表与最近有效域名</td>
+<td>F:index-B33oKSXv.js:12419</td>
+</tr>
+<tr>
+<td>localStorage userInfo / inviteCode / inviteImg / ads</td>
+<td>账号状态与广告缓存</td>
+<td>同文件:12572、12890</td>
+</tr>
+<tr>
+<td>localStorage search_history</td>
+<td>搜索输入历史，清除不等于清除观看历史</td>
+<td>F:Action-DoKrXy2x.js:214、266</td>
+</tr>
+<tr>
+<td>localStorage source-episode-{vid}</td>
+<td>sourceId与episodeId，用于详情选源/选集记忆</td>
+<td>F:Detail-D9nBaeLj.js:711</td>
+</tr>
+<tr>
+<td>localStorage cache-video-datail-{id}</td>
+<td>完整详情对象缓存，datail为代码拼写；不是影片字节</td>
+<td>F:index-B33oKSXv.js:21040</td>
+</tr>
+<tr>
+<td>localStorage DownlaodVideos / MaxDownloadCount / DownloadPath</td>
+<td>任务元数据、并发及下载目录；默认系统Downloads/JianPian</td>
+<td>同文件:20979、21000、15136</td>
+</tr>
+<tr>
+<td>localStorage volume / autoSkipIntroEnabled / autoSkipOutroEnabled</td>
+<td>音量与跳片头片尾偏好</td>
+<td>F:VideoPlayer-9YDDWVER.js:27483</td>
+</tr>
+<tr>
+<td>electron-store</td>
+<td>AutoRun、MinimizePosition、CloseStatus、VersionUpdate、VersionInfo</td>
+<td>S:preload/store.js；F:SetUp-DPMSXjnW.js:84</td>
+</tr>
+<tr>
+<td>临时目录 JPEngine2.lock</td>
+<td>端口文本；2秒轮询，最多5次；默认5800</td>
+<td>S:preload/index.js:43；F:index-B33oKSXv.js:15065</td>
+</tr>
+</tbody>
+</table>
+<p>localStorage 与 electron-store 的实际磁盘位置依赖完整 macOS 应用与 userData 配置，ASAR 不能证明本机绝对路径；没有导出用户目录或现存数据。媒体字节是否写入 DownloadPath、文件名及完成后的索引关系须由引擎/运行观察确认。</p>
+<h2 id="收藏与历史">收藏与历史<a class="headerlink" href="#收藏与历史" title="Permanent link">&para;</a></h2>
+<p>长视频收藏通过用户接口切换，先用 getCollectSingle 查询状态。个人中心影片、专题、片单各有分页与批量删除；选中项ID拼成逗号串。观看历史列表是云端 <code>/v2/view/list</code>，删除按 collections，而本地 source-episode 只记选源/选集，不能当作完整观看历史。</p>
+<p>VideoPlayer 的 timeupdate 更新本地时长变量；组件销毁时发送 <code>playEnd(last,total)</code>，详情登录分支才调用 <code>/usersV2/viewVideo</code>。不是每秒云端上报，也未在该长详情路径证明自动恢复历史进度。是否服务端保存、跨设备同步、刷新或异常退出丢记录均未动态验证。定位 F:VideoPlayer-9YDDWVER.js:27528、27626；F:Profile-Cor6JmxC.js:256、265。</p>
+<h3 id="C-HISTORY">C-HISTORY<a class="headerlink" href="#C-HISTORY" title="Permanent link">&para;</a></h3>
+<!-- CODE_EVIDENCE:CB-6 -->
+<p><strong>调用链：</strong> VideoPlayer unmount playEnd → Detail.U → Detail.a → tg.addPlayRecord</p>
+<div class="codehilite"><pre><span></span><code><span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="k">async</span><span class="w"> </span><span class="kd">function</span><span class="w"> </span><span class="nx">a</span><span class="p">(</span><span class="nx">s</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="kd">var</span><span class="w"> </span><span class="nx">c</span><span class="p">,</span><span class="w"> </span><span class="nx">f</span><span class="p">,</span><span class="w"> </span><span class="nx">g</span><span class="p">,</span><span class="w"> </span><span class="nx">D</span><span class="p">,</span><span class="w"> </span><span class="nx">A</span><span class="p">;</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">x</span><span class="p">.</span><span class="nx">isLogin</span><span class="p">)</span><span class="w"> </span><span class="k">try</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="k">await</span><span class="w"> </span><span class="nx">Z</span><span class="p">.</span><span class="nx">addPlayRecord</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="nx">m</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">r</span><span class="p">.</span><span class="nx">value</span><span class="p">)</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="mf">0</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">title</span><span class="p">,</span><span class="w"> </span><span class="nx">w</span><span class="p">.</span><span class="nx">value</span><span class="p">,</span><span class="w"> </span><span class="p">((</span><span class="nx">f</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">J</span><span class="p">.</span><span class="nx">value</span><span class="p">)</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="mf">0</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="nx">f</span><span class="p">.</span><span class="nx">name</span><span class="p">)</span><span class="w"> </span><span class="o">??</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span><span class="w"> </span><span class="p">((</span><span class="nx">g</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">Y</span><span class="p">.</span><span class="nx">value</span><span class="p">)</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="mf">0</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="nx">g</span><span class="p">.</span><span class="nx">source_name</span><span class="p">)</span><span class="w"> </span><span class="o">??</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span><span class="w"> </span><span class="nx">s</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">D</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">r</span><span class="p">.</span><span class="nx">value</span><span class="p">)</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="mf">0</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="nx">D</span><span class="p">.</span><span class="nx">cate_id</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">A</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">r</span><span class="p">.</span><span class="nx">value</span><span class="p">)</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="mf">0</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="nx">A</span><span class="p">.</span><span class="nx">thumbnail</span><span class="p">)</span>
+<span class="w">                </span><span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="nx">E</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">E</span><span class="p">.</span><span class="nx">msg</span><span class="p">)</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">            </span><span class="p">}</span>
+
+<span class="w">            </span><span class="kd">function</span><span class="w"> </span><span class="nx">U</span><span class="p">(</span><span class="nx">s</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="nx">a</span><span class="p">(</span><span class="nx">s</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">)</span>
+<span class="w">            </span><span class="p">}</span>
+</code></pre></div>
+
+<p><strong>证明关系：</strong> 证明登录条件下提交影视来源及播放时长到服务端历史接口。
+<strong>证据边界：</strong> 不证明请求实际发送、服务端保存成功或跨设备同步结果。
+<strong>定位：</strong> Detail.a/U；E-6；formatted/dist/assets/Detail-D9nBaeLj.js:724；Bundle B-6；Path P-6。</p>
+<h2 id="设置与更新">设置与更新<a class="headerlink" href="#设置与更新" title="Permanent link">&para;</a></h2>
+<p>设置保存到 electron-store；开机自启通过 app.setLoginItemSettings 落地，关闭窗口读取 CloseStatus 选择隐藏或退出。MinimizePosition 有配置字段，但不能仅凭保存字段宣称 macOS 的任务栏/托盘行为都已生效。更新模式0为打开更新窗后立即下载，模式1为提醒后点击下载；这里是本附件的自定义实现，没有证据将它归为 electron-updater。</p>
+<p>启动自动检查：<code>getNativeParams.system=='Mac' → getVersion('mac') → mac_download_url → VersionInfo → Update → ElectronAPI.download → main downloadFile → https.get → 文件 → install → shell.openPath → app.quit</code>。</p>
+<p>手动检查：CheckUpdate 调用 getVersion() 不传 id，解构 pc_download_url 并保存，因此与启动Mac分支不同。响应由服务器决定，不能断言一定下错安装包；但这段静态平台选择差异已确认。软件包 GET 使用固定 Windows Chrome User-Agent，即使客户端为Mac；未附业务token/signature。downloadFile 未找到状态码成功判断、重定向跟随或下载包hash/签名校验代码，只有内容流写盘与完成回调；未提供完整应用签名及安装包，不能扩展为系统安全结论。定位 S:main/utils.js:11–56；S:main/event-handlers.js:55–98。</p>
+<h3 id="C-UPDATE">C-UPDATE<a class="headerlink" href="#C-UPDATE" title="Permanent link">&para;</a></h3>
+<!-- CODE_EVIDENCE:CB-7 -->
+<p><strong>调用链：</strong> manual check → wo.getVersion(undefined) → pc_download_url → VersionInfo → Update.download</p>
+<div class="codehilite"><pre><span></span><code><span class="w">                    </span><span class="kd">const</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="nx">versioncode</span><span class="o">:</span><span class="w"> </span><span class="nx">e</span><span class="p">,</span>
+<span class="w">                        </span><span class="nx">pc_download_url</span><span class="o">:</span><span class="w"> </span><span class="nx">t</span><span class="p">,</span>
+<span class="w">                        </span><span class="nx">text</span><span class="o">:</span><span class="w"> </span><span class="nx">f</span>
+<span class="w">                    </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">g</span><span class="p">.</span><span class="nx">getVersion</span><span class="p">();</span>
+<span class="w">                    </span><span class="nx">y</span><span class="p">.</span><span class="nx">setStoreValue</span><span class="p">(</span><span class="s2">"VersionInfo"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="nx">version</span><span class="o">:</span><span class="w"> </span><span class="nx">e</span><span class="p">,</span>
+<span class="w">                        </span><span class="nx">url</span><span class="o">:</span><span class="w"> </span><span class="nx">t</span><span class="p">,</span>
+<span class="w">                        </span><span class="nx">desc</span><span class="o">:</span><span class="w"> </span><span class="nx">f</span>
+<span class="w">                    </span><span class="p">}),</span><span class="w"> </span><span class="nx">_</span><span class="p">.</span><span class="nx">value</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">e</span><span class="p">,</span><span class="w"> </span><span class="nx">a</span><span class="p">.</span><span class="nx">value</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">V</span><span class="p">(</span><span class="nx">e</span><span class="p">,</span><span class="w"> </span><span class="nx">o</span><span class="p">.</span><span class="nx">version</span><span class="p">)</span>
+<span class="w">                </span><span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">e</span><span class="p">)</span>
+<span class="w">                </span><span class="p">}</span><span class="w"> </span><span class="k">finally</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nx">c</span><span class="p">.</span><span class="nx">value</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">!</span><span class="mf">1</span>
+</code></pre></div>
+
+<p><strong>证明关系：</strong> 证明手动检查未传 mac 平台 id，并把 PC URL 写入更新信息。
+<strong>证据边界：</strong> 服务端可能调整响应；没有 macOS 运行证据，不宣称必然安装错误包。
+<strong>定位：</strong> CheckUpdate mounted handler；E-7；formatted/dist/assets/CheckUpdate-DSfI3V6P.js:54；Bundle B-7；Path P-7。</p>
+<h2 id="交付与证据索引">交付与证据索引<a class="headerlink" href="#交付与证据索引" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>jianpian_report.md</code> / <code>.html</code>：本报告；<code>network_interfaces.md</code> / <code>.json</code> / <code>.csv</code>：130项业务请求逐项清单，含完整封装方法与静态调用位置；<code>network_auxiliary.json</code>：本地引擎、域名分发、统计、图片及更新等补充网络通道。</li>
+<li><code>asar_inventory.json</code>：786项原始资产路径、字节大小、偏移及SHA-256；<code>source_verification.json</code>：56个原始JS与可读副本的token一致性证明；<code>code_evidence.md</code>：本报告7个关键代码块；<code>quality_status.json</code>：质量检查与冻结结果。</li>
+<li><code>extracted/</code>：原样解包文件；<code>formatted/</code>：仅排版的可读副本；没有改写目标代码。无需通过网页介绍或同名应用补齐缺失实现。</li>
+<li>外部缺口：JPEngine2 原生实现、macOS真实请求、所选域名、服务端完整响应、实际媒体协议/鉴权/加密、缓存落盘和安装结果均未验证。静态报告可独立阅读，但这些部分不具备运行态结论。</li>
+</ul>
+    
+    
+<hr>
+<div class="att-panel" id="attachments">
+  <div class="att-header">
+    <span class="att-title">📦 附件下载</span>
+    <span class="att-count">27 个文件</span>
+    <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001303/jianpian_report_attachments_23b42b6f15e98d464dc9fc81275819fb.zip" download="jianpian_report_attachments.zip"
+       class="att-zip-btn">⬇ 全部打包下载 (.zip)</a>
+  </div>
+  <table class="att-table">
+    <thead><tr>
+      <th>文件</th><th style="width:90px">大小</th><th style="width:110px">说明</th>
+    </tr></thead>
+    <tbody>
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">md</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001332/network_interfaces_873837811902979cc0428190baddb354.md" download="network_interfaces.md" class="att-link">network_interfaces.md</a>
+          </td>
+          <td class="att-size">59.4 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001349/network_interfaces_e41dd0f0239ee29c6f73dc615d151c2f.json" download="network_interfaces.json" class="att-link">network_interfaces.json</a>
+          </td>
+          <td class="att-size">166.8 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">csv</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001379/network_interfaces_e110a733ab7af768ca3ffa473c5d9cc7.csv" download="network_interfaces.csv" class="att-link">network_interfaces.csv</a>
+          </td>
+          <td class="att-size">26.5 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001394/network_auxiliary_9d1f715deb422dcdfc15f356e4d3e2fa.json" download="network_auxiliary.json" class="att-link">network_auxiliary.json</a>
+          </td>
+          <td class="att-size">12.1 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001407/static_paths_99b1509e6bacc068252890265935f9f8.json" download="static_paths.json" class="att-link">static_paths.json</a>
+          </td>
+          <td class="att-size">20.7 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">md</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001420/code_evidence_a11bffb756e54017506cc6909e85c150.md" download="code_evidence.md" class="att-link">code_evidence.md</a>
+          </td>
+          <td class="att-size">7.0 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001443/source_verification_ba4d392ef775edd93205f83878ce65b7.json" download="source_verification.json" class="att-link">source_verification.json</a>
+          </td>
+          <td class="att-size">19.3 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001461/quality_status_ecfb349b3440e97b8f6c227658e56a41.json" download="quality_status.json" class="att-link">quality_status.json</a>
+          </td>
+          <td class="att-size">0.8 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">md</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001475/jianpian_report_43ed27068e1797c50c9fd67b780f8793.md" download="jianpian_report.md" class="att-link">jianpian_report.md</a>
+          </td>
+          <td class="att-size">35.2 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001523/analysis_manifest_1f3c39c34ad56f05530c9c3aa21f31bd.json" download="analysis_manifest.json" class="att-link">analysis_manifest.json</a>
+          </td>
+          <td class="att-size">1.2 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001540/artifact_inventory_f8fb96c7d61c3719c3db138c2f77eea7.json" download="artifact_inventory.json" class="att-link">artifact_inventory.json</a>
+          </td>
+          <td class="att-size">407.6 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001554/asar_inventory_83a3e534344b226cf3789a151af8f32f.json" download="asar_inventory.json" class="att-link">asar_inventory.json</a>
+          </td>
+          <td class="att-size">379.9 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">py</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001573/build_inventory_6c07a5c440621be6d1b1db8a45650af1.py" download="build_inventory.py" class="att-link">build_inventory.py</a>
+          </td>
+          <td class="att-size">7.7 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001585/coverage_matrix_7f72563e3c6c0f90bde34eeccd927700.json" download="coverage_matrix.json" class="att-link">coverage_matrix.json</a>
+          </td>
+          <td class="att-size">1.5 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001598/device_context_8749f61ddae6996db0deee9cdc7b6ca1.json" download="device_context.json" class="att-link">device_context.json</a>
+          </td>
+          <td class="att-size">0.2 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001614/dynamic_execution_plan_732f116c922339ff36d0fd5a65467161.json" download="dynamic_execution_plan.json" class="att-link">dynamic_execution_plan.json</a>
+          </td>
+          <td class="att-size">0.5 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">py</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001625/extract_asar_ef014cfb5677d92deaf1c885db576853.py" download="extract_asar.py" class="att-link">extract_asar.py</a>
+          </td>
+          <td class="att-size">1.6 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">py</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001637/finalize_evidence_96c566a9e8c43f647e0a9e732b0cd88a.py" download="finalize_evidence.py" class="att-link">finalize_evidence.py</a>
+          </td>
+          <td class="att-size">4.8 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">py</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001652/format_sources_efcdc5f7eec62ca83e28454a61f5bcfd.py" download="format_sources.py" class="att-link">format_sources.py</a>
+          </td>
+          <td class="att-size">0.4 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001667/pending_dynamic_validations_b915b859c0845338e27b1c7a11b50b18.json" download="pending_dynamic_validations.json" class="att-link">pending_dynamic_validations.json</a>
+          </td>
+          <td class="att-size">0.3 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">py</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001690/register_evidence_9ddeb81f43ddc32f9500f22ded2cb38c.py" download="register_evidence.py" class="att-link">register_evidence.py</a>
+          </td>
+          <td class="att-size">8.1 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">py</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001719/render_report_262bffc7bc7b7ceaf5c44cd09d0c18cd.py" download="render_report.py" class="att-link">render_report.py</a>
+          </td>
+          <td class="att-size">5.2 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001744/report_outline_3376ddafeaf6c4ec29d903dde2c11c9e.json" download="report_outline.json" class="att-link">report_outline.json</a>
+          </td>
+          <td class="att-size">4.7 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001788/report_outline_input_dc482a58a08898f99ec22f53ae72a6c9.json" download="report_outline_input.json" class="att-link">report_outline_input.json</a>
+          </td>
+          <td class="att-size">4.6 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">json</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001800/report_snapshot_ad0bf4972644843b75c55758d318b166.json" download="report_snapshot.json" class="att-link">report_snapshot.json</a>
+          </td>
+          <td class="att-size">1.8 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">md</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001812/report_template_378085956cca03df695aea4735d8144f.md" download="report_template.md" class="att-link">report_template.md</a>
+          </td>
+          <td class="att-size">28.3 KB</td>
+          <td class="att-note"></td>
+        </tr>
+
+        <tr>
+          <td class="att-name">
+            <span class="att-ext">py</span>
+            <a href="https://tosv.byted.org/obj/rtreverser/rtreports/public-uploads/rtr_html/2026/11/11/179439001826/verify_sources_36fe827fb8ed66198f6a774ca7657f8d.py" download="verify_sources.py" class="att-link">verify_sources.py</a>
+          </td>
+          <td class="att-size">1.6 KB</td>
+          <td class="att-note"></td>
+        </tr></tbody>
+  </table>
+</div>
+  </div>
+</div>
+
+</div><!-- /.layout -->
+
+<!-- Embedded source data (JSON) -->
+<script id="__src_data__" type="application/json">{}</script>
+
+<!-- Source Viewer DOM elements -->
+
+<!-- Source Viewer Popover -->
+<div id="src-popover">
+  <div id="src-pop-hdr">
+    <span id="src-pop-path"></span>
+    <span id="src-pop-lines"></span>
+    <button id="src-pop-x" title="Close">&times;</button>
+  </div>
+  <div id="src-pop-body"></div>
+  <div id="src-pop-ftr">
+    <span id="src-pop-abs"></span>
+    <button id="src-pop-open">Open full source &rarr;</button>
+  </div>
+</div>
+
+<!-- Source Viewer Modal -->
+<div id="src-modal-bg">
+  <div id="src-modal">
+    <div id="src-modal-hdr">
+      <span>&#128196;</span>
+      <span id="src-modal-path"></span>
+      <span id="src-modal-meta"></span>
+      <button id="src-modal-x" title="Close (Esc)">&times;</button>
+    </div>
+    <div id="src-modal-body"></div>
+    <div id="src-modal-ftr">
+      <span id="src-modal-ftr-path"></span>
+      <button class="src-copy-btn" id="src-modal-copy-btn" data-copy="">Copy path</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- Mermaid -->
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true, theme: 'base',
+    themeVariables: {
+      primaryColor: '#dbeafe', primaryTextColor: '#1e3a5f',
+      primaryBorderColor: '#3b82f6', lineColor: '#64748b',
+      secondaryColor: '#f0fdf4', tertiaryColor: '#fefce8'
+    }
+  });
+</script>
+
+<!-- TOC scrollspy -->
+<script>
+(function() {
+  const nav = document.querySelector('.sidebar-nav');
+  if (!nav) return;
+  const links = nav.querySelectorAll('a[href^="#"]');
+  const headings = [];
+  links.forEach(a => {
+    const id = decodeURIComponent(a.getAttribute('href').slice(1));
+    const el = document.getElementById(id);
+    if (el) headings.push({ link: a, el: el });
+  });
+  if (!headings.length) return;
+  function onScroll() {
+    const scrollY = window.scrollY + 90;
+    let active = headings[0];
+    for (const h of headings) { if (h.el.offsetTop <= scrollY) active = h; }
+    links.forEach(a => a.classList.remove('active'));
+    if (active) active.link.classList.add('active');
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+})();
+</script>
+
+<!-- Code block language labels -->
+<script>
+(function() {
+  document.querySelectorAll('.codehilite').forEach(function(block) {
+    const cls = block.className;
+    const m = cls.match(/language-([\w+]+)/);
+    if (m) block.setAttribute('data-lang', m[1]);
+  });
+  document.querySelectorAll('.codehilite code[class]').forEach(function(code) {
+    const m = code.className.match(/language-([\w+]+)/);
+    if (m) code.closest('.codehilite').setAttribute('data-lang', m[1]);
+  });
+})();
+</script>
+
+<!-- Source Viewer -->
+<script>
+
+(function () {
+  var DATA = {};
+  var blob = document.getElementById('__src_data__');
+  if (blob) { try { DATA = JSON.parse(blob.textContent); } catch(e) {} }
+
+  var popover  = document.getElementById('src-popover');
+  var popPath  = document.getElementById('src-pop-path');
+  var popLines = document.getElementById('src-pop-lines');
+  var popAbs   = document.getElementById('src-pop-abs');
+  var popBody  = document.getElementById('src-pop-body');
+  var popOpen  = document.getElementById('src-pop-open');
+  var popX     = document.getElementById('src-pop-x');
+
+  var modalBg   = document.getElementById('src-modal-bg');
+  var modalPath = document.getElementById('src-modal-path');
+  var modalMeta = document.getElementById('src-modal-meta');
+  var modalBody = document.getElementById('src-modal-body');
+  var modalFtrPath = document.getElementById('src-modal-ftr-path');
+  var modalX    = document.getElementById('src-modal-x');
+
+  var hoverTimer = null;
+  var hideTimer  = null;
+  var currentId  = null;
+
+  function showPopover(el, id) {
+    var d = DATA[id];
+    if (!d) return;
+    clearTimeout(hideTimer);
+    currentId = id;
+
+    popPath.textContent  = d.rel;
+    popLines.textContent = 'L' + d.start + '–' + d.end + ' / ' + d.total + ' lines';
+    popAbs.textContent   = d.abs;
+    popBody.innerHTML    = d.preview;
+
+    var rect = el.getBoundingClientRect();
+    var pw   = popover.offsetWidth || 700;
+    var ph   = 380;
+    var left = Math.max(8, Math.min(rect.left, window.innerWidth - pw - 8));
+    var top  = rect.top - ph - 12;
+    if (top < 8) top = rect.bottom + 12;
+    if (top + ph > window.innerHeight - 8) top = window.innerHeight - ph - 8;
+
+    popover.style.left = left + 'px';
+    popover.style.top  = Math.max(8, top) + 'px';
+    popover.classList.add('visible');
+  }
+
+  function hidePopover() {
+    hideTimer = setTimeout(function () {
+      popover.classList.remove('visible');
+    }, 180);
+  }
+
+  function openModal(id) {
+    var d = DATA[id || currentId];
+    if (!d) return;
+    popover.classList.remove('visible');
+
+    modalPath.textContent    = d.rel;
+    modalMeta.textContent    = 'L' + d.start + '–' + d.end + ' · ' + d.total + ' lines total';
+    modalBody.innerHTML      = d.modal;
+    modalFtrPath.textContent = d.abs;
+
+    requestAnimationFrame(function () {
+      var hl = modalBody.querySelector('.hll');
+      if (hl) hl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
+
+    modalBg.classList.add('visible');
+  }
+
+  // Wire code blocks
+  document.querySelectorAll('.codehilite[data-src-id]').forEach(function (el) {
+    var id = el.getAttribute('data-src-id');
+
+    el.addEventListener('mouseenter', function () {
+      clearTimeout(hoverTimer);
+      clearTimeout(hideTimer);
+      hoverTimer = setTimeout(function () { showPopover(el, id); }, 260);
+    });
+    el.addEventListener('mouseleave', function () {
+      clearTimeout(hoverTimer);
+      hidePopover();
+    });
+    el.addEventListener('click', function () { openModal(id); });
+  });
+
+  // Keep popover alive while mouse is over it
+  if (popover) {
+    popover.addEventListener('mouseenter', function () { clearTimeout(hideTimer); });
+    popover.addEventListener('mouseleave', function () { hidePopover(); });
+  }
+
+  // Popover buttons
+  if (popOpen) popOpen.addEventListener('click', function () { openModal(currentId); });
+  if (popX)    popX.addEventListener('click', function () {
+    clearTimeout(hideTimer);
+    popover.classList.remove('visible');
+  });
+
+  // Modal close
+  if (modalX) modalX.addEventListener('click', function () { modalBg.classList.remove('visible'); });
+  if (modalBg) modalBg.addEventListener('click', function (e) {
+    if (e.target === modalBg) modalBg.classList.remove('visible');
+  });
+
+  // Copy path button
+  document.addEventListener('click', function (e) {
+    if (e.target.classList.contains('src-copy-btn')) {
+      var txt = e.target.getAttribute('data-copy');
+      if (txt) {
+        navigator.clipboard.writeText(txt).then(function () {
+          var old = e.target.textContent;
+          e.target.textContent = 'Copied!';
+          setTimeout(function () { e.target.textContent = old; }, 1500);
+        });
+      }
+    }
+  });
+
+  // Keyboard
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      modalBg.classList.remove('visible');
+      popover.classList.remove('visible');
+    }
+  });
+})();
+
+
+// Wire modal copy-path button
+(function () {
+  var copyBtn = document.getElementById('src-modal-copy-btn');
+  var ftrPath = document.getElementById('src-modal-ftr-path');
+  if (copyBtn && ftrPath) {
+    var obs = new MutationObserver(function () {
+      copyBtn.setAttribute('data-copy', ftrPath.textContent);
+    });
+    obs.observe(ftrPath, { childList: true, characterData: true, subtree: true });
+  }
+})();
+
+</script>
+
+</body>
+</html>

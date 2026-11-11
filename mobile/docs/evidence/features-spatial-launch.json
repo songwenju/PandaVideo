@@ -1,0 +1,1 @@
+{"ok":false,"protocolVersion":2,"operation":"snapshot","error":{"code":"TARGET_ROOT_TIMEOUT","message":"No accessibility root matched package=<any>, windowId=-1 within 2000 ms."}}

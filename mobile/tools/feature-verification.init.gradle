@@ -1,0 +1,9 @@
+// Opt-in isolated build outputs for feature verification alongside other local builds.
+// Usage: build-shared.sh --init-script tools/feature-verification.init.gradle <tasks>
+// Pass -PverificationBuildRoot=build/<name> to isolate a separate verification session.
+gradle.beforeProject { project ->
+    project.layout.buildDirectory.set(
+        new File(project.rootDir,
+            (project.findProperty("verificationBuildRoot") ?: "build/feature-verification") + "/" + project.name)
+    )
+}

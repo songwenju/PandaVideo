@@ -1,0 +1,151 @@
+.watch-brand { text-decoration: none; color: inherit; }
+.watch-back { display: inline-flex; align-items: center; min-height: 44px; color: var(--text-muted); text-decoration: none; white-space: nowrap; font-size: 14px; }
+.watch-page .topbar { padding-inline: max(24px, calc((100% - 1380px) / 2)); }
+.watch-main { width: min(1380px, calc(100% - 48px)); padding-top: 30px; }
+.watch-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 22px; }
+.watch-eyebrow { font-size: 12px; color: var(--brand); margin: 0 0 7px; letter-spacing: 2px; }
+.watch-heading h1 { margin: 0; font-size: clamp(22px, 3vw, 30px); overflow-wrap: anywhere; }
+.watch-heading > div { min-width: 0; flex: 1; }
+.watch-source { color: var(--text-muted); font-size: 13px; flex-shrink: 0; text-decoration: none; }
+@media (hover: hover) and (pointer: fine) {
+  .watch-source[href]:hover { color: var(--brand); text-decoration: none; }
+}
+.watch-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; align-items: start; }
+.watch-content { min-width: 0; }
+.video-stage { position: relative; background: #080b0a; aspect-ratio: 16 / 9; border-radius: 12px 12px 0 0; overflow: hidden; }
+.video-stage video { width: 100%; height: 100%; display: block; background: #080b0a; object-fit: contain; }
+.video-stage:fullscreen { border-radius: 0; width: 100%; height: 100%; }
+.video-stage:-webkit-full-screen { border-radius: 0; width: 100%; height: 100%; }
+.video-stage.is-page-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  aspect-ratio: auto;
+  border-radius: 0;
+  z-index: 1000;
+}
+.video-stage #dplayer.dplayer-fulled { position: absolute; inset: 0; margin: 0; }
+.video-stage #dplayer { width: 100%; height: 100%; }
+.video-stage #dplayer.is-rotated {
+  position: absolute;
+  inset: auto;
+  left: 50%;
+  top: 50%;
+  width: 100dvh;
+  height: 100dvw;
+  aspect-ratio: auto;
+  transform: translate(-50%, -50%) rotate(90deg);
+  border-radius: 0;
+  z-index: 1000;
+}
+.dplayer .dplayer-controller .dplayer-icons .video-rotate {
+  width: auto;
+  min-width: 72px;
+  min-height: 44px;
+  padding: 0 6px;
+  color: #fff;
+  font-size: 13px;
+}
+.dplayer.player-screen-full .dplayer-full-in-icon { display: none !important; }
+.video-rotate[hidden] { display: none !important; }
+/* Explicit idle state wins over DPlayer's desktop hover rules in fullscreen. */
+#dplayer.dplayer-hide-controller .dplayer-controller,
+#dplayer.dplayer-hide-controller .dplayer-controller-mask {
+  opacity: 0;
+  pointer-events: none;
+}
+#dplayer.player-screen-full.dplayer-hide-controller .dplayer-bar-wrap {
+  display: none;
+}
+@media (orientation: landscape) {
+  .video-stage #dplayer.is-rotated {
+    width: 100dvw;
+    height: 100dvh;
+    transform: translate(-50%, -50%);
+  }
+}
+.player-message { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: safe center; overflow-y: auto; text-align: center; padding: 20px; color: #dfe9e5; background: #080b0a; font-size: 14px; }
+.player-message > * { flex-shrink: 0; }
+.player-message[hidden] { display: none; }
+.player-message p { margin: 10px 0; max-width: 440px; overflow-wrap: anywhere; }
+.player-message button { min-height: 44px; border: 0; border-radius: 8px; background: var(--brand); color: #fff; padding: 10px 18px; }
+.watch-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; background: var(--surface); border: 1px solid var(--border); border-top: 0; border-radius: 0 0 12px 12px; }
+#currentEpisode { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; color: var(--text-muted); }
+.watch-tools { display: flex; flex-shrink: 0; align-items: center; gap: 10px; white-space: nowrap; font-size: 13px; }
+.watch-tools label { margin: 0; }
+.watch-tools select { min-height: 44px; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.watch-tools button, .watch-navigation button { min-height: 44px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 8px 12px; color: var(--text); }
+.watch-navigation { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-top: 18px; }
+.watch-navigation > div { display: flex; gap: 8px; }
+.watch-navigation button:disabled { opacity: .4; cursor: default; }
+.auto-next { display: flex; align-items: center; gap: 5px; min-height: 44px; margin: 0; font-size: 13px; color: var(--text-muted); }
+.auto-next input { accent-color: var(--brand); }
+.watch-hint { font-size: 13px; color: var(--text-muted); line-height: 1.8; margin: 18px 0 10px; }
+.watch-hint.error { color: var(--danger); }
+.watch-original { font-size: 13px; color: var(--brand); text-decoration: none; }
+.episode-panel { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+.episode-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+.episode-heading h2 { font-size: 18px; margin: 0; }
+.episode-heading span { font-size: 12px; color: var(--text-muted); }
+.line-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.line-tabs button { min-height: 44px; background: transparent; color: var(--text-muted); border: 0; border-bottom: 2px solid transparent; padding: 8px 5px; font-size: 13px; }
+.line-tabs button[aria-pressed="true"] { color: var(--brand); border-color: var(--brand); }
+.episode-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; max-height: 480px; overflow-y: auto; }
+.episode-list button { min-height: 44px; padding: 8px 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-muted); color: var(--text); overflow-wrap: anywhere; font-size: 13px; }
+.episode-list button[aria-pressed="true"] { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+@media (hover: hover) and (pointer: fine) {
+  .episode-list button:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+}
+@media (hover: none), (pointer: coarse) {
+  #dplayer [data-balloon]::before,
+  #dplayer [data-balloon]::after,
+  #dplayer .dplayer-full-in-icon,
+  #dplayer .dplayer-bar-time,
+  #dplayer .dplayer-bar-preview,
+  #dplayer .dplayer-highlight-text {
+    display: none !important;
+    pointer-events: none;
+  }
+  /* Touch taps toggle DPlayer's explicit controller state, never sticky hover. */
+  #dplayer:not(.dplayer-hide-controller) .dplayer-controller,
+  #dplayer:not(.dplayer-hide-controller) .dplayer-controller-mask {
+    opacity: 1;
+  }
+  #dplayer.dplayer-hide-controller .dplayer-controller,
+  #dplayer.dplayer-hide-controller .dplayer-controller-mask {
+    opacity: 0;
+    pointer-events: none;
+  }
+  #dplayer .dplayer-setting-item:hover,
+  #dplayer .dplayer-setting-speed-item:hover,
+  #dplayer .dplayer-menu-item:hover {
+    background-color: transparent;
+  }
+  #dplayer .dplayer-quality:hover .dplayer-quality-list,
+  #dplayer .dplayer-quality:hover .dplayer-quality-mask {
+    display: none;
+  }
+}
+.episode-list p { grid-column: 1 / -1; color: var(--text-muted); font-size: 13px; }
+.watch-page button:focus-visible, .watch-page a:focus-visible, .watch-page select:focus-visible, .watch-page input:focus-visible, .watch-page video:focus-visible { outline: 3px solid var(--brand); outline-offset: 3px; }
+@media (max-width: 1000px) {
+  .watch-layout { grid-template-columns: minmax(0, 1fr) 240px; gap: 16px; }
+  .episode-panel { padding: 16px; }
+  .episode-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .watch-page .topbar { padding-inline: 12px; flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .watch-main { width: calc(100% - 24px); padding-top: 22px; }
+  .watch-layout { grid-template-columns: 1fr; gap: 22px; }
+  .watch-heading { margin-bottom: 18px; align-items: flex-end; }
+  .watch-toolbar { padding: 10px; flex-wrap: wrap; }
+  .watch-tools { gap: 7px; flex-wrap: wrap; }
+  .watch-tools label { display: none; }
+  .watch-navigation { flex-wrap: wrap; }
+  .episode-list { grid-template-columns: repeat(4, minmax(0, 1fr)); max-height: 280px; }
+  .player-message { gap: 8px; padding: 8px; }
+  .player-message img { width: 36px; height: 36px; }
+  .player-message p { margin: 0; font-size: 12px; }
+}

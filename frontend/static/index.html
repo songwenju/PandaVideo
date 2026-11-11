@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>熊猫视频 · 发现</title><meta name="theme-color" content="#E8F8F8">
+  <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v=31"><link rel="stylesheet" href="/suixinkan.css?v=1">
+  <script src="/poster.js?v=6" defer></script><script src="/site.js?v=1" defer></script>
+  <script src="/app.js?v=35" defer></script><script src="/list-pagination.js?v=1" defer></script><script src="/douban.js?v=15" defer></script>
+</head>
+<body class="suixinkan-page home-page" data-page="discover">
+  <a class="skip-link" href="#mainContent">跳到主要内容</a>
+  <header class="topbar" id="siteHeader"></header>
+  <main id="mainContent">
+    <section class="home-search" aria-label="搜索影片">
+      <form id="searchForm"><label class="sr-only" for="query">片名或关键词</label>
+        <div class="search-row"><input id="query" name="query" type="search" autocomplete="off" placeholder="搜索电影、电视剧" required>
+          <button class="primary-button" id="searchButton" type="submit">搜索</button></div>
+      </form>
+    </section>
+    <section class="catalog-section" id="douban" data-douban-list="full" aria-label="影视精选">
+      <div class="douban-tabs" role="group" aria-label="精选榜单">
+        <button type="button" data-douban-kind="top250" aria-pressed="true">精选</button>
+        <button type="button" data-douban-kind="tv" aria-pressed="false">高分剧集</button>
+        <button type="button" data-douban-kind="comedy" aria-pressed="false">喜剧</button>
+        <button type="button" data-douban-kind="anime" aria-pressed="false">动画</button>
+        <button type="button" data-douban-kind="nature" aria-pressed="false">自然</button>
+        <button type="button" data-douban-kind="finance" aria-pressed="false">金融</button>
+        <button type="button" data-douban-kind="biography" aria-pressed="false">传记</button>
+        <button type="button" data-douban-kind="war" aria-pressed="false">战争</button>
+        <button type="button" data-douban-kind="scifi" data-douban-genre="scifi" aria-pressed="false">科幻</button>
+        <button type="button" data-douban-kind="hollywood" aria-pressed="false">好莱坞</button>
+      </div>
+      <div class="catalog-header"><h1 id="doubanTitle">影视精选</h1><p class="douban-list-status" role="status">正在加载影片…</p></div>
+      <ol class="douban-list"></ol>
+      <div class="douban-pagination">
+        <button type="button" data-douban-previous disabled>上一页</button>
+        <span class="douban-page-number" aria-live="polite">第 1 页</span>
+        <button type="button" data-douban-next disabled>下一页</button>
+        <label class="douban-page-size">每页<select data-douban-page-size aria-label="每页展示条数">
+          <option value="10">10 部</option><option value="20">20 部</option><option value="25" selected>25 部</option><option value="50">50 部</option><option value="100">100 部</option>
+        </select></label><button type="button" data-douban-retry>刷新</button>
+      </div>
+    </section>
+  </main>
+  <div id="nasDialogRoot"></div>
+</body>
+</html>

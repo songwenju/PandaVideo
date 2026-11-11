@@ -1,0 +1,39 @@
+.env
+.env.*
+!.env.example
+!.env.nas.example
+__pycache__/
+.cache/
+.service/
+.local/
+.venv/
+venv/
+.pytest_cache/
+*.pyc
+.DS_Store
+.aria2.session
+*.log
+.transfer-state.json
+
+# Build outputs and project-local tool caches
+build/
+.gradle/
+.kotlin/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+node_modules/
+
+# Temporary editor files and generated preview/share packages
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+/.screenshots/
+/.trae-html-share-packages/
+
+# Locally generated release installers (existing tracked releases are retained)
+/releases/*.apk
+/releases/*.ipa
+/releases/*.dmg

@@ -1,0 +1,23 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="88dp" android:height="88dp"
+    android:viewportWidth="64" android:viewportHeight="64">
+    <path android:pathData="M17,2H47Q62,2 62,17V47Q62,62 47,62H17Q2,62 2,47V17Q2,2 17,2Z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient android:startX="10" android:startY="3" android:endX="54" android:endY="62" android:type="linear">
+                <item android:offset="0" android:color="#FF7B3E" />
+                <item android:offset="1" android:color="#4ECDC4" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <group android:scaleX="0.8" android:scaleY="0.8" android:translateX="6.4" android:translateY="6.4">
+        <path android:pathData="M23 18A8 8 0 1 1 7 18A8 8 0 1 1 23 18ZM57 18A8 8 0 1 1 41 18A8 8 0 1 1 57 18Z" android:fillColor="#242A33" />
+        <path android:pathData="M19 18A4 4 0 1 1 11 18A4 4 0 1 1 19 18ZM53 18A4 4 0 1 1 45 18A4 4 0 1 1 53 18Z" android:fillColor="#56606A" />
+        <path android:pathData="M32 15C18 15 10 25 10 37C10 50 20 55 32 55C44 55 54 50 54 37C54 25 46 15 32 15Z" android:fillColor="#FFFCF5" />
+        <path android:pathData="M17 29C20 25 25 26 27 30C29 34 26 41 22 42C17 43 13 35 17 29ZM47 29C44 25 39 26 37 30C35 34 38 41 42 42C47 43 51 35 47 29Z" android:fillColor="#242A33" />
+        <path android:pathData="M25 32A2.5 3 0 1 1 20 32A2.5 3 0 1 1 25 32ZM44 32A2.5 3 0 1 1 39 32A2.5 3 0 1 1 44 32Z" android:fillColor="#FFFFFF" />
+        <path android:pathData="M25 33A1.6 2 0 1 1 21.8 33A1.6 2 0 1 1 25 33ZM42.2 33A1.6 2 0 1 1 39 33A1.6 2 0 1 1 42.2 33Z" android:fillColor="#242A33" />
+        <path android:pathData="M20 43A4 2.4 0 1 1 12 43A4 2.4 0 1 1 20 43ZM52 43A4 2.4 0 1 1 44 43A4 2.4 0 1 1 52 43Z" android:fillColor="#FFB5A5" />
+        <path android:pathData="M28.5 39.5Q32 38 35.5 39.5Q36.5 41 32 44Q27.5 41 28.5 39.5Z" android:fillColor="#242A33" />
+        <path android:pathData="M26.5 46Q29 49 32 45Q35 49 37.5 46" android:fillColor="#00000000" android:strokeColor="#242A33" android:strokeWidth="1.7" android:strokeLineCap="round" />
+    </group>
+</vector>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>视频播放 · 熊猫视频</title>
+  <meta name="theme-color" content="#E8F8F8">
+  <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml" sizes="any">
+  <link rel="stylesheet" href="/styles.css?v=31">
+  <link rel="stylesheet" href="/dplayer.min.css?v=1">
+  <link rel="stylesheet" href="/player.css?v=10">
+  <link rel="stylesheet" href="/suixinkan.css?v=1">
+  <script src="/site.js?v=1" defer></script>
+  <script src="/app.js?v=35" defer></script>
+  <script src="/hls.min.js?v=1" defer></script>
+  <script src="/dplayer.min.js?v=1" defer></script>
+  <script src="/player.js?v=12" defer></script>
+</head>
+<body class="watch-page suixinkan-page" data-page="player">
+  <a class="skip-link" href="#mainContent">跳到主要内容</a>
+  <header class="topbar" id="siteHeader"></header>
+  <main class="watch-main">
+    <div class="watch-heading" id="mainContent"><a class="back-link" href="/" aria-label="返回首页">←</a><div><h1 id="videoTitle">视频播放</h1></div><a class="watch-download" id="downloadSearch" href="/search.html">查找下载资源</a><a id="sourceName" class="watch-source" hidden></a></div>
+    <div class="watch-layout">
+      <section class="watch-content" aria-label="视频播放器">
+        <div class="video-stage" id="videoStage">
+          <div id="dplayer"></div>
+          <div class="player-message" id="playerMessage" role="status">
+            <img src="/favicon.svg?v=1" width="56" height="56" alt="">
+            <p id="playerStatus">正在读取播放信息…</p>
+            <button type="button" id="retryPlay" hidden>重新加载</button>
+            <a class="watch-search-link" id="searchPlayback" href="/search.html" hidden>搜索其他资源</a>
+          </div>
+        </div>
+        <div class="watch-toolbar">
+          <span id="currentEpisode">准备播放</span>
+          <div class="watch-tools">
+            <label for="playbackRate">倍速</label>
+            <select id="playbackRate" aria-label="播放速度">
+              <option value="0.5">0.5×</option><option value="1" selected>1×</option>
+              <option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option>
+            </select>
+            <button type="button" id="fullscreen">全屏</button>
+          </div>
+        </div>
+        <div class="watch-navigation">
+          <div><button type="button" id="previousEpisode" disabled>← 上一集</button><button type="button" id="nextEpisode" disabled>下一集 →</button></div>
+          <label class="auto-next"><input type="checkbox" id="autoNext" checked> 自动播放下一集</label>
+        </div>
+        <p class="watch-hint" id="watchHint" role="status">支持暂停、拖动进度、音量调节和全屏观看。</p>
+      </section>
+      <aside class="episode-panel" aria-labelledby="episodeTitle">
+        <div class="episode-heading"><h2 id="episodeTitle">选集</h2><span id="episodeCount"></span></div>
+        <div class="line-tabs" id="lineTabs" role="group" aria-label="播放线路"></div>
+        <div class="episode-list" id="episodeList" aria-label="剧集列表"></div>
+      </aside>
+    </div>
+  </main>
+  <div id="nasDialogRoot"></div>
+</body>
+</html>

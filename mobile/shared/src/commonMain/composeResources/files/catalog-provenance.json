@@ -1,0 +1,11 @@
+{
+  "captured_at_ms": 1794290913819,
+  "sources": [
+    "https://movie.douban.com/top250?start={start}&filter=",
+    "https://movie.douban.com/j/new_search_subjects?sort=S&range=0%2C10&tags=电视剧&start={start}"
+  ],
+  "top250": 250,
+  "tv": 300,
+  "posters": 550,
+  "missing_posters": 0
+}
