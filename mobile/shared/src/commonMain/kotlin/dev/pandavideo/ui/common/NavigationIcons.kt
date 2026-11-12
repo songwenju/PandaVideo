@@ -36,6 +36,14 @@ internal object NavigationIcons {
         moveTo(10f, 10f); lineTo(10f, 17f)
         moveTo(14f, 10f); lineTo(14f, 17f)
     }
+    val Download = outline("Download") {
+        moveTo(12f, 3f); lineTo(12f, 15f)
+        moveTo(7f, 10f); lineTo(12f, 15f); lineTo(17f, 10f)
+        moveTo(4f, 16f); lineTo(4f, 21f); lineTo(20f, 21f); lineTo(20f, 16f)
+    }
+    val Check = outline("Check") {
+        moveTo(5f, 12f); lineTo(10f, 17f); lineTo(19f, 7f)
+    }
     val Poster = outline("Poster") {
         moveTo(4f, 3f); lineTo(20f, 3f); lineTo(20f, 21f); lineTo(4f, 21f); close()
         circle(9f, 8f, 1.5f)
@@ -149,6 +157,25 @@ internal object NavigationIcons {
         curveTo(17f, 10.6f, 17f, 13.4f, 15.5f, 14.8f)
         moveTo(17.8f, 7f)
         curveTo(20.2f, 9.6f, 20.2f, 14.4f, 17.8f, 17f)
+    }
+    /** Headphones identify audio-only playback independently of volume controls. */
+    val Headphones = outline("Headphones") {
+        // A rounded headband and inward-tilted capsule earcups stay legible at 22 dp.
+        moveTo(3.9f, 14.3f)
+        curveTo(3.6f, 13.5f, 3.5f, 12.7f, 3.5f, 11.9f)
+        curveTo(3.5f, 7.1f, 7.2f, 3.5f, 12f, 3.5f)
+        curveTo(16.8f, 3.5f, 20.5f, 7.1f, 20.5f, 11.9f)
+        curveTo(20.5f, 12.7f, 20.4f, 13.5f, 20.1f, 14.3f)
+        moveTo(5.1f, 13.1f)
+        curveTo(6.2f, 12.8f, 7f, 13.4f, 7.2f, 14.4f); lineTo(8.3f, 18.4f)
+        curveTo(8.6f, 19.5f, 8.1f, 20.3f, 7.1f, 20.6f)
+        curveTo(6.1f, 20.9f, 5.2f, 20.3f, 4.9f, 19.3f); lineTo(3.8f, 15.3f)
+        curveTo(3.5f, 14.3f, 4.1f, 13.4f, 5.1f, 13.1f); close()
+        moveTo(18.9f, 13.1f)
+        curveTo(17.8f, 12.8f, 17f, 13.4f, 16.8f, 14.4f); lineTo(15.7f, 18.4f)
+        curveTo(15.4f, 19.5f, 15.9f, 20.3f, 16.9f, 20.6f)
+        curveTo(17.9f, 20.9f, 18.8f, 20.3f, 19.1f, 19.3f); lineTo(20.2f, 15.3f)
+        curveTo(20.5f, 14.3f, 19.9f, 13.4f, 18.9f, 13.1f); close()
     }
     val Brightness = outline("Brightness") {
         moveTo(12f, 2.5f); lineTo(12f, 5f)

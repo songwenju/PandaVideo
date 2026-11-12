@@ -9,6 +9,7 @@ import coil3.request.SuccessResult
 import coil3.request.ErrorResult
 import dev.pandavideo.ui.common.posterImageLoader
 import dev.pandavideo.ui.common.prefetchPosters
+import dev.pandavideo.ui.common.defaultPosterRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpStatusCode
@@ -19,6 +20,18 @@ import java.util.Base64
 import kotlin.test.*
 
 class PosterCacheTest {
+    @Test fun missingBundledArtworkBecomesAnImageErrorInsteadOfEscapingLayout(): Unit = runBlocking {
+        val loader = posterImageLoader(PlatformContext.INSTANCE, null)
+        try {
+            val request = defaultPosterRequest(
+                PlatformContext.INSTANCE, "drawable/missing-startup-artwork.png",
+            )
+            assertIs<ErrorResult>(loader.execute(request))
+            // A missing optional asset must not poison the loader used by all poster cards.
+            assertIs<SuccessResult>(loader.execute(defaultPosterRequest(PlatformContext.INSTANCE)))
+        } finally { loader.shutdown() }
+    }
+
     @Test fun prefetchCachesEveryReturnedCardBeforeItIsDisplayed() = runBlocking {
         val directory = Files.createTempDirectory("pandavideo-prefetch-").toFile()
         val bytes = Base64.getDecoder().decode(

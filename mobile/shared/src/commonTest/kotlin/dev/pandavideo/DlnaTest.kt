@@ -28,6 +28,17 @@ class DlnaTest {
         assertNull(ssdpLocation("HTTP/1.1 200 OK\r\nLOCATION: http://user:password@192.168.1.1/root.xml"))
         assertTrue(ssdpRequest().decodeToString().endsWith("\r\n\r\n"))
     }
+    @Test fun discoveryQueriesRendererTransportAndGeneralAnnouncements() {
+        val requests = ssdpRequests().map { it.decodeToString() }
+        assertTrue(requests.any { "\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n" in it })
+        assertTrue(requests.any { "\r\nST: urn:schemas-upnp-org:service:AVTransport:1\r\n" in it })
+        assertTrue(requests.any { "\r\nST: ssdp:all\r\n" in it })
+        requests.forEach {
+            // UPnP's HOST header identifies SSDP even when the UDP destination is a TV IP.
+            assertContains(it, "\r\nHOST: 239.255.255.250:1900\r\n")
+            assertTrue(it.endsWith("\r\n\r\n"))
+        }
+    }
     @Test fun descriptorSelectsAvTransportAndDecodesNames() {
         val device = assertNotNull(parseDlnaDevice(descriptor(), location))
         assertEquals("客厅 & 电视 📺", device.name)

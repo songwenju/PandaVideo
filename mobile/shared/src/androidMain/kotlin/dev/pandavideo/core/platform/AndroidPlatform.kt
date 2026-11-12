@@ -178,10 +178,11 @@ class AndroidPlayer(context: Context) : PlayerController {
     // surface's parameters have not changed. Otherwise the decoder stays on its dummy surface.
     private var native: Player? by mutableStateOf(null)
     private var pendingSource: MediaSource? = null
+    private var audioOnly = false
 
     private val mutable = MutableStateFlow(PlayerState())
     override val state = mutable.asStateFlow()
-    override val capabilities = PlayerCapabilities(pictureInPicture = true, framePreview = true)
+    override val capabilities = PlayerCapabilities(pictureInPicture = true, framePreview = true, audioOnly = true)
     private val seekPreview = AndroidSeekPreview(appContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var released = false
@@ -212,6 +213,7 @@ class AndroidPlayer(context: Context) : PlayerController {
             future.get()?.let { controller ->
                 native = controller
                 controller.addListener(listener)
+                applyAudioOnly(controller)
                 pendingSource?.let { applyLoad(it); pendingSource = null }
             }
         }, ContextCompat.getMainExecutor(appContext))
@@ -267,6 +269,17 @@ class AndroidPlayer(context: Context) : PlayerController {
         if (!released && player.isCurrentMediaItemSeekable) player.seekTo(position.coerceIn(0, state.value.duration.coerceAtLeast(0)))
     }
     override fun setPlaybackRate(rate: Float) { if (!released && rate in 0.5f..2f) native?.setPlaybackSpeed(rate) }
+    /** Changes track selection on the service player, including before controller connection. */
+    override fun setAudioOnly(enabled: Boolean) {
+        if (released) return
+        audioOnly = enabled
+        if (enabled) seekPreview.close()
+        native?.let(::applyAudioOnly)
+    }
+    private fun applyAudioOnly(player: Player) {
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, audioOnly).build()
+    }
     /** Extracts a bounded thumbnail with Media3 without issuing commands to the media session. */
     override suspend fun previewFrame(position: Long): PreviewFrame? =
         seekPreview.frame(state.value.mediaId, position)

@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import dev.pandavideo.core.platform.PlatformServices
 import dev.pandavideo.core.player.*
 import dev.pandavideo.ui.common.NavigationIcons
+import dev.pandavideo.ui.common.CompactActionButtonPadding
 import dev.pandavideo.ui.common.playbackTime
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -60,6 +61,7 @@ internal class DlnaCasting(
         private set
 
     fun search(host: String? = null) {
+        if (closed || busy) return
         if (host != null && !dlnaIpv4(host)) {
             error = "请输入电视的 IPv4 地址，例如 192.168.1.100"
             return
@@ -67,25 +69,44 @@ internal class DlnaCasting(
         discovery?.cancel()
         searching = true
         error = null
-        devices = emptyList()
         discovery = scope.launch {
             try {
                 val locations = platform.discoverDlnaLocations(host)
                 val semaphore = kotlinx.coroutines.sync.Semaphore(4)
-                coroutineScope {
-                    locations.take(64).map { location ->
-                        async {
-                            semaphore.acquire()
-                            try {
-                                try { client.device(location) }
-                                catch (e: CancellationException) { throw e }
-                                catch (_: Exception) { null }
-                            } finally { semaphore.release() }
-                        }
-                    }.awaitAll().filterNotNull().distinctBy { it.id }.let { devices = it }
+                val found = linkedMapOf<String, DlnaDevice>()
+                var failures = 0
+                // Publish each usable renderer immediately. A dead descriptor used to hold
+                // back every result until awaitAll completed (up to 16 batches of timeouts).
+                // Keep previous results usable during a rescan, then replace them with this
+                // scan's verified devices. Cancellation never clears a newer scan's results.
+                withTimeoutOrNull(8_000) {
+                    coroutineScope {
+                        locations.distinct().take(64).map { location ->
+                            launch {
+                                semaphore.acquire()
+                                try {
+                                    try {
+                                        client.device(location)?.let { renderer ->
+                                            ensureActive()
+                                            found[renderer.id] = renderer
+                                            devices = (devices + renderer).distinctBy { it.id }
+                                        }
+                                    } catch (e: CancellationException) { throw e }
+                                    catch (_: Exception) { failures++ }
+                                } finally { semaphore.release() }
+                            }
+                        }.joinAll()
+                    }
                 }
+                ensureActive()
+                devices = found.values.toList()
+                if (devices.isEmpty() && failures > 0)
+                    error = "已收到设备响应，但无法读取投屏信息，请检查本地网络权限和电视投屏设置"
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { error = "搜索失败，请允许本地网络访问，或填写电视 IP 搜索" }
+            catch (e: Exception) {
+                error = (e as? DlnaException)?.message
+                    ?: "搜索失败，请检查局域网连接，或填写电视 IP 搜索"
+            }
             finally { if (currentCoroutineContext().isActive) searching = false }
         }
     }
@@ -272,8 +293,9 @@ internal fun DlnaDevicePicker(casting: DlnaCasting, source: MediaSource?, platfo
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("3. iOS 用户请开启", fontSize = 13.sp)
                         TextButton(platform::openAppSettings, enabled = !casting.busy,
-                            contentPadding = PaddingValues(horizontal = 6.dp)) {
+                            contentPadding = CompactActionButtonPadding) {
                             Text("本地网络权限", fontSize = 13.sp, color = colors.primary)
+                            Spacer(Modifier.width(6.dp))
                             Icon(NavigationIcons.Chevron, null, Modifier.size(14.dp), tint = colors.primary)
                         }
                     }
@@ -284,8 +306,21 @@ internal fun DlnaDevicePicker(casting: DlnaCasting, source: MediaSource?, platfo
                     CircularProgressIndicator(Modifier.size(18.dp), color = colors.primary, strokeWidth = 2.dp)
                     Text("正在搜索投屏设备…", Modifier.padding(start = 8.dp), fontSize = 13.sp)
                 }
-                Text("普通投屏", color = colors.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                Text("推荐使用电视官方投屏，画质体验更佳", fontSize = 11.sp)
+                if (platform.nativeCastingSupported && !casting.busy) {
+                    Surface(shape = RoundedCornerShape(12.dp), color = colors.surfaceVariant) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("AirPlay 投屏", color = colors.onSurface, fontSize = 14.sp)
+                                Text("点击右侧图标搜索 AirPlay 设备", fontSize = 11.sp)
+                            }
+                            platform.CastingButton(Modifier.size(44.dp), colors.primary)
+                        }
+                    }
+                }
+                Text("DLNA 投屏", color = colors.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Text("请在电视或盒子上开启 DLNA 投屏；AirPlay 和 Chromecast 设备不显示在此列表中。",
+                    fontSize = 11.sp)
                 Surface(shape = RoundedCornerShape(12.dp), color = colors.surfaceVariant) {
                     Column(Modifier.fillMaxWidth()) {
                         LazyColumn(Modifier.heightIn(max = 220.dp)) {
@@ -305,16 +340,8 @@ internal fun DlnaDevicePicker(casting: DlnaCasting, source: MediaSource?, platfo
                             }
                         }
                         if (!casting.searching && casting.devices.isEmpty()) {
-                            Text("暂未发现投屏设备，请检查后重新搜索。",
+                            Text("暂未发现支持 DLNA 的设备，可开启电视投屏后重试，或按电视 IP 搜索。",
                                 Modifier.padding(12.dp), fontSize = 13.sp)
-                        }
-                        if (platform.nativeCastingSupported && !casting.busy) {
-                            if (casting.devices.isNotEmpty()) HorizontalDivider(color = colors.outlineVariant)
-                            Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically) {
-                                platform.CastingButton(Modifier.size(44.dp), colors.primary)
-                                Text("AirPlay", color = colors.onSurface, fontSize = 14.sp)
-                            }
                         }
                     }
                 }

@@ -197,7 +197,8 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
     val native = AVPlayer()
     private val mutable = MutableStateFlow(PlayerState())
     override val state = mutable.asStateFlow()
-    override val capabilities = PlayerCapabilities(pictureInPicture = true, framePreview = true)
+    override val capabilities = PlayerCapabilities(pictureInPicture = true, framePreview = true, audioOnly = true)
+    private var audioOnly = false
     private var previewGenerator: AVAssetImageGenerator? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var released = false
@@ -226,6 +227,9 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
             while (isActive) {
                 delay(250)
                 val item = native.currentItem ?: continue
+                // HLS tracks can arrive after load. Apply the current mode when they become
+                // available as well, without replacing the item or disturbing its timeline.
+                applyAudioOnly(item)
                 val duration = CMTimeGetSeconds(item.duration).takeIf { it.isFinite() && it > 0 } ?: 0.0
                 val position = CMTimeGetSeconds(native.currentTime()).takeIf { it.isFinite() && it > 0 } ?: 0.0
                 val previous = mutable.value
@@ -371,7 +375,21 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
             }
         }
         native.replaceCurrentItemWithPlayerItem(item)
+        applyAudioOnly(item)
         if (source.autoplay) native.play()
+    }
+    /** Disables video tracks on the existing AVPlayerItem while retaining audio and time. */
+    override fun setAudioOnly(enabled: Boolean) {
+        if (released) return
+        audioOnly = enabled
+        if (enabled) cancelPreview()
+        native.currentItem?.let(::applyAudioOnly)
+    }
+    private fun applyAudioOnly(item: AVPlayerItem) {
+        item.tracks.filterIsInstance<AVPlayerItemTrack>().forEach { track ->
+            if (track.assetTrack?.mediaType == AVMediaTypeVideo && track.enabled == audioOnly)
+                track.enabled = !audioOnly
+        }
     }
     override fun play() {
         if (!released) { mutable.value = mutable.value.copy(wantsPlay = true); native.playImmediatelyAtRate(mutable.value.rate) }

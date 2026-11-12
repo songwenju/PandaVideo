@@ -168,7 +168,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED\" = \"YES\" ]; then exit 0; fi\n/bin/sh \"$SRCROOT/build-shared.sh\"\n";
+			shellScript = "/bin/sh \"$SRCROOT/build-shared.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

@@ -47,13 +47,23 @@ class ContentRepository(
     private val json = Json { ignoreUnknownKeys = true }
     private val pages = linkedMapOf<String, CatalogPage>()
     private val jianpian = JianpianClient(fetch = { address, budget, headers -> fetch(address, budget, headers) })
-    private val availability = CatalogAvailability(database, { "online:2:${json.encodeToString(rules())}" },
+    private val availability = CatalogAvailability(database, { "online:3:${json.encodeToString(rules())}" },
         check = { probeMatch(it).status })
 
     internal suspend fun visibleCatalog(page: CatalogPage): CatalogPage = availability.visible(page)
 
     internal suspend fun inspectCatalog(items: List<CatalogItem>, onMissing: (CatalogItem) -> Unit) =
         availability.inspect(items, onMissing)
+
+    /** Measures persisted, regenerable content without touching user or video storage. */
+    internal suspend fun cacheUsage(): ContentCacheUsage = database?.cacheUsage() ?: ContentCacheUsage()
+
+    /** Clears fetched content and transient lookup results while retaining built-in catalogs. */
+    internal suspend fun clearCache() {
+        database?.clearCache()
+        pages.clear()
+        availability.clearMemory()
+    }
 
     /** Fetches an explicitly configured HTTPS JSON document with the same redirect bounds as source pages. */
     internal suspend fun configuration(address: String): String {
@@ -209,9 +219,13 @@ class ContentRepository(
         }
     }
 
-    suspend fun list(kind: String, start: Int = 0): CatalogPage {
-        if (kind != "top250") {
-            val filters = HomeCatalogFilters[kind] ?: throw ApiError("无效的榜单")
+    suspend fun list(kind: String, start: Int = 0, country: String = "all"): CatalogPage {
+        if (country !in BrowseCountries) throw ApiError("无效的地区")
+        if (kind != "top250" || country != "all") {
+            // Regional selections use the same score-filtered catalog endpoint as categories.
+            // The HTML Top 250 and bundled TV snapshots represent all regions only.
+            val filters = (if (kind == "top250") BrowseFilters(sort = "rating")
+                else HomeCatalogFilters[kind] ?: throw ApiError("无效的榜单")).copy(country = country)
             if (kind == "tv" && start !in 0..280) throw ApiError("无效的榜单页码")
             val page = browse(filters, start, HomeMinimumRating).highRated()
             return if (kind == "tv") page.copy(hasMore = page.hasMore && page.nextStart() < 300) else page
@@ -315,16 +329,19 @@ class ContentRepository(
         }
     }
 
+    private fun searchKeyword(query: String): String =
+        query.trim().replace("《", "").replace("》", "")
+            .replace(Regex("(?<=[\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])"), "")
+
     suspend fun search(query: String, type: String): SearchResult {
         if (type !in listOf("all", "movie", "tv")) throw ApiError("无效的影视类型")
-        val keyword = query.trim().replace("《", "").replace("》", "")
-            .replace(Regex("(?<=[\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])"), "")
+        val keyword = searchKeyword(query)
         if (keyword.isBlank() || keyword.length > 160) throw ApiError("请输入 1–160 字的影视名称")
         val address = PomoSource.address("auto_search", "wd" to keyword)
         val activeRules = rules()
         return cachedResponse(
             // Parser rules are part of the key, so a rule update cannot reuse an old parse.
-            "search:online2:$type:$address:${json.encodeToString(activeRules)}",
+            "search:online3:$type:$address:${json.encodeToString(activeRules)}",
             ttl = 15L * 60 * 1000, maxStale = 7L * 24 * 60 * 60 * 1000,
             onStale = { result: SearchResult -> result.copy(stale = true) },
         ) {
@@ -332,6 +349,21 @@ class ContentRepository(
                 { PomoSource.search(fetch(address, 8_000), type) },
                 { jianpian.search(keyword, type) },
             ))
+        }.let { result ->
+            val target = ContentParsers.normalizedTitle(keyword)
+            // Providers can return older titles before the requested recent release.
+            // Keep every result, but rank exact/prefix matches first and newer years next.
+            result.copy(results = result.results.sortedWith(compareBy<SearchItem> {
+                val title = ContentParsers.normalizedTitle(it.title)
+                when {
+                    title == target -> 0
+                    title.startsWith(target) -> 1
+                    target in title -> 2
+                    else -> 3
+                }
+            }.thenByDescending {
+                Regex("(?:18|19|20)\\d{2}").find(it.year)?.value?.toIntOrNull() ?: 0
+            }))
         }
     }
 
@@ -349,17 +381,37 @@ class ContentRepository(
     suspend fun resolve(item: CatalogItem): MatchResult = probeMatch(item).match
 
     private suspend fun probeMatch(item: CatalogItem): ResourceMatch {
+        val type = ContentParsers.searchTypeFor(item.kind)
+        val search = search(item.title, type)
+        val first = matchCandidates(item, search)
+        // Search races return the first nonempty provider, which may contain related films
+        // rather than this title, or resources with no mobile-compatible episode list.
+        // Verify the other provider before declaring absence. An ambiguous verified release
+        // still requires a user choice and must never be overridden by another provider.
+        if (first.status == ResourceStatus.Available || search.results.isEmpty()) return first
+        val alternative = try {
+            if (JianpianSource.owns(search.results.first().detailUrl))
+                PomoSource.search(fetch(PomoSource.address("auto_search", "wd" to searchKeyword(item.title)), 8_000), type)
+            else jianpian.search(searchKeyword(item.title), type)
+        } catch (error: CancellationException) { throw error }
+        catch (_: ApiError) { return ResourceMatch(first.match, ResourceStatus.Unknown) }
+        val second = matchCandidates(item, alternative)
+        return if (second.status == ResourceStatus.Missing && first.status == ResourceStatus.Unknown)
+            ResourceMatch(second.match, ResourceStatus.Unknown) else second
+    }
+
+    private suspend fun matchCandidates(item: CatalogItem, search: SearchResult): ResourceMatch {
         val target = ContentParsers.normalizedTitle(item.title)
         val wantedYear = item.year
-        val search = search(item.title, ContentParsers.searchTypeFor(item.kind))
         val candidates = search.results.mapNotNull { candidate ->
             val exact = ContentParsers.normalizedTitle(candidate.title) == target
             if (!exact && ContentParsers.coreTitle(candidate.title) != target) return@mapNotNull null
             val suffixYear = ContentParsers.titleYear(candidate.title)
             val castScore = ContentParsers.castOverlapScore(item.casts, candidate.cast)
             if (wantedYear.isBlank()) {
-                // Without a release year, picking a year-suffixed remake would be a guess.
-                if (!exact) return@mapNotNull null
+                // Browse responses usually omit years. A suffix must not hide the only
+                // release, or make an unsuffixed remake win by default. Keep both at the
+                // same rank and require an unambiguous release after detail verification.
                 RankedCandidate(candidate, 1 + castScore)
             } else {
                 val knownYears = listOfNotNull(suffixYear, candidate.year.takeIf(String::isNotBlank))
@@ -388,13 +440,18 @@ class ContentRepository(
             }) continue
             try {
                 val detail = detail(candidate.item.detailUrl)
-                if (wantedYear.isNotBlank()) {
-                    val detailYear = metadata(detail, candidate.item.detailUrl)?.text("year").orEmpty()
-                    if (detailYear.isNotBlank() && detailYear != wantedYear) continue
-                }
+                val knownYears = listOfNotNull(
+                    ContentParsers.titleYear(candidate.item.title),
+                    candidate.item.year.takeIf(String::isNotBlank),
+                    metadata(detail, candidate.item.detailUrl)?.text("year")?.takeIf(String::isNotBlank),
+                ).distinct()
+                if (knownYears.size > 1 || wantedYear.isNotBlank() && knownYears.any { it != wantedYear }) continue
                 // Availability checks only inspect episode lists. Parsing a signed media URL
                 // here would multiply slow requests for every catalog row and expire before use.
-                verified += candidate.copy(pageUrl = candidate.item.detailUrl)
+                verified += candidate.copy(
+                    item = candidate.item.copy(year = knownYears.singleOrNull().orEmpty()),
+                    pageUrl = candidate.item.detailUrl,
+                )
             } catch (error: CancellationException) { throw error }
             catch (_: ApiError) {
                 // A failed request/parser, or an unsupported first line with untested alternate
@@ -409,7 +466,7 @@ class ContentRepository(
         // Provider mirrors must not make one release appear ambiguous. Different years or
         // casts at equal scores still require an explicit user choice.
         val distinct = verified.filter { it.score == best.score }.distinctBy {
-            listOf(ContentParsers.normalizedTitle(it.item.title), it.item.year, it.item.cast)
+            listOf(ContentParsers.coreTitle(it.item.title), it.item.year, it.item.cast)
         }
         val match = if (distinct.size == 1)
             MatchResult(true, best.pageUrl) else MatchResult(false)
@@ -610,7 +667,9 @@ internal object ContentParsers {
     }
     fun searchTypeFor(kind: String) = when (kind) {
         "tv" -> "tv"
-        "movie", "documentary", "animation" -> "movie"
+        "movie" -> "movie"
+        // These catalog genres contain both films and episodic shows. Restricting them
+        // to the movie API category drops resources that an ordinary search can play.
         else -> "all"
     }
     fun castOverlapScore(expected: List<String>, actual: String): Int {

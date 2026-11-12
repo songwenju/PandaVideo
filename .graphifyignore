@@ -1,0 +1,18 @@
+# Index first-party source and tests; omit generated output and vendored code.
+graphify-out/
+releases/
+doc/
+.trae/
+.screenshots/
+**/build/
+**/.gradle/
+**/.kotlin/
+**/DerivedData/
+**/node_modules/
+**/__pycache__/
+**/*.min.js
+mobile/docs/
+frontend/docs/
+**/Assets.xcassets/
+mobile/shared/src/commonMain/composeResources/
+mobile/shared/src/androidDeviceTest/assets/

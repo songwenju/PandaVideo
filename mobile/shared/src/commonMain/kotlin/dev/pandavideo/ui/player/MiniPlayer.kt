@@ -34,8 +34,8 @@ import dev.pandavideo.ui.common.Poster
 
 /**
  * Compact floating bar shown above the bottom tabs while a playback session stays alive
- * outside the player screen. Tapping the body reopens the paused player; the play action
- * reopens and explicitly resumes it, while the close action releases the session.
+ * outside the player screen. Audio mode continues in this bar; video stays paused.
+ * The close action releases the session.
  */
 @Composable
 internal fun MiniPlayerBar(model: AppState, onOpen: () -> Unit) {
@@ -76,8 +76,10 @@ internal fun MiniPlayerBar(model: AppState, onOpen: () -> Unit) {
                     title, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
-                if (!episode.isNullOrBlank()) Text(
-                    if (playback.ended) "${playback.countdownSeconds} 秒后下一集" else episode,
+                if (!episode.isNullOrBlank() || playback.audioOnly) Text(
+                    if (playback.ended) "${playback.countdownSeconds} 秒后下一集"
+                    else if (playback.audioOnly) listOfNotNull("音频模式", episode?.takeIf { it.isNotBlank() }).joinToString(" · ")
+                    else episode.orEmpty(),
                     fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
@@ -88,12 +90,14 @@ internal fun MiniPlayerBar(model: AppState, onOpen: () -> Unit) {
                 onClick = {
                     model.platform.haptics.tick()
                     if (player.wantsPlay) session.controller.pause() else {
-                        onOpen()
-                        session.setPlaybackVisible(true)
+                        if (!playback.audioOnly) {
+                            onOpen()
+                            session.setPlaybackVisible(true)
+                        }
                         session.controller.play()
                     }
                 },
-                modifier = Modifier.size(40.dp),
+                modifier = Modifier.size(44.dp),
             ) {
                 Icon(
                     if (player.wantsPlay) NavigationIcons.Pause else NavigationIcons.Play,
@@ -107,11 +111,11 @@ internal fun MiniPlayerBar(model: AppState, onOpen: () -> Unit) {
                     model.platform.haptics.tick()
                     model.closePlayer()
                 },
-                modifier = Modifier.size(40.dp),
+                modifier = Modifier.size(44.dp),
             ) {
-                Text(
-                    "×", style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Icon(
+                    NavigationIcons.Close, contentDescription = "关闭播放器",
+                    modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

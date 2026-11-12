@@ -19,9 +19,19 @@ internal data class DlnaDevice(val id: String, val name: String, val controlUrl:
 internal data class DlnaPosition(val position: Long, val duration: Long)
 internal class DlnaException(message: String) : Exception(message)
 
-internal fun ssdpRequest(host: String = "239.255.255.250"): ByteArray =
-    ("M-SEARCH * HTTP/1.1\r\nHOST: $host:1900\r\nMAN: \"ssdp:discover\"\r\n" +
-        "MX: 2\r\nST: $DLNA_SEARCH_TARGET\r\n\r\n").encodeToByteArray()
+internal fun ssdpRequest(target: String = DLNA_SEARCH_TARGET): ByteArray =
+    ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n" +
+        "MX: 2\r\nST: $target\r\n\r\n").encodeToByteArray()
+
+/**
+ * Queries both renderer and transport advertisements, then falls back to all UPnP devices.
+ * Some televisions advertise an embedded renderer or only reply to service/all searches.
+ * Descriptors still have to contain a MediaRenderer with AVTransport before they are shown.
+ * HOST is always the SSDP multicast endpoint, including directed UDP searches to a TV IP.
+ */
+internal fun ssdpRequests(): List<ByteArray> =
+    listOf(DLNA_SEARCH_TARGET, "urn:schemas-upnp-org:service:AVTransport:1", "ssdp:all")
+        .map(::ssdpRequest)
 
 internal fun ssdpLocation(response: String): String? {
     if (!response.lineSequence().firstOrNull().orEmpty().startsWith("HTTP/1.1 200", ignoreCase = true)) return null

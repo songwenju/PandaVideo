@@ -11,9 +11,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.text.KeyboardActions
@@ -22,6 +24,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -63,6 +67,7 @@ import dev.pandavideo.app.AppState
 import dev.pandavideo.app.SearchState
 import dev.pandavideo.core.model.SearchItem
 import dev.pandavideo.ui.common.Accent
+import dev.pandavideo.ui.common.ActionButtonPadding
 import dev.pandavideo.ui.common.NavigationIcons
 import dev.pandavideo.ui.common.Poster
 import dev.pandavideo.ui.common.SkeletonBox
@@ -244,15 +249,16 @@ private fun SearchRow(item: SearchItem, query: String, model: AppState, play: (S
                 )
             }
             Spacer(Modifier.weight(1f))
-            if (item.playable) Row(
-                Modifier.align(Alignment.CenterHorizontally).width(120.dp)
-                    .clip(RoundedCornerShape(50)).background(Accent)
-                    .height(32.dp).padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+            if (item.playable) Button(
+                onClick = { play(item) },
+                modifier = Modifier.align(Alignment.Start).widthIn(min = 132.dp).heightIn(min = 40.dp),
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White),
+                contentPadding = ActionButtonPadding,
             ) {
-                Icon(NavigationIcons.Play, contentDescription = "播放 ${item.title}", modifier = Modifier.size(13.dp), tint = Color.White)
-                Text("立即观看", color = Color.White, fontSize = 12.sp, lineHeight = 16.sp,
+                Icon(NavigationIcons.Play, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.White)
+                Spacer(Modifier.width(6.dp))
+                Text("立即观看", color = Color.White, fontSize = 14.sp, lineHeight = 18.sp,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.labelMedium.copy(
                         lineHeightStyle = LineHeightStyle(
@@ -307,7 +313,7 @@ private fun SearchSkeleton(modifier: Modifier) {
                     SkeletonBox(Modifier.width(210.dp).height(12.dp), alpha)
                     SkeletonBox(Modifier.width(120.dp).height(12.dp), alpha)
                     Spacer(Modifier.weight(1f))
-                    SkeletonBox(Modifier.width(92.dp).height(30.dp), alpha, 50)
+                    SkeletonBox(Modifier.width(132.dp).height(40.dp), alpha, 50)
                 }
             }
         }

@@ -33,16 +33,21 @@ data class AppSettings(
     val rememberBrightness: Boolean = false,
     val volume: Float = 0.5f,
     val brightness: Float = 0.5f,
+    val tabOrder: List<String> = DefaultTabOrder,
 ) {
     val themeMode: ThemeMode get() = ThemeMode.fromKey(themeModeKey)
     internal fun normalized() = copy(
         defaultRate = defaultRate.takeIf { it in SupportedRates } ?: 1f,
         volume = volume.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0.5f,
         brightness = brightness.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0.5f,
+        tabOrder = tabOrder.filter { it in DefaultTabOrder }.distinct().let { valid ->
+            valid + DefaultTabOrder.filterNot { it in valid }
+        },
     )
 }
 
 internal val SupportedRates = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
+internal val DefaultTabOrder = listOf("hot", "discover", "browse", "profile")
 
 /** Owns persisted [AppSettings] backed by the platform key-value storage. */
 class SettingsStore(private val storage: KeyValueStorage) {
@@ -54,6 +59,12 @@ class SettingsStore(private val storage: KeyValueStorage) {
         update { it.copy(themeModeKey = mode.key) }
     }
     fun setDefaultRate(rate: Float) = update { it.copy(defaultRate = rate) }
+    /**
+     * Saves the bottom navigation order, retaining each supported destination exactly once.
+     *
+     * @param routes Destination IDs in the desired display order.
+     */
+    fun setTabOrder(routes: List<String>) = update { it.copy(tabOrder = routes.toList()) }
     fun setRememberVolume(enabled: Boolean, current: Float) =
         update { it.copy(rememberVolume = enabled, volume = if (enabled) current else it.volume) }
     fun setRememberBrightness(enabled: Boolean, current: Float) =

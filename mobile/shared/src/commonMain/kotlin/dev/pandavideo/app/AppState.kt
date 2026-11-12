@@ -35,11 +35,14 @@ import kotlinx.coroutines.flow.*
 data class CatalogState(
     val items: List<CatalogItem> = emptyList(), val page: CatalogPage? = null,
     val loading: Boolean = false, val error: String? = null, val loadingMore: Boolean = false,
+    /** True only for a user-requested pull refresh, never initial or tab loading. */
+    val refreshing: Boolean = false,
 )
 data class SearchState(val result: SearchResult? = null, val loading: Boolean = false, val error: String? = null)
 /** Application-owned direct-source requests and playback lifetime. */
 class AppState(
     val platform: PlatformServices, private val scope: CoroutineScope,
+    private val posterImageLoader: coil3.ImageLoader? = null,
     private val cachePosters: suspend (List<String>) -> Unit = {},
 ) {
     private val discoverMutable = MutableStateFlow(CatalogState())
@@ -96,6 +99,21 @@ class AppState(
     }
     private var serviceJob = SupervisorJob(scope.coroutineContext[Job])
     private var serviceScope = CoroutineScope(scope.coroutineContext + serviceJob)
+    /** App-owned maintenance of expendable image/content caches, independent of playback. */
+    internal val cacheMaintenance = dev.pandavideo.data.repository.CacheMaintenance(
+        serviceScope,
+        posterBytes = { withContext(Dispatchers.Default) { posterImageLoader?.diskCache?.size ?: 0L } },
+        contentUsage = api::cacheUsage,
+        clearPosters = {
+            withContext(Dispatchers.Default) {
+                // Coil owns its journal and active snapshots. Its clear API safely evicts
+                // cached entries; recursively deleting the directory would bypass that owner.
+                posterImageLoader?.memoryCache?.clear()
+                posterImageLoader?.diskCache?.clear()
+            }
+        },
+        clearContent = api::clearCache,
+    )
     /** Explicit episode downloads and offline playback metadata. */
     val downloads = dev.pandavideo.data.repository.OfflineDownloads(
         platform.storage(), platform.offlineEngine(), serviceScope, api::player,
@@ -113,14 +131,8 @@ class AppState(
         startPlayer(PlayerRequest(page = entry.info.pageUrl, title = entry.info.title,
             episode = entry.info.selected), cover = entry.cover, offlineOnly = true)
     }
-    /** Prevents releasing media files still in use by the current player. */
+    /** Deletes an episode cache without requiring the current playback session to close. */
     fun removeDownload(id: String) {
-        val entry = downloads.tasks.value.find { it.id == id } ?: return
-        val playing = session?.state?.value?.info
-        if (playing?.pageUrl == entry.info.pageUrl && playing.selected == entry.info.selected) {
-            emitMessage("请先关闭当前播放器，再删除缓存")
-            return
-        }
         downloads.remove(id)
     }
     private var discoverJob: Job? = null
@@ -133,18 +145,31 @@ class AppState(
     private val sleepRemainingMutable = MutableStateFlow(0)
     /** Remaining sleep timer seconds; zero means disabled. Timers are never persisted. */
     val sleepRemaining = sleepRemainingMutable.asStateFlow()
+    private val sleepTimerMinutesMutable = MutableStateFlow(0)
+    /** Selected sleep duration in minutes; retained during countdown and cleared on cancellation or expiry. */
+    val sleepTimerMinutes = sleepTimerMinutesMutable.asStateFlow()
+    /**
+     * Starts or replaces the app-wide sleep countdown, including before playback opens.
+     *
+     * @param minutes Duration clamped to 0–180 minutes; zero cancels the countdown.
+     */
     fun setSleepTimer(minutes: Int) {
         sleepJob?.cancel()
-        sleepRemainingMutable.value = minutes.coerceIn(0, 180) * 60
-        if (minutes <= 0) return
+        sleepJob = null
+        val duration = minutes.coerceIn(0, 180)
+        sleepTimerMinutesMutable.value = duration
+        sleepRemainingMutable.value = duration * 60
+        if (duration == 0) return
         sleepJob = serviceScope.launch {
             while (sleepRemainingMutable.value > 0) {
                 delay(1000)
                 sleepRemainingMutable.value--
             }
-            session?.dismissEnded()
-            session?.controller?.pause()
-            emitMessage("睡眠定时已结束，播放已暂停")
+            sleepTimerMinutesMutable.value = 0
+            val active = session
+            active?.dismissEnded()
+            active?.controller?.pause()
+            emitMessage(if (active == null) "睡眠定时已结束" else "睡眠定时已结束，播放已暂停")
         }
     }
     /** Restores only the screen settings explicitly enabled by the user. */
@@ -162,12 +187,18 @@ class AppState(
         private set
     var playingCatalog: CatalogItem? = null
         private set
+    /** Catalog snapshot that opened this session; null allows unscoped search/history suggestions. */
+    var playingRecommendations: List<CatalogItem>? by mutableStateOf(null)
+        private set
     var playingSearch: SearchItem? = null
         private set
     /** Validated cover url for sessions started from history/favorites without a list item. */
     var playingCover: String? = null
         private set
     var kind = "top250"
+        private set
+    /** Region selected on Discover, retained across category changes, refresh and pagination. */
+    var discoverCountry = "all"
         private set
     var filters = BrowseFilters()
         private set
@@ -198,34 +229,35 @@ class AppState(
             }
         }
     }
-    fun loadDiscover(selected: String = kind, more: Boolean = false) {
+    fun loadDiscover(selected: String = kind, more: Boolean = false, country: String = discoverCountry, refresh: Boolean = false) {
         val active = api
         if (more && (discoverMutable.value.loading || discoverMutable.value.page?.hasMore != true)) return
         discoverJob?.cancel()
-        val previous = if (selected == kind) discoverMutable.value else CatalogState()
+        val previous = if (selected == kind && country == discoverCountry) discoverMutable.value else CatalogState()
         kind = selected
-        discoverMutable.value = previous.copy(loading = true, loadingMore = more, error = null)
+        discoverCountry = country
+        discoverMutable.value = previous.copy(loading = true, loadingMore = more, refreshing = refresh && !more, error = null)
         discoverJob = serviceScope.launch {
             try {
-                val page = active.list(selected, if (more) previous.page?.nextStart() ?: 0 else 0)
+                val page = active.list(selected, if (more) previous.page?.nextStart() ?: 0 else 0, country)
                 ensureActive()
                 publishCatalog(discoverMutable, previous, page, more)
                 warmPosters(page.items.map { it.cover })
-                if (!more && catalogWarmJobs[selected]?.isActive != true) {
+                if (!more && country == "all" && catalogWarmJobs[selected]?.isActive != true) {
                     catalogWarmJobs[selected] = serviceScope.launch { active.warmCatalog(selected, page) }
                 }
                 inspectCatalog(discoverMutable)
             } catch (error: CancellationException) { throw error }
-            catch (error: Exception) { discoverMutable.value = previous.copy(loading = false, loadingMore = false, error = error.message) }
+            catch (error: Exception) { discoverMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false, error = error.message) }
         }
     }
-    fun loadBrowse(selected: BrowseFilters = filters, more: Boolean = false) {
+    fun loadBrowse(selected: BrowseFilters = filters, more: Boolean = false, refresh: Boolean = false) {
         val active = api
         if (more && (browseMutable.value.loading || browseMutable.value.page?.hasMore != true)) return
         browseJob?.cancel()
         val previous = if (selected == filters) browseMutable.value else CatalogState()
         filters = selected
-        browseMutable.value = previous.copy(loading = true, loadingMore = more, error = null)
+        browseMutable.value = previous.copy(loading = true, loadingMore = more, refreshing = refresh && !more, error = null)
         browseJob = serviceScope.launch {
             try {
                 val page = active.browse(selected, if (more) previous.page?.nextStart() ?: 0 else 0)
@@ -234,7 +266,7 @@ class AppState(
                 warmPosters(page.items.map { it.cover })
                 inspectCatalog(browseMutable)
             } catch (error: CancellationException) { throw error }
-            catch (error: Exception) { browseMutable.value = previous.copy(loading = false, loadingMore = false, error = error.message) }
+            catch (error: Exception) { browseMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false, error = error.message) }
         }
     }
     fun search(query: String, type: String) {
@@ -258,13 +290,13 @@ class AppState(
         }
     }
     fun clearSearch() { searchJob?.cancel(); searchMutable.value = SearchState() }
-    fun loadHot(type: String = hotType, more: Boolean = false) {
+    fun loadHot(type: String = hotType, more: Boolean = false, refresh: Boolean = false) {
         val option = HotTypeOptions.firstOrNull { it.first == type } ?: return
         if (more && (hotMutable.value.loading || hotMutable.value.page?.hasMore != true)) return
         hotJob?.cancel()
         val previous = if (type == hotType) hotMutable.value else CatalogState()
         hotType = type
-        hotMutable.value = previous.copy(loading = true, loadingMore = more, error = null)
+        hotMutable.value = previous.copy(loading = true, loadingMore = more, refreshing = refresh && !more, error = null)
         hotJob = serviceScope.launch {
             try {
                 val page = api.browse(BrowseFilters(type = type, sort = "hot"), if (more) previous.page?.nextStart() ?: 0 else 0)
@@ -275,7 +307,7 @@ class AppState(
                 inspectCatalog(hotMutable)
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) {
-                hotMutable.value = previous.copy(loading = false, loadingMore = false, error = error.message)
+                hotMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false, error = error.message)
             }
         }
     }
@@ -312,11 +344,19 @@ class AppState(
             catch (_: Exception) { /* Optional prefetch must never interrupt visible content. */ }
         }
     }
-    fun match(item: CatalogItem, play: () -> Unit) {
+    /**
+     * Opens a catalog title and retains the originating filter result for related selections.
+     *
+     * @param item Title to resolve.
+     * @param recommendations Originating catalog snapshot; defaults to the active session's scope.
+     * @param play Navigation callback invoked immediately while source matching proceeds.
+     */
+    fun match(item: CatalogItem, recommendations: List<CatalogItem>? = playingRecommendations, play: () -> Unit) {
         if (!youth.canPlay()) { emitMessage("今日观看已满 40 分钟，请休息"); return }
         val active = api
-        closePlayer()
+        releasePlayer()
         playingCatalog = item
+        playingRecommendations = recommendations?.toList()
         playingCover = poster(item)
         session = PlaybackSession({ request ->
             val resolved = if (request.page == null) {
@@ -337,7 +377,7 @@ class AppState(
     ) {
         if (!youth.canPlay()) { emitMessage("今日观看已满 40 分钟，请休息"); return }
         val active = api
-        closePlayer()
+        releasePlayer()
         playingCatalog = catalog
         playingSearch = search
         playingCover = catalog?.let(::poster) ?: search?.let(::poster) ?: cover?.takeIf(::isWebUrl)
@@ -427,7 +467,7 @@ class AppState(
         startPlayer(PlayerRequest(page = pageUrl, title = title, episode = episode), cover = cover)
     }
     /**
-     * Retains the session for reopening, pausing when there is no visible PiP window.
+     * Retains the session for reopening. Audio mode continues; video pauses without visible PiP.
      *
      * @param playerSession Session leaving the screen; may differ from a newly opened one.
      */
@@ -439,10 +479,18 @@ class AppState(
         platform.fullscreen(false)
     }
 
+    /** Explicitly closes playback and cancels the sleep countdown. */
     fun closePlayer() {
-        if (session != null) rememberPlayerLevels()
         setSleepTimer(0)
+        releasePlayer()
+    }
+
+    // Opening/replacing a title releases its old session without cancelling an
+    // app-wide sleep timer that the user may have already armed in Settings.
+    private fun releasePlayer() {
+        if (session != null) rememberPlayerLevels()
         session?.close(); session = null; playingCatalog = null; playingSearch = null; playingCover = null
+        playingRecommendations = null
         platform.resetBrightness()
         platform.fullscreen(false)
     }

@@ -19,6 +19,103 @@ private fun jpDetail(url: String = "https://media.test/jp.m3u8", year: String = 
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class JianpianSourceTest {
+    @Test fun posterHostComesFromResourceConfigurationAndIsReused() = runTest {
+        var configurations = 0
+        val client = JianpianClient(fetch = { address, _, _ ->
+            when {
+                address.contains("/sys/init") -> """{"code":1,"data":{"secret":"s"}}"""
+                address.contains("/settings/resourceDomainConfig") -> {
+                    configurations++
+                    """{"code":1,"data":{"imgDomain":"bad.test/path,images.test"}}"""
+                }
+                else -> jpSearch.replace("\"types\":", "\"thumbnail\":\"/upload/cover.jpg\",\"types\":")
+            }
+        }, clock = { testScheduler.currentTime })
+        repeat(2) {
+            assertEquals("https://images.test/upload/cover.jpg",
+                client.search("测试电影", "movie").results.single().thumbnailUrl)
+        }
+        assertEquals(1, configurations)
+    }
+
+    @Test fun configuredPosterHostReplacesRetiredAbsoluteHostWithoutChangingPath() = runTest {
+        val client = JianpianClient(fetch = { address, _, _ ->
+            when {
+                address.contains("/sys/init") -> """{"code":1,"data":{"secret":"s"}}"""
+                address.contains("/settings/resourceDomainConfig") ->
+                    """{"code":1,"data":{"imgDomain":"images.test"}}"""
+                else -> jpSearch.replace("\"types\":",
+                    "\"thumbnail\":\"https://retired.test/upload/cover.jpg?size=large\",\"types\":")
+            }
+        }, clock = { testScheduler.currentTime })
+        assertEquals("https://images.test/upload/cover.jpg?size=large",
+            client.search("测试电影", "movie").results.single().thumbnailUrl)
+    }
+
+    @Test fun unavailableImageConfigurationKeepsSearchAndCanRecoverOnNextRequest() = runTest {
+        var offline = true
+        val client = JianpianClient(fetch = { address, _, _ ->
+            when {
+                address.contains("/sys/init") -> """{"code":1,"data":{"secret":"s"}}"""
+                address.contains("/settings/resourceDomainConfig") -> {
+                    if (offline) throw ApiError("offline")
+                    """{"code":1,"data":{"imgDomain":"images.test"}}"""
+                }
+                else -> jpSearch.replace("\"types\":", "\"thumbnail\":\"/upload/cover.jpg\",\"types\":")
+            }
+        }, clock = { testScheduler.currentTime })
+        assertEquals("测试电影", client.search("测试电影", "movie").results.single().title)
+        offline = false
+        assertEquals("https://images.test/upload/cover.jpg",
+            client.search("测试电影", "movie").results.single().thumbnailUrl)
+    }
+
+    @Test fun catalogRetriesOtherProviderWhenFastSearchCannotMatchOrHasNoEpisodes() = runTest {
+        for (mode in listOf("unrelated", "nativeOnly", "primaryEmpty")) {
+            val title = "哪吒之魔童闹海"
+            val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+                when {
+                    request.url.host == "pomo.mom" -> {
+                        if (request.url.parameters["type"] == "auto_search") {
+                            delay(100)
+                            respond(pomoSearch(pomoRow(title, year = "2025")))
+                        } else respond(pomoDetailFixture.replace("测试电影", title).replace("2020", "2025"))
+                    }
+                    request.url.encodedPath.endsWith("/init") ->
+                        respond("""{"code":1,"data":{"secret":"s"}}""")
+                    request.url.encodedPath.contains("/search/") ->
+                        respond(if (mode == "primaryEmpty") """{"code":1,"data":[]}"""
+                            else jpSearch.replace("测试电影", if (mode == "unrelated") "哪吒之魔童降世" else title)
+                                .replace("2020", "2025"))
+                    else -> respond("""{"code":1,"data":{"title":"$title","year":"2025","source_list_source":[]}}""")
+                }
+            }))
+            try {
+                val item = CatalogItem(title, "https://movie.douban.com/subject/34780991/", kind = "movie")
+                val match = repo.resolve(item)
+                assertTrue(match.playable, mode)
+                assertEquals(pomoPage, match.pageUrl, mode)
+            } finally { repo.close() }
+        }
+    }
+
+    @Test fun catalogAlsoRetriesJianpianWhenPomoReturnsOnlyRelatedTitles() = runTest {
+        val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+            when {
+                request.url.host == "pomo.mom" -> respond(pomoSearch(pomoRow("其他影片")))
+                request.url.encodedPath.endsWith("/init") -> {
+                    delay(100)
+                    respond("""{"code":1,"data":{"secret":"s"}}""")
+                }
+                request.url.encodedPath.contains("/search/") -> respond(jpSearch)
+                else -> respond(jpDetail())
+            }
+        }))
+        try {
+            assertEquals(jpPage, repo.resolve(CatalogItem("测试电影", "", "2020")).pageUrl)
+        } finally { repo.close() }
+    }
+
     @Test fun stableReferencesRejectForeignHostsPortsAndDuplicateIds() {
         assertEquals("$jpPage#1-1", ContentParsers.pageUrl("$jpPage#1-1"))
         for (value in listOf(jpPage.replace("https:", "http:"), "$jpPage&id=2", "$jpPage#0-1",

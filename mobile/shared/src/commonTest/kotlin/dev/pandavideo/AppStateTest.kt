@@ -13,6 +13,9 @@ import dev.pandavideo.core.player.MediaSource
 import dev.pandavideo.core.player.PlayerController
 import dev.pandavideo.core.player.PlayerPhase
 import dev.pandavideo.core.player.PlayerState
+import dev.pandavideo.data.repository.OfflineEngine
+import dev.pandavideo.data.repository.OfflineAsset
+import dev.pandavideo.data.repository.UnsupportedOfflineEngine
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.*
 import kotlinx.coroutines.*
@@ -26,7 +29,10 @@ import kotlin.test.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AppStateTest {
-    private class TestPlatform(val testScope: TestScope) : PlatformServices {
+    private class TestPlatform(
+        val testScope: TestScope,
+        private val offline: OfflineEngine = UnsupportedOfflineEngine,
+    ) : PlatformServices {
         var slowSearch = false
         var catalogDelay = 0L
         var catalogFails = false
@@ -97,6 +103,7 @@ class AppStateTest {
         override fun player(): PlayerController = TestPlayer().also { players += it }
         val storage = FakeStorage()
         override fun storage(): KeyValueStorage = storage
+        override fun offlineEngine(): OfflineEngine = offline
         override val haptics: Haptics = SilentHaptics
         override fun openLink(url: String) {}
         override fun fullscreen(enabled: Boolean) { fullscreenChanges += enabled }
@@ -131,6 +138,45 @@ class AppStateTest {
         override fun close() { closed = true }
     }
     private val matchingItem = CatalogItem("匹配影片", "https://movie.douban.com/subject/123/", year = "2020")
+
+    @Test fun discoverRetainsCountryForCategoryRefreshAndPagingButResetsOnRegionChange() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope)
+        runCurrent()
+        model.loadDiscover("war", country = "cn")
+        runCurrent()
+        assertEquals("cn", model.discoverCountry)
+        assertEquals("电影,战争,中国大陆" to 0, platform.hotRequests.last())
+        model.loadDiscover(more = true)
+        runCurrent()
+        assertEquals("电影,战争,中国大陆" to 20, platform.hotRequests.last())
+        model.loadDiscover("drama")
+        runCurrent()
+        assertEquals("电影,剧情,中国大陆" to 0, platform.hotRequests.last())
+        model.loadDiscover()
+        runCurrent()
+        assertEquals("电影,剧情,中国大陆" to 0, platform.hotRequests.last())
+        model.loadDiscover(country = "jp")
+        assertTrue(model.discover.value.items.isEmpty())
+        runCurrent()
+        assertEquals("电影,剧情,日本" to 0, platform.hotRequests.last())
+        assertEquals(20, model.discover.value.items.size)
+        model.close()
+    }
+
+    @Test fun relatedSelectionKeepsOriginalFilterSnapshotAndSearchClearsIt() = runTest {
+        val model = AppState(TestPlatform(this), backgroundScope)
+        val related = matchingItem.copy(title = "同筛选影片", url = "https://movie.douban.com/subject/124/")
+        val filtered = mutableListOf(matchingItem, related)
+        model.match(matchingItem, filtered) {}
+        filtered.clear()
+        assertEquals(listOf(matchingItem, related), model.playingRecommendations)
+        model.match(related) {}
+        assertEquals(listOf(matchingItem, related), model.playingRecommendations)
+        model.startPlayer(dev.pandavideo.core.model.PlayerRequest(page = pomoPage, title = "搜索影片"))
+        assertNull(model.playingRecommendations)
+        model.close()
+    }
 
     @Test fun catalogClickNavigatesBeforeMatchingCompletes() = runTest {
         val platform = TestPlatform(this).apply { matchDelay = 1000 }
@@ -247,13 +293,15 @@ class AppStateTest {
         assertEquals(listOf(0, 25), platform.catalogStarts)
         assertEquals(50, model.discover.value.items.size)
         platform.catalogDelay = 1000
-        model.loadDiscover()
+        model.loadDiscover(refresh = true)
         assertEquals(50, model.discover.value.items.size)
         assertFalse(model.discover.value.loadingMore)
+        assertTrue(model.discover.value.refreshing)
         advanceTimeBy(1000); runCurrent()
         assertEquals(25, model.discover.value.items.size)
         assertEquals(0, model.discover.value.page?.start)
         assertFalse(model.discover.value.loading)
+        assertFalse(model.discover.value.refreshing)
         model.close()
     }
     @Test fun failedRefreshKeepsCachedCatalogVisible() = runTest {
@@ -262,12 +310,49 @@ class AppStateTest {
         runCurrent()
         val previous = model.discover.value.items
         platform.catalogFails = true
-        model.loadDiscover()
+        model.loadDiscover(refresh = true)
+        assertTrue(model.discover.value.refreshing)
         assertEquals(previous, model.discover.value.items)
         runCurrent()
         assertEquals(previous, model.discover.value.items)
         assertTrue(model.discover.value.page?.stale == true)
         assertFalse(model.discover.value.loading)
+        assertFalse(model.discover.value.refreshing)
+        model.close()
+    }
+    @Test fun tabLoadsAndCancelledRefreshesDoNotShowPullIndicator() = runTest {
+        val platform = TestPlatform(this).apply { catalogDelay = 1000 }
+        val model = AppState(platform, backgroundScope)
+        assertTrue(model.discover.value.loading)
+        assertFalse(model.discover.value.refreshing)
+        model.loadDiscover(refresh = true)
+        assertTrue(model.discover.value.refreshing)
+        model.loadDiscover()
+        assertTrue(model.discover.value.loading)
+        assertFalse(model.discover.value.refreshing)
+        advanceTimeBy(1000); runCurrent()
+        assertFalse(model.discover.value.refreshing)
+        model.loadBrowse()
+        assertFalse(model.browse.value.refreshing)
+        model.loadBrowse(refresh = true)
+        assertTrue(model.browse.value.refreshing)
+        model.loadBrowse(BrowseFilters(type = "tv"))
+        assertFalse(model.browse.value.refreshing)
+        runCurrent()
+        assertFalse(model.browse.value.loading)
+        model.loadBrowse(refresh = true)
+        runCurrent()
+        assertFalse(model.browse.value.refreshing)
+        model.loadHot()
+        assertFalse(model.hot.value.refreshing)
+        model.loadHot(refresh = true)
+        assertTrue(model.hot.value.refreshing)
+        model.loadHot("movie")
+        assertFalse(model.hot.value.refreshing)
+        runCurrent()
+        model.loadHot(refresh = true)
+        runCurrent()
+        assertFalse(model.hot.value.refreshing)
         model.close()
     }
     @Test fun hotCatalogPagesAndTypeSwitchRemainIndependentOfHomeAndBrowse() = runTest {
@@ -354,6 +439,35 @@ class AppStateTest {
         assertEquals(false, platform.fullscreenChanges.last())
         model.close()
     }
+    @Test fun deletingCurrentEpisodeCacheDoesNotRequireClosingOnlinePlayer() = runTest {
+        val removed = mutableListOf<String>()
+        val engine = object : OfflineEngine {
+            override fun supports(kind: String) = kind == "hls"
+            override suspend fun download(
+                id: String, info: dev.pandavideo.core.model.PlaybackInfo, progress: (Float?) -> Unit,
+            ): String = awaitCancellation()
+            override fun cancel(id: String) {}
+            override suspend fun remove(id: String) { removed += id }
+            override fun asset(id: String, locator: String): OfflineAsset? = null
+        }
+        val platform = TestPlatform(this, engine)
+        val model = AppState(platform, backgroundScope)
+        model.match(matchingItem) {}
+        runCurrent()
+        val session = assertNotNull(model.session)
+        model.cacheCurrentEpisode()
+        runCurrent()
+        val id = model.downloads.tasks.value.single().id
+        model.removeDownload(id)
+        runCurrent()
+        assertEquals(listOf(id), removed)
+        assertTrue(model.downloads.tasks.value.isEmpty())
+        assertSame(session, model.session)
+        assertFalse(platform.players.single().closed)
+        assertEquals(0, platform.players.single().pauses)
+        assertTrue(platform.players.single().state.value.wantsPlay)
+        model.close()
+    }
     @Test fun minimizePlayerPausesAndKeepsSessionForReopening() = runTest {
         val platform = TestPlatform(this)
         val model = AppState(platform, backgroundScope)
@@ -387,6 +501,69 @@ class AppStateTest {
         assertFalse(platform.players.single().state.value.wantsPlay)
         model.close()
     }
+    @Test fun sleepTimerSetBeforePlaybackSurvivesOpeningAndSwitchingTitles() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope)
+        model.setSleepTimer(1)
+        assertEquals(1, model.sleepTimerMinutes.value)
+        runCurrent()
+        advanceTimeBy(10_000); runCurrent()
+        model.match(matchingItem) {}
+        runCurrent()
+        assertEquals(50, model.sleepRemaining.value)
+        advanceTimeBy(10_000); runCurrent()
+        model.startPlayer(dev.pandavideo.core.model.PlayerRequest(page = "https://x/title", title = "新影片"))
+        runCurrent()
+        assertEquals(40, model.sleepRemaining.value)
+        advanceTimeBy(40_000); runCurrent()
+        assertEquals(0, model.sleepRemaining.value)
+        assertEquals(0, model.sleepTimerMinutes.value)
+        assertFalse(platform.players.last().state.value.wantsPlay)
+        assertEquals(1, platform.players.last().pauses)
+        model.close()
+    }
+
+    @Test fun customSleepDurationPausesOnlyAtTheRequestedMinute() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope)
+        model.match(matchingItem) {}
+        runCurrent()
+        model.setSleepTimer(7)
+        assertEquals(7, model.sleepTimerMinutes.value)
+        assertEquals(420, model.sleepRemaining.value)
+        runCurrent()
+        advanceTimeBy(419_000); runCurrent()
+        assertEquals(1, model.sleepRemaining.value)
+        assertEquals(0, platform.players.single().pauses)
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(0, model.sleepRemaining.value)
+        assertEquals(0, model.sleepTimerMinutes.value)
+        assertEquals(1, platform.players.single().pauses)
+        model.close()
+    }
+
+    @Test fun replacingSleepTimerCancelsOldDeadlineAndExplicitCloseDisablesIt() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope)
+        model.match(matchingItem) {}
+        runCurrent()
+        model.setSleepTimer(1)
+        runCurrent()
+        advanceTimeBy(30_000); runCurrent()
+        model.setSleepTimer(2)
+        assertEquals(2, model.sleepTimerMinutes.value)
+        runCurrent()
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(90, model.sleepRemaining.value)
+        assertEquals(0, platform.players.single().pauses)
+        model.closePlayer()
+        assertEquals(0, model.sleepRemaining.value)
+        assertEquals(0, model.sleepTimerMinutes.value)
+        advanceTimeBy(120_000); runCurrent()
+        assertEquals(0, platform.players.single().pauses)
+        model.close()
+    }
+
     @Test fun sleepTimerPausesMinimizedPlaybackAndCanBeCancelled() = runTest {
         val platform = TestPlatform(this)
         val model = AppState(platform, backgroundScope)

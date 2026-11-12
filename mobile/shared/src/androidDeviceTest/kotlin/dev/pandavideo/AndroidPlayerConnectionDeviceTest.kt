@@ -1,6 +1,7 @@
 package dev.pandavideo
 
 import androidx.compose.runtime.State
+import androidx.media3.common.C
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -17,6 +18,8 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 
 /** Verifies the real service connection publishes the observable state consumed by the surface. */
 @RunWith(AndroidJUnit4::class)
@@ -28,6 +31,8 @@ class AndroidPlayerConnectionDeviceTest {
         lateinit var surfaceState: State<*>
         withContext(Dispatchers.Main) {
             controller = AndroidPlayer(context)
+            // Audio can be selected before the asynchronous media service connects.
+            controller.setAudioOnly(true)
             // Track the same getter Compose reads before the asynchronous callback. A plain
             // backing field would record no state, leaving an already composed view unbound.
             Snapshot.observe(readObserver = { reads += it }) {
@@ -41,6 +46,11 @@ class AndroidPlayerConnectionDeviceTest {
             }
             withContext(Dispatchers.Main) {
                 assertSame(assertNotNull(controller.nativePlayer), surfaceState.value)
+                val native = assertNotNull(controller.nativePlayer)
+                assertTrue(native.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO))
+                controller.setAudioOnly(false)
+                assertFalse(native.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO))
+                assertFalse(controller.state.value.wantsPlay)
                 controller.close()
                 assertNull(surfaceState.value)
                 assertNull(controller.nativePlayer)

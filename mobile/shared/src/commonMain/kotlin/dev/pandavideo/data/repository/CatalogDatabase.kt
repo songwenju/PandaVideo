@@ -17,6 +17,7 @@ import okio.buffer
 
 internal data class StoredCatalog(val page: CatalogPage, val savedAt: Long)
 internal data class StoredResponse(val payload: String, val savedAt: Long)
+internal data class ContentCacheUsage(val bytes: Long = 0, val entries: Long = 0)
 
 /** Persistent catalog pages; each film is stored as an ordered row in a SQLite transaction. */
 @OptIn(ExperimentalResourceApi::class)
@@ -104,6 +105,49 @@ class CatalogDatabase(private val path: String, private val initializeFromBundle
             it.bindText(1, key)
             if (it.step()) StoredResponse(it.getText(0), it.getLong(1)) else null
         }
+    }
+
+    /** Measures regenerable payloads without counting the preinstalled offline catalogs. */
+    internal suspend fun cacheUsage(): ContentCacheUsage = access { db ->
+        val responses = db.prepare("SELECT COALESCE(SUM(byte_size), 0), COUNT(*) FROM response_cache").use {
+            it.step()
+            ContentCacheUsage(it.getLong(0), it.getLong(1))
+        }
+        val pages = db.prepare(
+            "SELECT COALESCE(SUM(length(CAST(metadata AS BLOB))), 0), COUNT(*) FROM catalog_pages " +
+                "WHERE key NOT LIKE 'top250:%' AND key NOT LIKE 'tv:%'",
+        ).use {
+            it.step()
+            ContentCacheUsage(it.getLong(0), it.getLong(1))
+        }
+        val items = db.prepare(
+            "SELECT COALESCE(SUM(length(CAST(item AS BLOB))), 0) FROM catalog_items " +
+                "WHERE page_key NOT LIKE 'top250:%' AND page_key NOT LIKE 'tv:%'",
+        ).use {
+            it.step()
+            it.getLong(0)
+        }
+        ContentCacheUsage(responses.bytes + pages.bytes + items, responses.entries + pages.entries)
+    }
+
+    /**
+     * Clears fetched search/detail/filter payloads and reclaims unused database pages.
+     * Built-in catalog snapshots are retained; personal and offline-media stores are separate.
+     */
+    internal suspend fun clearCache() = access { db ->
+        db.execute("BEGIN IMMEDIATE")
+        try {
+            db.execute("DELETE FROM response_cache")
+            db.execute("DELETE FROM catalog_items WHERE page_key NOT LIKE 'top250:%' AND page_key NOT LIKE 'tv:%'")
+            db.execute("DELETE FROM catalog_pages WHERE key NOT LIKE 'top250:%' AND key NOT LIKE 'tv:%'")
+            db.execute("COMMIT")
+        } catch (error: Throwable) {
+            db.execute("ROLLBACK")
+            throw error
+        }
+        // Deleting rows alone leaves free pages inside SQLite. Compact the existing database
+        // under the same mutex instead of deleting its file or reseeding the user's catalogs.
+        db.execute("VACUUM")
     }
 
     internal suspend fun writeResponse(key: String, payload: String, savedAt: Long) {

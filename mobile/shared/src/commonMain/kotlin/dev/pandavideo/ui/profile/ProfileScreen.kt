@@ -24,13 +24,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -54,23 +53,26 @@ import androidx.compose.ui.unit.sp
 import dev.pandavideo.app.AppState
 import dev.pandavideo.core.platform.PlatformServices
 import dev.pandavideo.core.platform.avatarUri
-import dev.pandavideo.core.platform.rememberAvatarPicker
 import coil3.compose.AsyncImage
 import dev.pandavideo.data.user.ThemeMode
-import dev.pandavideo.data.user.UserProfile
+import dev.pandavideo.data.repository.DownloadStatus
+import dev.pandavideo.data.repository.OfflineDownload
 import dev.pandavideo.ui.common.Accent
+import dev.pandavideo.ui.common.ActionButtonPadding
 import dev.pandavideo.ui.common.NavigationIcons
 import dev.pandavideo.ui.common.Poster
 import dev.pandavideo.ui.common.LocalDarkTheme
+import dev.pandavideo.ui.common.topTabSwipe
 
 @Composable
 internal fun ProfileScreen(
     model: AppState, openSettings: () -> Unit, topInset: Dp = 0.dp, openPlayer: () -> Unit,
-    openDownloads: () -> Unit = {},
 ) {
     val profile by model.user.profile.collectAsState()
     val favorites by model.user.favorites.collectAsState()
     val history by model.user.history.collectAsState()
+    val downloads by model.downloads.tasks.collectAsState()
+    var deletingDownload by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf<ClearTarget?>(null) }
     var choosingTheme by remember { mutableStateOf(false) }
@@ -86,15 +88,20 @@ internal fun ProfileScreen(
                 dev.pandavideo.data.user.progressFraction(record.positionMs, record.durationMs)
             else null,
         )
-    } else favorites.map {
+    } else if (selected == ProfileLibrary.Favorites) favorites.map {
         ProfileTitle(it.pageUrl, it.title, model.coverFor(it.title, it.cover), it.year, null)
-    }
+    } else emptyList()
+    val entryCount = if (selected == ProfileLibrary.Downloads) downloads.size else titles.size
     val colors = MaterialTheme.colorScheme
     val dark = LocalDarkTheme.current
 
     Box(Modifier.fillMaxSize().background(colors.background)) {
     LazyColumn(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+            .topTabSwipe(selected.ordinal, ProfileLibrary.entries.size) { index ->
+                selected = ProfileLibrary.entries[index]
+                managing = false
+            },
         // Reserve the initial safe area inside the list so scrolling has no hard viewport edge.
         contentPadding = PaddingValues(top = topInset, bottom = 100.dp),
     ) {
@@ -118,7 +125,8 @@ internal fun ProfileScreen(
                     .padding(horizontal = 16.dp)
                     .padding(top = 4.dp, bottom = 20.dp),
             ) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.weight(1f))
                     ProfileToolbarButton(NavigationIcons.Moon, "深色模式") { choosingTheme = true }
                     ProfileToolbarButton(NavigationIcons.Menu, "播放设置", openSettings)
                 }
@@ -152,36 +160,25 @@ internal fun ProfileScreen(
                     }
                     ProfileToolbarButton(NavigationIcons.Edit, "编辑资料") { editing = true }
                 }
-                Spacer(Modifier.height(24.dp))
-                Row(Modifier.fillMaxWidth()) {
-                    ProfileShortcut(NavigationIcons.History, "播放记录", Modifier.weight(1f)) {
-                        selected = ProfileLibrary.History; managing = false
-                    }
-                    ProfileShortcut(NavigationIcons.Heart, "个人收藏", Modifier.weight(1f)) {
-                        selected = ProfileLibrary.Favorites; managing = false
-                    }
-                    if (model.downloads.supports("hls")) {
-                        ProfileShortcut(NavigationIcons.Menu, "离线缓存", Modifier.weight(1f), openDownloads)
-                    }
-                }
             }
         }
         item {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(28.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 ProfileLibrary.entries.forEach { tab ->
                     Column(
-                        Modifier.selectable(selected = selected == tab, role = Role.Tab) {
+                        Modifier.clip(RoundedCornerShape(8.dp))
+                            .selectable(selected = selected == tab, role = Role.Tab) {
                             selected = tab; managing = false
                         }
-                            .padding(top = 12.dp),
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Text(
-                            tab.label, fontSize = 18.sp,
+                            tab.label, fontSize = 18.sp, lineHeight = 24.sp,
                             fontWeight = if (selected == tab) FontWeight.Bold else FontWeight.Normal,
                             color = if (selected == tab) colors.onSurface else colors.onSurfaceVariant,
                         )
@@ -191,24 +188,57 @@ internal fun ProfileScreen(
                     }
                 }
                 Spacer(Modifier.weight(1f))
-                TextButton({ managing = !managing }, enabled = titles.isNotEmpty() || managing) {
-                    Text(if (managing) "完成" else "管理", color = colors.onSurfaceVariant, fontSize = 12.sp)
+                TextButton({ managing = !managing }, enabled = entryCount > 0 || managing,
+                    contentPadding = ActionButtonPadding) {
+                    Text(if (managing) "完成" else "管理", color = colors.onSurfaceVariant,
+                        fontSize = 12.sp, maxLines = 1)
                 }
             }
         }
         item {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 12.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                Text("${titles.size} 部影片", color = colors.onSurfaceVariant, fontSize = 12.sp,
+                Text(if (selected == ProfileLibrary.Downloads) "$entryCount 集缓存" else "$entryCount 部影片",
+                    color = colors.onSurfaceVariant, fontSize = 12.sp,
                     modifier = Modifier.weight(1f))
                 if (managing) TextButton({
-                    confirmClear = if (selected == ProfileLibrary.History) ClearTarget.History else ClearTarget.Favorites
-                }, enabled = titles.isNotEmpty()) {
+                    confirmClear = when (selected) {
+                        ProfileLibrary.History -> ClearTarget.History
+                        ProfileLibrary.Favorites -> ClearTarget.Favorites
+                        ProfileLibrary.Downloads -> ClearTarget.Downloads
+                    }
+                }, enabled = entryCount > 0) {
                     Text("清空全部", color = Accent, fontSize = 12.sp)
                 }
             }
         }
-        if (titles.isEmpty()) {
+        if (selected == ProfileLibrary.Downloads) {
+            if (downloads.isEmpty()) item {
+                EmptyLibraryHint("还没有离线缓存", NavigationIcons.Download,
+                    if (model.downloads.supports("hls")) "在播放详情页缓存影片，随时离线观看"
+                    else "当前设备暂不支持离线缓存")
+            } else items(downloads.chunked(3), key = { "downloads:${it.first().id}" }) { row ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.forEach { entry ->
+                        Box(Modifier.weight(1f)) {
+                            DownloadPosterCard(
+                                entry, model.coverFor(entry.info.title, entry.cover), managing,
+                                onAction = {
+                                    when (entry.status) {
+                                        DownloadStatus.Completed -> { model.playDownload(entry); openPlayer() }
+                                        DownloadStatus.Queued, DownloadStatus.Downloading -> model.downloads.pause(entry.id)
+                                        DownloadStatus.Paused, DownloadStatus.Failed -> model.downloads.resume(entry.id)
+                                    }
+                                },
+                                onRemove = { deletingDownload = entry.id },
+                            )
+                        }
+                    }
+                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        } else if (titles.isEmpty()) {
             item {
                 EmptyLibraryHint(
                     if (selected == ProfileLibrary.History) "还没有播放记录" else "还没有收藏的影片",
@@ -271,26 +301,48 @@ internal fun ProfileScreen(
     confirmClear?.let { target ->
         AlertDialog(
             onDismissRequest = { confirmClear = null },
-            title = { Text(if (target == ClearTarget.Favorites) "清空我的收藏" else "清空播放记录") },
+            title = { Text(when (target) {
+                ClearTarget.Favorites -> "清空我的收藏"
+                ClearTarget.History -> "清空播放记录"
+                ClearTarget.Downloads -> "清空离线缓存"
+            }) },
             text = {
                 Text(
                     if (target == ClearTarget.Favorites) "确定要清空全部收藏吗？此操作不可恢复。"
+                    else if (target == ClearTarget.Downloads) "确定要删除全部缓存任务与本地视频文件吗？此操作不可恢复。"
                     else "确定要清空全部播放记录吗？此操作不可恢复。",
                 )
             },
             confirmButton = {
                 TextButton({
-                    if (target == ClearTarget.Favorites) model.user.clearFavorites() else model.user.clearHistory()
+                    when (target) {
+                        ClearTarget.Favorites -> model.user.clearFavorites()
+                        ClearTarget.History -> model.user.clearHistory()
+                        ClearTarget.Downloads -> downloads.forEach { model.removeDownload(it.id) }
+                    }
                     confirmClear = null
                 }) { Text("清空", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton({ confirmClear = null }) { Text("取消") } },
         )
     }
+    deletingDownload?.let { id ->
+        AlertDialog(
+            onDismissRequest = { deletingDownload = null },
+            title = { Text("删除缓存？") },
+            text = { Text("将移除此集的任务与本地视频文件。") },
+            confirmButton = { TextButton({
+                model.removeDownload(id); deletingDownload = null
+            }) { Text("删除", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton({ deletingDownload = null }) { Text("取消") } },
+        )
+    }
 }
 
-private enum class ClearTarget { Favorites, History }
-private enum class ProfileLibrary(val label: String) { History("历史"), Favorites("收藏") }
+private enum class ClearTarget { Favorites, History, Downloads }
+private enum class ProfileLibrary(val label: String) {
+    History("历史"), Favorites("收藏"), Downloads("离线缓存"),
+}
 private data class ProfileTitle(
     val pageUrl: String, val title: String, val cover: String?, val subtitle: String?,
     val progress: Float?,
@@ -306,16 +358,80 @@ private fun ProfileToolbarButton(icon: ImageVector, label: String, onClick: () -
 }
 
 @Composable
-private fun ProfileShortcut(
-    icon: ImageVector, label: String, modifier: Modifier = Modifier, onClick: () -> Unit,
+private fun DownloadPosterCard(
+    entry: OfflineDownload, cover: String?, managing: Boolean,
+    onAction: () -> Unit, onRemove: () -> Unit,
 ) {
-    Column(modifier.clip(RoundedCornerShape(12.dp))
-        .clickable(role = Role.Button, onClick = onClick).padding(vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(24.dp),
-            tint = MaterialTheme.colorScheme.onSurface)
-        Spacer(Modifier.height(8.dp))
-        Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+    val completed = entry.status == DownloadStatus.Completed
+    val actionLabel = when (entry.status) {
+        DownloadStatus.Completed -> "播放"
+        DownloadStatus.Queued, DownloadStatus.Downloading -> "暂停"
+        DownloadStatus.Paused -> "继续"
+        DownloadStatus.Failed -> "重试"
+    }
+    val actionIcon = when (entry.status) {
+        DownloadStatus.Queued, DownloadStatus.Downloading -> NavigationIcons.Pause
+        DownloadStatus.Failed -> NavigationIcons.Refresh
+        else -> NavigationIcons.Play
+    }
+    val status = when (entry.status) {
+        DownloadStatus.Completed -> "已缓存"
+        DownloadStatus.Queued -> "等待缓存"
+        DownloadStatus.Downloading -> entry.progress?.let { "缓存中 ${(it.coerceIn(0f, 1f) * 100).toInt()}%" } ?: "缓存中"
+        DownloadStatus.Paused -> "已暂停"
+        DownloadStatus.Failed -> "缓存失败"
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth().aspectRatio(0.7f).clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = completed && !managing, role = Role.Button, onClick = onAction)) {
+            Poster(cover, entry.info.title, Modifier.fillMaxSize())
+            Row(
+                Modifier.align(Alignment.BottomStart).fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xE6000000))))
+                    .padding(horizontal = 6.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(if (completed) NavigationIcons.Check else NavigationIcons.Download,
+                    contentDescription = null, tint = if (completed) Accent else Color.White,
+                    modifier = Modifier.size(12.dp))
+                Text(status, color = Color.White, fontSize = 10.sp, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+            }
+            if (!completed) {
+                val fraction = entry.progress
+                if (fraction != null) LinearProgressIndicator(
+                    progress = { fraction.coerceIn(0f, 1f) },
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp),
+                    color = Accent, trackColor = Color.White.copy(alpha = 0.25f), drawStopIndicator = {},
+                ) else if (entry.status == DownloadStatus.Downloading) LinearProgressIndicator(
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp),
+                    color = Accent, trackColor = Color.White.copy(alpha = 0.25f),
+                )
+            }
+            if (managing) IconButton(
+                onRemove, Modifier.align(Alignment.TopEnd).padding(3.dp).size(32.dp)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.95f), RoundedCornerShape(8.dp)),
+            ) {
+                Icon(NavigationIcons.Delete, "删除${entry.info.title} ${entry.episodeLabel}",
+                    Modifier.size(18.dp), tint = Accent)
+            }
+        }
+        Text(entry.info.title, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 7.dp))
+        if (entry.episodeLabel.isNotBlank()) Text(entry.episodeLabel, fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+        if (entry.status == DownloadStatus.Failed && entry.error.isNotBlank()) Text(
+            entry.error, fontSize = 10.sp, color = MaterialTheme.colorScheme.error,
+            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp),
+        )
+        if (!managing) TextButton(onAction, contentPadding = ActionButtonPadding) {
+            Icon(actionIcon, contentDescription = null, modifier = Modifier.size(14.dp), tint = Accent)
+            Spacer(Modifier.width(4.dp))
+            Text(actionLabel, color = Accent, fontSize = 11.sp)
+        }
     }
 }
 
@@ -383,60 +499,7 @@ private fun EmptyLibraryHint(text: String, icon: ImageVector, hint: String) {
 }
 
 @Composable
-private fun EditProfileDialog(
-    profile: UserProfile, platform: PlatformServices,
-    onDismiss: () -> Unit, onSave: (String, String, String) -> Unit,
-) {
-    var nickname by remember { mutableStateOf(profile.nickname) }
-    var bio by remember { mutableStateOf(profile.bio) }
-    var avatar by remember { mutableStateOf(profile.avatar) }
-    var picking by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf(false) }
-    val draft = remember { mutableStateOf<String?>(null) }
-    DisposableEffect(Unit) {
-        onDispose { draft.value?.let(platform::deleteAvatar) }
-    }
-    val pick = rememberAvatarPicker(platform) { result ->
-        picking = false
-        error = result.isFailure
-        result.getOrNull()?.let {
-            draft.value?.let(platform::deleteAvatar)
-            draft.value = it
-            avatar = it
-        }
-    }
-    AlertDialog(
-        onDismissRequest = { if (!picking) onDismiss() },
-        title = { Text("编辑资料") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    ProfileAvatar(platform, avatar, Modifier.size(72.dp))
-                    TextButton({ picking = true; error = false; pick() }, enabled = !picking) {
-                        Text(if (picking) "正在处理…" else "更换头像", color = Accent)
-                    }
-                    if (error) Text("图片读取失败，请重新选择", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                }
-                OutlinedTextField(
-                    value = nickname, onValueChange = { nickname = it.take(12) },
-                    label = { Text("昵称") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = bio, onValueChange = { bio = it.take(40) },
-                    label = { Text("简介") }, minLines = 2, maxLines = 3, modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = { TextButton({
-            onSave(nickname, bio, avatar)
-            draft.value = null
-        }, enabled = !picking) { Text("保存") } },
-        dismissButton = { TextButton(onDismiss, enabled = !picking) { Text("取消") } },
-    )
-}
-
-@Composable
-private fun ProfileAvatar(platform: PlatformServices, filename: String, modifier: Modifier) {
+internal fun ProfileAvatar(platform: PlatformServices, filename: String, modifier: Modifier) {
     Box(modifier.clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center) {
         Icon(NavigationIcons.Profile, "头像", Modifier.size(32.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -459,7 +522,7 @@ private fun ThemePickerDialog(current: ThemeMode, onChoose: (ThemeMode?) -> Unit
                         Modifier.fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
                             .clickable(role = Role.RadioButton) { onChoose(mode) }
-                            .padding(vertical = 6.dp),
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         RadioButton(selected = current == mode, onClick = { onChoose(mode) })

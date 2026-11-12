@@ -1,0 +1,13 @@
+# Keep portable graph outputs, coverage, and refresh helper; omit local state.
+cache/
+manifest.json
+cost.json
+.graphify_*
+*.stale
+.needs_update
+.pending_changes
+.rebuild_lock
+.rebuild.lock
+.vocab.txt
+# Graphify's local snapshots of previous generated outputs.
+20??-??-??/

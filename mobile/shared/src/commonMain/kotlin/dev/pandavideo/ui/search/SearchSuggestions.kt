@@ -52,7 +52,7 @@ internal fun SearchSuggestions(model: AppState, query: String, modifier: Modifie
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(title, Modifier.weight(1f).clickable(role = Role.Button) { submit(title) }
-                        .padding(start = 12.dp, top = 14.dp, bottom = 14.dp),
+                        .padding(start = 12.dp, end = 8.dp, top = 14.dp, bottom = 14.dp),
                         fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     IconButton({ model.searchHistory.remove(title) }, Modifier.size(48.dp)) {
                         Icon(NavigationIcons.Close, contentDescription = "删除历史：$title", modifier = Modifier.size(14.dp))

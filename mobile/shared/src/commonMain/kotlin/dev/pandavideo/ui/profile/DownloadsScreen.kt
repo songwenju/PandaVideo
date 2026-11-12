@@ -7,6 +7,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -14,6 +15,8 @@ import dev.pandavideo.app.AppState
 import dev.pandavideo.data.repository.DownloadStatus
 import dev.pandavideo.ui.common.Accent
 import dev.pandavideo.ui.common.Poster
+import dev.pandavideo.ui.common.NavigationIcons
+import dev.pandavideo.ui.common.ActionButtonPadding
 
 /** Single task-management entry point for all explicitly cached episodes. */
 @Composable
@@ -22,7 +25,9 @@ internal fun DownloadsScreen(model: AppState, back: () -> Unit, openPlayer: () -
     var deleting by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(back) { Text("返回") }
+            IconButton(onClick = back) {
+                Icon(NavigationIcons.Back, contentDescription = "返回")
+            }
             Text("离线缓存", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         }
         if (tasks.isEmpty()) {
@@ -47,27 +52,47 @@ internal fun DownloadsScreen(model: AppState, back: () -> Unit, openPlayer: () -
                             DownloadStatus.Completed -> "已缓存，可离线观看"
                             DownloadStatus.Failed -> entry.error.ifBlank { "缓存失败，请重试" }
                         }
-                        Text(status, style = MaterialTheme.typography.bodySmall,
-                            color = if (entry.status == DownloadStatus.Completed) Accent
-                                else MaterialTheme.colorScheme.onSurfaceVariant)
+                        val statusColor = if (entry.status == DownloadStatus.Completed) Accent
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Icon(
+                                when (entry.status) {
+                                    DownloadStatus.Completed -> NavigationIcons.Check
+                                    DownloadStatus.Paused -> NavigationIcons.Pause
+                                    DownloadStatus.Failed -> NavigationIcons.Refresh
+                                    else -> NavigationIcons.Download
+                                },
+                                contentDescription = null, modifier = Modifier.size(16.dp), tint = statusColor,
+                            )
+                            Text(status, style = MaterialTheme.typography.bodySmall, color = statusColor)
+                        }
                         if (entry.status == DownloadStatus.Downloading) {
                             val fraction = entry.progress
                             if (fraction == null) LinearProgressIndicator(Modifier.fillMaxWidth())
-                            else LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                            else LinearProgressIndicator(
+                                progress = { fraction }, modifier = Modifier.fillMaxWidth(),
+                                // Cache completion is already represented by the fill and status.
+                                // Material's default endpoint dot looks like an extra progress marker.
+                                drawStopIndicator = {},
+                            )
                         }
                         Row {
                             when (entry.status) {
-                                DownloadStatus.Completed -> TextButton({
+                                DownloadStatus.Completed -> DownloadAction(NavigationIcons.Play, "播放") {
                                     model.playDownload(entry); openPlayer()
-                                }) { Text("播放") }
-                                DownloadStatus.Queued, DownloadStatus.Downloading -> TextButton({
+                                }
+                                DownloadStatus.Queued, DownloadStatus.Downloading -> DownloadAction(NavigationIcons.Pause, "暂停") {
                                     model.downloads.pause(entry.id)
-                                }) { Text("暂停") }
-                                DownloadStatus.Paused, DownloadStatus.Failed -> TextButton({
+                                }
+                                DownloadStatus.Paused, DownloadStatus.Failed -> DownloadAction(
+                                    if (entry.status == DownloadStatus.Failed) NavigationIcons.Refresh else NavigationIcons.Play,
+                                    if (entry.status == DownloadStatus.Failed) "重试" else "继续",
+                                ) {
                                     model.downloads.resume(entry.id)
-                                }) { Text(if (entry.status == DownloadStatus.Failed) "重试" else "继续") }
+                                }
                             }
-                            TextButton({ deleting = entry.id }) { Text("删除") }
+                            DownloadAction(NavigationIcons.Delete, "删除") { deleting = entry.id }
                         }
                     }
                 }
@@ -81,5 +106,14 @@ internal fun DownloadsScreen(model: AppState, back: () -> Unit, openPlayer: () -
             confirmButton = { TextButton({ model.removeDownload(id); deleting = null }) { Text("删除") } },
             dismissButton = { TextButton({ deleting = null }) { Text("取消") } },
         )
+    }
+}
+
+@Composable
+private fun DownloadAction(icon: ImageVector, label: String, onClick: () -> Unit) {
+    TextButton(onClick = onClick, contentPadding = ActionButtonPadding) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(label)
     }
 }

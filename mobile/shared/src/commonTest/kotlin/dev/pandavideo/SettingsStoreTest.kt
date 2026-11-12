@@ -24,6 +24,7 @@ class SettingsStoreTest {
         assertEquals(1f, value.defaultRate)
         assertFalse(value.rememberVolume)
         assertFalse(value.rememberBrightness)
+        assertEquals(listOf("hot", "discover", "browse", "profile"), value.tabOrder)
     }
     @Test fun ratesAndLevelsAreValidatedAndPersisted() {
         val storage = FakeStorage()
@@ -48,5 +49,22 @@ class SettingsStoreTest {
         val storage = FakeStorage()
         storage.putString("settings", "broken")
         assertEquals(1f, SettingsStore(storage).settings.value.defaultRate)
+    }
+    @Test fun reorderedTabsSurviveReloadAndOtherPreferenceChanges() {
+        val storage = FakeStorage()
+        val store = SettingsStore(storage)
+        val order = listOf("profile", "browse", "hot", "discover")
+        store.setTabOrder(order)
+        store.setDefaultRate(1.5f)
+        assertEquals(order, SettingsStore(storage).settings.value.tabOrder)
+        assertEquals(1.5f, SettingsStore(storage).settings.value.defaultRate)
+    }
+    @Test fun invalidStoredOrderRetainsKnownTabsAndRestoresMissingDestinations() {
+        val storage = FakeStorage()
+        storage.putString("settings", """{"tabOrder":["profile","removed","profile","discover"]}""")
+        val store = SettingsStore(storage)
+        assertEquals(listOf("profile", "discover", "hot", "browse"), store.settings.value.tabOrder)
+        store.setTabOrder(emptyList())
+        assertEquals(listOf("hot", "discover", "browse", "profile"), SettingsStore(storage).settings.value.tabOrder)
     }
 }

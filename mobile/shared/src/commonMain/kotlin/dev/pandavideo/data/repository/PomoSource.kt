@@ -57,7 +57,10 @@ internal object PomoSource {
                 if (type == "movie" && tv || type == "tv" && movie && !tv) return@mapNotNull null
                 val page = try { page(address("auto_detail", "site" to site, "id" to row.text("id"))) }
                 catch (_: ApiError) { return@mapNotNull null }
-                SearchItem(title, "Pomo · $site", "$site:${row.text("id")}", row.text("play_url").isNotBlank(),
+                // Sparse search responses omit play_url and resolve routes in auto_detail.
+                // An absent field is not a confirmed empty resource; an explicit empty one is.
+                SearchItem(title, "Pomo · $site", "$site:${row.text("id")}",
+                    "play_url" !in row || row.text("play_url").isNotBlank(),
                     page, row.text("cover").takeIf(::isWebUrl).orEmpty(), row.text("year"),
                     row.text("area"), genre, row.text("actor"), remark)
             }

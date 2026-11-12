@@ -29,7 +29,18 @@ class DlnaCastingTest {
         var failPlay = false
         var failSeek = false
         var playDelay = 0L
+        var discoveryError: Exception? = null
+        var locations = emptyList<String>()
+        var descriptors = emptyMap<String, Pair<Long, String>>()
+        override suspend fun discoverDlnaLocations(host: String?): List<String> {
+            discoveryError?.let { throw it }
+            return locations
+        }
         override fun httpClient() = HttpClient(testScope.mockEngine { request ->
+            descriptors[request.url.toString()]?.let { (wait, xml) ->
+                delay(wait)
+                return@mockEngine respond(xml)
+            }
             val action = request.headers["SOAPAction"].orEmpty().substringAfter('#').trimEnd('"')
             actions += action
             if (action == "Play") delay(playDelay)
@@ -54,6 +65,39 @@ class DlnaCastingTest {
     private val target = DlnaDevice("tv", "电视", "http://192.168.1.10/control",
         "urn:schemas-upnp-org:service:AVTransport:1")
     private val source = MediaSource(1, "https://media.example/video.mp4", "video", "电影")
+
+    @Test fun responsiveTelevisionAppearsBeforeSlowDescriptorsFinish() = runTest {
+        val platform = TestPlatform(this).apply {
+            locations = listOf("http://192.168.1.10/root.xml", "http://192.168.1.11/root.xml")
+            val xml = """<root><device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
+                <friendlyName>电视</friendlyName><UDN>tv</UDN><serviceList><service>
+                <serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>
+                <controlURL>/control</controlURL></service></serviceList></device></root>"""
+            descriptors = mapOf(locations[0] to (0L to xml), locations[1] to (20_000L to xml))
+        }
+        val casting = DlnaCasting(platform, TestPlayer(), StandardTestDispatcher(testScheduler))
+        try {
+            casting.search()
+            runCurrent()
+            assertEquals(listOf(target), casting.devices)
+            assertTrue(casting.searching)
+            advanceTimeBy(8_001); runCurrent()
+            assertFalse(casting.searching)
+            assertEquals(listOf(target), casting.devices)
+        } finally { casting.close(); runCurrent() }
+    }
+
+    @Test fun discoveryPermissionErrorKeepsItsActionableExplanation() = runTest {
+        val platform = TestPlatform(this).apply {
+            discoveryError = DlnaException("请连接 Wi-Fi 或有线局域网后搜索投屏设备")
+        }
+        val casting = DlnaCasting(platform, TestPlayer(), StandardTestDispatcher(testScheduler))
+        try {
+            casting.search(); runCurrent()
+            assertEquals(platform.discoveryError?.message, casting.error)
+            assertFalse(casting.searching)
+        } finally { casting.close(); runCurrent() }
+    }
 
     @Test fun acceptedCastPausesPhoneAndDisconnectRestoresPositionWithoutAutoplay() = runTest {
         val platform = TestPlatform(this)

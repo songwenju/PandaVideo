@@ -54,6 +54,8 @@ import dev.pandavideo.core.player.SeekPreview
 import dev.pandavideo.core.player.previewPosition
 import dev.pandavideo.data.user.progressFraction
 import dev.pandavideo.ui.common.Accent
+import dev.pandavideo.ui.common.ActionButtonPadding
+import dev.pandavideo.ui.common.CompactActionButtonPadding
 import dev.pandavideo.ui.common.NavigationIcons
 import dev.pandavideo.ui.common.Poster
 import dev.pandavideo.ui.common.playbackTime
@@ -95,18 +97,20 @@ internal fun ModernPlayerScreen(
     val artwork = model.playingCatalog ?: catalog.find { it.title == state.info?.title }
     val cover = artwork?.let(model::poster) ?: model.playingSearch?.let(model::poster) ?: results.result?.results
         ?.find { it.detailUrl == state.info?.pageUrl }?.let(model::poster) ?: model.playingCover
-    // Keep "继续发现" recommendations within the same content type. When the playing item comes
-    // from search (no catalog match), infer the type from the episode list: multi-episode titles
-    // are treated as TV, otherwise movie. Fall back to the unfiltered pool only when no same-type
-    // candidates exist, so the related rail is never empty.
+    // Catalog sessions keep the exact list that opened them, including region, genre, year
+    // and score constraints. Never fill a short filtered list with unrelated global titles.
+    // Search/history sessions without a catalog scope use same-type suggestions from the pool.
     val playingKind = artwork?.kind
         ?: if ((state.info?.episodes?.size ?: 0) > 1) "tv" else "movie"
-    val related = catalog.filter { it.url != artwork?.url && it.kind == playingKind }.take(6)
-        .ifEmpty { catalog.filter { it.url != artwork?.url }.take(6) }
+    val related = (model.playingRecommendations ?: catalog)
+        .filter { it.url != artwork?.url && it.kind == playingKind }.take(6)
     val title = state.info?.title ?: artwork?.title ?: model.playingSearch?.title ?: "正在加载影片"
     val detailsBackgroundColor = MaterialTheme.colorScheme.surface
     LaunchedEffect(fullscreen) {
         platform.fullscreen(fullscreen)
+    }
+    LaunchedEffect(state.audioOnly) {
+        if (state.audioOnly) fullscreen = false
     }
     // Entering picture-in-picture must leave immersive fullscreen first, otherwise the app
     // keeps the fullscreen state and UI flags while the video shrinks into a floating window.
@@ -262,10 +266,11 @@ private fun PlayerDetails(
                     TextButton(
                         onClick = { synopsisExpanded = !synopsisExpanded },
                         enabled = info != null,
-                        contentPadding = PaddingValues(horizontal = 4.dp),
+                        contentPadding = CompactActionButtonPadding,
                     ) {
                         Text(if (synopsisExpanded) "收起" else "详情",
                             color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp)
+                        Spacer(Modifier.width(6.dp))
                         Icon(NavigationIcons.Chevron, null, Modifier.size(16.dp),
                             tint = MaterialTheme.colorScheme.onSurface,
                             )
@@ -277,7 +282,7 @@ private fun PlayerDetails(
                             )
                             if (savedNow) model.platform.haptics.success() else model.platform.haptics.tick()
                         },
-                        enabled = favoriteUrl.isNotBlank(), modifier = Modifier.size(40.dp),
+                        enabled = favoriteUrl.isNotBlank(), modifier = Modifier.size(44.dp),
                     ) {
                         Icon(
                             if (saved) NavigationIcons.HeartFilled else NavigationIcons.Heart,
@@ -298,8 +303,14 @@ private fun PlayerDetails(
                             dev.pandavideo.data.repository.DownloadStatus.Queued,
                             dev.pandavideo.data.repository.DownloadStatus.Downloading,
                         ),
-                        contentPadding = PaddingValues(horizontal = 0.dp),
+                        contentPadding = ActionButtonPadding,
                     ) {
+                        Icon(
+                            if (cached?.status == dev.pandavideo.data.repository.DownloadStatus.Completed)
+                                NavigationIcons.Check else NavigationIcons.Download,
+                            contentDescription = null, modifier = Modifier.size(18.dp), tint = Accent,
+                        )
+                        Spacer(Modifier.width(6.dp))
                         Text(when (cached?.status) {
                             dev.pandavideo.data.repository.DownloadStatus.Completed -> "本集已缓存"
                             dev.pandavideo.data.repository.DownloadStatus.Queued -> "等待缓存"
@@ -343,7 +354,7 @@ private fun PlayerDetails(
                     }
                     items(related, key = { it.url }) { item ->
                         PlayerRecommendation(model.poster(item), item.title, item.rating,
-                            onClick = { search(item.title) })
+                            onClick = { model.match(item) {} })
                     }
                 }
             }
@@ -444,9 +455,9 @@ private fun EpisodeGrid(
     onSelect: (Episode) -> Unit,
 ) {
     BoxWithConstraints {
-        // Keep each cell at least ~64dp wide (8dp gaps included), so labels like “HD中字” stay on
+        // Keep each cell at least ~80dp wide (8dp gaps included), so labels like “HD中字” stay on
         // one line; phones get 4–5 columns while wide XR displays keep up to six.
-        val columns = ((maxWidth + 8.dp) / 72.dp).toInt().coerceIn(2, 6)
+        val columns = ((maxWidth + 8.dp) / 88.dp).toInt().coerceIn(2, 6)
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             episodes.chunked(columns).forEach { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -454,16 +465,16 @@ private fun EpisodeGrid(
                         val selected = episode.path == selectedPath
                         val progress = progressFor(episode)
                         Box(
-                            Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(8.dp))
+                            Modifier.weight(1f).heightIn(min = 40.dp).clip(RoundedCornerShape(8.dp))
                                 .background(if (selected) Accent.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant)
                                 .clickable(enabled = enabled && !selected, role = Role.Button) { onSelect(episode) },
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
                                 episode.label,
-                                fontSize = 12.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+                                fontSize = 12.sp, lineHeight = 18.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
                                 color = if (selected) Accent else MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 4.dp),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
                             )
                             if (progress != null && progress.duration > 0) {
                                 val fraction = if (progress.finished) 1f
@@ -486,10 +497,15 @@ private fun EpisodeGrid(
 
 @Composable
 private fun DetailChip(label: String, selected: Boolean, click: () -> Unit) {
-    Text(label, fontSize = 11.sp, color = if (selected) Accent else MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(top = 8.dp).clip(RoundedCornerShape(18.dp))
+    Box(
+        modifier = Modifier.heightIn(min = 40.dp).clip(RoundedCornerShape(18.dp))
             .background(if (selected) Accent.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant)
-            .clickable(role = Role.Button, onClick = click).padding(horizontal = 12.dp, vertical = 8.dp))
+            .clickable(role = Role.Button, onClick = click).padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, fontSize = 12.sp, lineHeight = 18.sp,
+            color = if (selected) Accent else MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 @Composable
@@ -521,11 +537,11 @@ private fun VideoFrame(
     val previewCache = remember(session.controller, player.mediaId) {
         SeekPreview(session.controller, player.mediaId)
     }
-    LaunchedEffect(previewCache, player.duration, pipMode) {
+    LaunchedEffect(previewCache, player.duration, pipMode, state.audioOnly) {
         // Extract only while the user scrubs. Rapid movements cancel obsolete requests;
         // the bounded memory cache never downloads or persists the video.
         snapshotFlow {
-            if (pipMode) null else (gestureScrub ?: scrubbing)?.toLong()
+            if (pipMode || state.audioOnly) null else (gestureScrub ?: scrubbing)?.toLong()
                 ?.let { previewPosition(it, player.duration) }
         }.distinctUntilChanged().sample(200).collectLatest { target ->
             previewFrame = null
@@ -555,8 +571,8 @@ private fun VideoFrame(
     val dragSeekEnabled = state.info != null && error == null &&
         player.duration > 0 && session.controller.capabilities.seeking
     val seekPreview = gestureScrub ?: scrubbing
-    LaunchedEffect(player.phase, controls, interaction, scrubbing != null, gestureScrub != null, rateMenu, state.loading, adjustment?.active, zoomActive) {
-        if (!platform.persistentPlayerControls && player.phase == PlayerPhase.Playing && controls && scrubbing == null && gestureScrub == null && !rateMenu && !state.loading && adjustment?.active != true && !zoomActive) {
+    LaunchedEffect(player.phase, controls, interaction, scrubbing != null, gestureScrub != null, rateMenu, state.loading, adjustment?.active, zoomActive, state.audioOnly) {
+        if (!state.audioOnly && !platform.persistentPlayerControls && player.phase == PlayerPhase.Playing && controls && scrubbing == null && gestureScrub == null && !rateMenu && !state.loading && adjustment?.active != true && !zoomActive) {
             delay(3500); controls = false
         }
     }
@@ -564,6 +580,11 @@ private fun VideoFrame(
         if (player.phase != PlayerPhase.Playing) controls = true
     }
     LaunchedEffect(state.ended) { if (state.ended) controls = true }
+    LaunchedEffect(state.audioOnly) {
+        controls = true
+        locked = false
+        zoom = 1f
+    }
     fun togglePlay() {
         interaction++
         when {
@@ -614,13 +635,19 @@ private fun VideoFrame(
         }
     }
     Box(modifier.background(Color.Black).videoPinch(
-        enabled = !locked && !pipMode && state.info != null && error == null,
+        enabled = !state.audioOnly && !locked && !pipMode && state.info != null && error == null,
         onZoom = { zoomAction(it) },
         onActive = { zoomActivity(it) },
     )) {
         PersistentVideoContent(
             pipMode = pipMode,
-            surface = { PlayerSurface(session.controller, Modifier.fillMaxSize(), if (pipMode) 1f else zoom) },
+            surface = {
+                if (state.audioOnly) {
+                    // Unmount the native surface instead of covering it: this also releases its
+                    // screen-on request and detaches AVPlayerLayer for background audio playback.
+                    AudioModeBackdrop(cover, title, showArtwork = !busy && error == null)
+                } else PlayerSurface(session.controller, Modifier.fillMaxSize(), if (pipMode) 1f else zoom)
+            },
             overlays = {
         if (!locked) {
         // Keep taps on the parent so the drag zones receive the same pointer stream.
@@ -634,8 +661,8 @@ private fun VideoFrame(
             }) {
             PlayerGestureZone(
                 Modifier.align(Alignment.CenterStart).fillMaxHeight().fillMaxWidth(0.5f),
-                adjust = AdjustKind.Brightness, dragSeekEnabled = dragSeekEnabled,
-                readLevel = platform::currentBrightness,
+                adjust = if (state.audioOnly) AdjustKind.Volume else AdjustKind.Brightness, dragSeekEnabled = dragSeekEnabled,
+                readLevel = if (state.audioOnly) platform::currentVolume else platform::currentBrightness,
                 onSeekStart = {
                     dragBase = player.position.coerceIn(0, player.duration)
                     controls = true; interaction++
@@ -650,8 +677,8 @@ private fun VideoFrame(
                 },
                 onSeekCancel = { gestureScrub = null; interaction++ },
                 onAdjust = { value ->
-                    platform.setBrightness(value)
-                    adjustment = Adjustment(AdjustKind.Brightness, value, active = true)
+                    if (state.audioOnly) platform.setVolume(value) else platform.setBrightness(value)
+                    adjustment = Adjustment(if (state.audioOnly) AdjustKind.Volume else AdjustKind.Brightness, value, active = true)
                 },
                 onAdjustFinish = { model.rememberPlayerLevels(); adjustment = adjustment?.copy(active = false) },
                 onFineModeChange = { active -> fineScrub = active; if (active) platform.haptics.tick() },
@@ -701,7 +728,30 @@ private fun VideoFrame(
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f).padding(start = 4.dp))
                 }
-                if (fullscreen && session.controller.capabilities.pictureInPicture && platform.pipSupported) {
+                if (!fullscreen) Spacer(Modifier.weight(1f))
+                if (session.controller.capabilities.audioOnly && state.info != null) IconToggleButton(
+                    checked = state.audioOnly,
+                    onCheckedChange = {
+                        platform.haptics.tick()
+                        session.setAudioOnly(it)
+                        controls = true
+                        interaction++
+                    },
+                    modifier = Modifier.size(44.dp),
+                    colors = IconButtonDefaults.iconToggleButtonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = Color.White,
+                        checkedContainerColor = Accent.copy(alpha = 0.16f),
+                        checkedContentColor = Accent,
+                    ),
+                ) {
+                    Icon(
+                        NavigationIcons.Headphones,
+                        contentDescription = if (state.audioOnly) "切回视频" else "音频模式",
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                if (!state.audioOnly && fullscreen && session.controller.capabilities.pictureInPicture && platform.pipSupported) {
                     IconButton({ platform.haptics.tick(); platform.enterPictureInPicture() }, Modifier.size(44.dp)) {
                         Icon(NavigationIcons.Pip, "画中画", Modifier.size(22.dp), tint = Color.White)
                     }
@@ -934,14 +984,14 @@ private fun VideoFrame(
                         tint = if (next != null) Color.White else Color.White.copy(alpha = 0.35f))
                 }
                 Spacer(Modifier.weight(1f))
-                if (platform.dlnaSupported) IconButton({
+                if (!state.audioOnly && platform.dlnaSupported) IconButton({
                     casting.picker = true
                     casting.search()
                     interaction++
                 }, Modifier.size(44.dp)) {
                     Icon(NavigationIcons.Cast, "投屏到电视", Modifier.size(22.dp), tint = Color.White)
                 }
-                if (!platform.dlnaSupported && platform.nativeCastingSupported)
+                if (!state.audioOnly && !platform.dlnaSupported && platform.nativeCastingSupported)
                     platform.CastingButton(Modifier.size(44.dp))
                 if (session.controller.capabilities.playbackRate) Box {
                     ControlTextPill(
@@ -966,12 +1016,12 @@ private fun VideoFrame(
                     rateMenu = false
                     openDetails()
                 }
-                if (!fullscreen && session.controller.capabilities.pictureInPicture && platform.pipSupported) {
+                if (!state.audioOnly && !fullscreen && session.controller.capabilities.pictureInPicture && platform.pipSupported) {
                     IconButton({ platform.haptics.tick(); platform.enterPictureInPicture() }, Modifier.size(44.dp)) {
                         Icon(NavigationIcons.Pip, "画中画", Modifier.size(20.dp), tint = Color.White)
                     }
                 }
-                if (!fullscreen && session.controller.capabilities.fullscreen) IconButton(toggleFullscreen, Modifier.size(44.dp)) {
+                if (!state.audioOnly && !fullscreen && session.controller.capabilities.fullscreen) IconButton(toggleFullscreen, Modifier.size(44.dp)) {
                     Icon(NavigationIcons.Fullscreen, if (fullscreen) "退出全屏" else "全屏", Modifier.size(20.dp), tint = Color.White)
                 }
             }
@@ -1150,10 +1200,10 @@ private fun SeekHint(forward: Boolean, modifier: Modifier) = Column(
 @Composable
 private fun ControlTextPill(text: String, plain: Boolean = false, onClick: () -> Unit) {
     Box(
-        Modifier.height(if (plain) 44.dp else 40.dp).clip(RoundedCornerShape(20.dp))
+        Modifier.heightIn(min = if (plain) 44.dp else 40.dp).clip(RoundedCornerShape(20.dp))
             .background(if (plain) Color.Transparent else Color.White.copy(alpha = 0.16f))
             .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = 14.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(text, color = Color.White, fontSize = if (plain) 16.sp else 13.sp,

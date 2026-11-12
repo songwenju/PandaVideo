@@ -24,6 +24,8 @@ data class PlayerCapabilities(
     val playbackRate: Boolean = true, val seeking: Boolean = true,
     val fullscreen: Boolean = true, val pictureInPicture: Boolean = false,
     val framePreview: Boolean = false,
+    /** Whether the host can disable video tracks while retaining audio playback. */
+    val audioOnly: Boolean = false,
 )
 /** A small encoded image of [position] milliseconds in the source identified by [mediaId]. */
 data class PreviewFrame(val mediaId: Long, val position: Long, val bytes: ByteArray)
@@ -40,6 +42,8 @@ interface PlayerController {
     fun pause()
     fun seekTo(position: Long)
     fun setPlaybackRate(rate: Float)
+    /** Enables audio-only output without reloading, seeking, or changing play intent. */
+    fun setAudioOnly(enabled: Boolean) {}
     fun stop()
     fun close()
     /**
@@ -61,6 +65,8 @@ data class PlaybackState(
     /** True when the current episode ended and a next episode is available for auto-advance. */
     val ended: Boolean = false,
     val countdownSeconds: Int = 0,
+    /** Explicit session-scoped permission to play audio without a visible video presentation. */
+    val audioOnly: Boolean = false,
 )
 
 /** Serializes resolution and ignores stale or duplicate completion events. */
@@ -95,21 +101,34 @@ class PlaybackSession(
     private var recoveryAttempts = 0
     private var recoveryPosition: Long? = null
     private var intendedPlay = true
+    private val playbackAllowed: Boolean get() = playbackVisible || mutable.value.audioOnly
     /**
-     * Allows playback while the page or an explicit PiP window is visible.
-     * Hiding checkpoints and pauses even pending loads; showing never resumes by itself.
+     * Switches output mode for this session and preserves it across episode changes.
+     * Disabling audio mode while hidden checkpoints and pauses; enabling never resumes a pause.
+     */
+    fun setAudioOnly(enabled: Boolean) {
+        if (closed || !controller.capabilities.audioOnly || mutable.value.audioOnly == enabled) return
+        controller.setAudioOnly(enabled)
+        mutable.value = mutable.value.copy(audioOnly = enabled)
+        if (!playbackAllowed) pauseHiddenPlayback()
+    }
+    private fun pauseHiddenPlayback() {
+        intendedPlay = false
+        savePosition()
+        dismissEnded()
+        controller.pause()
+    }
+    /**
+     * Records whether the page or an explicit PiP window is visible.
+     * Hiding checkpoints and pauses even pending loads unless audio mode is enabled.
+     * Showing never resumes by itself.
      *
      * @param visible Whether the video currently has a visible presentation.
      */
     fun setPlaybackVisible(visible: Boolean) {
         if (closed || playbackVisible == visible) return
         playbackVisible = visible
-        if (!visible) {
-            intendedPlay = false
-            savePosition()
-            dismissEnded()
-            controller.pause()
-        }
+        if (!playbackAllowed) pauseHiddenPlayback()
     }
     private var resumedId = -1L
     private var countdown: Job? = null
@@ -130,7 +149,7 @@ class PlaybackSession(
         controller.state.collect { player ->
             // Native readiness and remote transport events can arrive after navigation.
             // Enforce the same policy for these events as for asynchronous resolution.
-            if (!closed && !playbackVisible && player.wantsPlay) controller.pause()
+            if (!closed && !playbackAllowed && player.wantsPlay) controller.pause()
             val current = mutable.value
             // AVPlayer and JavaFX clear wantsPlay when reporting an error. Preserve the
             // last non-error intent so recovery continues active playback but respects pause.
@@ -145,7 +164,7 @@ class PlaybackSession(
                 }
                 recoveryPosition = null
             }
-            if (!closed && playbackVisible && !current.loading && current.error == null &&
+            if (!closed && playbackAllowed && !current.loading && current.error == null &&
                 player.mediaId == current.mediaId && player.phase == PlayerPhase.Error) {
                 val info = current.info ?: return@collect
                 if (recoveryAttempts >= 2) {
@@ -161,7 +180,7 @@ class PlaybackSession(
                             resumePosition(info) ?: 0L else player.position, intendedPlay)
                 }
             }
-            if (!closed && playbackVisible && player.phase == PlayerPhase.Ended && player.mediaId == current.mediaId &&
+            if (!closed && playbackAllowed && player.phase == PlayerPhase.Ended && player.mediaId == current.mediaId &&
                 player.mediaId != endedId && !current.loading && !current.ended) {
                 endedId = player.mediaId
                 savePosition()
@@ -182,7 +201,7 @@ class PlaybackSession(
     /** Continues to the next episode after the end-of-episode countdown or an explicit tap. */
     fun advanceToNext() {
         val current = mutable.value
-        if (!playbackVisible || !current.ended) return
+        if (!playbackAllowed || !current.ended) return
         nextEpisode(current.info ?: return)?.let { select(it) }
     }
     /** Cancels auto-advance and stays on the finished episode for replay. */
@@ -197,7 +216,7 @@ class PlaybackSession(
     private fun loadRequest(value: PlayerRequest, position: Long?, autoplay: Boolean) {
         if (closed) return
         recoveryPosition = position
-        intendedPlay = playbackVisible && autoplay
+        intendedPlay = playbackAllowed && autoplay
         savePosition()
         countdown?.cancel()
         val cached = preload?.takeIf { it.request == value && it.started.elapsedNow() < 60.seconds }
@@ -215,9 +234,9 @@ class PlaybackSession(
                 ensureActive()
                 if (info.url in value.rejectedMedia) throw IllegalStateException("备用线路不可用，请重试")
                 if (!closed && id == generation) {
-                    mutable.value = PlaybackState(info = info, mediaId = id)
+                    mutable.value = PlaybackState(info = info, mediaId = id, audioOnly = mutable.value.audioOnly)
                     controller.load(MediaSource(id, info.url, info.kind, info.title,
-                        episodeLabelOf(info), playbackVisible && intendedPlay, artworkUrl(info)))
+                        episodeLabelOf(info), playbackAllowed && intendedPlay, artworkUrl(info)))
                     if (controller.capabilities.playbackRate) controller.setPlaybackRate(playbackRate)
                     installRemoteActions(info)
                     preloadNext(info)

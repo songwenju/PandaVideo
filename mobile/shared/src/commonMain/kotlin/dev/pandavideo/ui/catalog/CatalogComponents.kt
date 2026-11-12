@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -54,7 +55,13 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
 internal fun HomeCategories(value: String, select: (String) -> Unit) {
+    val row = rememberLazyListState()
+    LaunchedEffect(value) {
+        val index = HomeCategoryOptions.indexOfFirst { it.first == value }
+        if (index >= 0) row.animateScrollToItem(index)
+    }
     LazyRow(
+        state = row,
         contentPadding = PaddingValues(horizontal = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -78,7 +85,7 @@ internal fun HomeCategories(value: String, select: (String) -> Unit) {
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-internal fun CatalogContent(state: CatalogState, model: AppState, refresh: () -> Unit, more: () -> Unit, play: (CatalogItem) -> Unit, home: Boolean = false) {
+internal fun CatalogContent(state: CatalogState, model: AppState, refresh: () -> Unit, more: () -> Unit, play: (CatalogItem) -> Unit, home: Boolean = false, modifier: Modifier = Modifier) {
     val grid = rememberLazyGridState()
     val latestState by rememberUpdatedState(state)
     val loadMore by rememberUpdatedState(more)
@@ -94,8 +101,8 @@ internal fun CatalogContent(state: CatalogState, model: AppState, refresh: () ->
         }.distinctUntilChanged().collect { next -> if (next != null) loadMore() }
     }
     PullToRefreshBox(
-        isRefreshing = state.loading && !state.loadingMore,
-        onRefresh = { if (!state.loading) refresh() }, modifier = Modifier.fillMaxSize(),
+        isRefreshing = state.refreshing,
+        onRefresh = { if (!state.loading) refresh() }, modifier = modifier.fillMaxSize(),
     ) {
         Column(Modifier.fillMaxSize()) {
         if (!home) {

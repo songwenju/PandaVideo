@@ -1,0 +1,538 @@
+{
+  "generated_at": "2026-11-12T08:20:19.363384+00:00",
+  "graphify_version": "0.9.64",
+  "mode": "code-only",
+  "code_file_count": 158,
+  "parse_warnings": [
+    {
+      "source_file": "frontend/tests/browser/fixtures/dplayer-test0.ts",
+      "first_error_line": 1,
+      "multiline_error": true
+    },
+    {
+      "source_file": "frontend/tests/browser/fixtures/dplayer-test1.ts",
+      "first_error_line": 1,
+      "multiline_error": true
+    },
+    {
+      "source_file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+      "first_error_line": 43,
+      "multiline_error": true
+    },
+    {
+      "source_file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/SeekPreview.kt",
+      "first_error_line": 1,
+      "multiline_error": true
+    },
+    {
+      "source_file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/html/HtmlNode.kt",
+      "first_error_line": 1,
+      "multiline_error": true
+    },
+    {
+      "source_file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/BundledPosters.kt",
+      "first_error_line": 1,
+      "multiline_error": true
+    },
+    {
+      "source_file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CacheMaintenance.kt",
+      "first_error_line": 1,
+      "multiline_error": true
+    },
+    {
+      "source_file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogAvailability.kt",
+      "first_error_line": 1,
+      "multiline_error": true
+    },
+    {
+      "source_file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+      "first_error_line": 42,
+      "multiline_error": true
+    },
+    {
+      "source_file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/JianpianSource.kt",
+      "first_error_line": 1,
+      "multiline_error": true
+    },
+    {
+      "source_file": "mobile/tools/feature-verification.init.gradle",
+      "first_error_line": 7,
+      "multiline_error": false
+    }
+  ],
+  "health": {
+    "node_count": 2298,
+    "unverified_node_count": 0,
+    "raw_edge_count": 5155,
+    "non_object_edges": 0,
+    "missing_endpoint_edges": 0,
+    "dangling_endpoint_edges": 0,
+    "external_reference_edges": 0,
+    "self_loop_edges": 62,
+    "valid_candidate_edges": 5155,
+    "exact_duplicate_edges": 0,
+    "directed_unique_endpoint_pairs": 5155,
+    "directed_same_endpoint_collapsed_edges": 0,
+    "undirected_unique_endpoint_pairs": 5155,
+    "undirected_same_endpoint_collapsed_edges": 0,
+    "same_endpoint_group_count": 0,
+    "relation_variant_groups": 0,
+    "source_file_variant_groups": 0,
+    "source_location_variant_groups": 0,
+    "context_variant_groups": 0,
+    "post_build_graph_type": "Graph",
+    "post_build_node_count": 2298,
+    "post_build_edge_count": 5155,
+    "post_build_error": "",
+    "producer_suppression": {
+      "path": "/Users/bytedance/.local/share/uv/tools/graphifyy/lib/python3.11/site-packages/graphify/extract.py",
+      "total_sites": 12,
+      "sites": [
+        {
+          "line": 1337,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+        },
+        {
+          "line": 1870,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+        },
+        {
+          "line": 1872,
+          "name": "seen_doc_refs",
+          "tuple_arity": 0,
+          "sample": "seen_doc_refs: set[str] = set()"
+        },
+        {
+          "line": 2242,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids: set[str] = {n[\"id\"] for n in nodes}"
+        },
+        {
+          "line": 2389,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids = {n.get(\"id\") for n in nodes}"
+        },
+        {
+          "line": 3109,
+          "name": "seen_keys",
+          "tuple_arity": 0,
+          "sample": "seen_keys: set[tuple] = set()"
+        },
+        {
+          "line": 3278,
+          "name": "seen_keys",
+          "tuple_arity": 0,
+          "sample": "seen_keys: set[tuple] = set()"
+        },
+        {
+          "line": 5334,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids: set[str] = set()"
+        },
+        {
+          "line": 5442,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids: set[str] = set()"
+        },
+        {
+          "line": 5521,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids: set[str] = set()"
+        },
+        {
+          "line": 6036,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids: set[str] = set()"
+        },
+        {
+          "line": 6037,
+          "name": "seen_edges",
+          "tuple_arity": 4,
+          "sample": "seen_edges: set[tuple[str, str, str, str | None]] = set()"
+        }
+      ],
+      "error": ""
+    },
+    "examples": []
+  },
+  "raw_health": {
+    "node_count": 1811,
+    "unverified_node_count": 0,
+    "raw_edge_count": 5253,
+    "non_object_edges": 0,
+    "missing_endpoint_edges": 0,
+    "dangling_endpoint_edges": 1245,
+    "external_reference_edges": 14,
+    "self_loop_edges": 62,
+    "valid_candidate_edges": 3994,
+    "exact_duplicate_edges": 0,
+    "directed_unique_endpoint_pairs": 3866,
+    "directed_same_endpoint_collapsed_edges": 128,
+    "undirected_unique_endpoint_pairs": 3853,
+    "undirected_same_endpoint_collapsed_edges": 141,
+    "same_endpoint_group_count": 109,
+    "relation_variant_groups": 82,
+    "source_file_variant_groups": 0,
+    "source_location_variant_groups": 19,
+    "context_variant_groups": 8,
+    "post_build_graph_type": "Graph",
+    "post_build_node_count": 2252,
+    "post_build_edge_count": 5110,
+    "post_build_error": "",
+    "producer_suppression": {
+      "path": "/Users/bytedance/.local/share/uv/tools/graphifyy/lib/python3.11/site-packages/graphify/extract.py",
+      "total_sites": 12,
+      "sites": [
+        {
+          "line": 1337,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+        },
+        {
+          "line": 1870,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+        },
+        {
+          "line": 1872,
+          "name": "seen_doc_refs",
+          "tuple_arity": 0,
+          "sample": "seen_doc_refs: set[str] = set()"
+        },
+        {
+          "line": 2242,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids: set[str] = {n[\"id\"] for n in nodes}"
+        },
+        {
+          "line": 2389,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids = {n.get(\"id\") for n in nodes}"
+        },
+        {
+          "line": 3109,
+          "name": "seen_keys",
+          "tuple_arity": 0,
+          "sample": "seen_keys: set[tuple] = set()"
+        },
+        {
+          "line": 3278,
+          "name": "seen_keys",
+          "tuple_arity": 0,
+          "sample": "seen_keys: set[tuple] = set()"
+        },
+        {
+          "line": 5334,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids: set[str] = set()"
+        },
+        {
+          "line": 5442,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids: set[str] = set()"
+        },
+        {
+          "line": 5521,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids: set[str] = set()"
+        },
+        {
+          "line": 6036,
+          "name": "seen_ids",
+          "tuple_arity": 0,
+          "sample": "seen_ids: set[str] = set()"
+        },
+        {
+          "line": 6037,
+          "name": "seen_edges",
+          "tuple_arity": 4,
+          "sample": "seen_edges: set[tuple[str, str, str, str | None]] = set()"
+        }
+      ],
+      "error": ""
+    },
+    "examples": [
+      {
+        "source": "mobile_shared_src_iosmain_kotlin_dev_pandavideo_core_platform_iosofflineengine_iosofflineengine",
+        "target": "mobile_shared_src_iosmain_kotlin_dev_pandavideo_core_platform_iosofflineengine_iosofflineengine_urlsession",
+        "edge_count": 5,
+        "relations": [
+          "method"
+        ],
+        "source_files": [
+          "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosOfflineEngine.kt"
+        ],
+        "source_locations": [
+          "L111",
+          "L123",
+          "L136",
+          "L144",
+          "L155"
+        ],
+        "contexts": [
+          ""
+        ]
+      },
+      {
+        "source": "mobile_shared_src_iosmain_kotlin_dev_pandavideo_core_platform_iosofflineengine_iosofflineengine_urlsession",
+        "target": "nsurlsession",
+        "edge_count": 5,
+        "relations": [
+          "references"
+        ],
+        "source_files": [
+          "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosOfflineEngine.kt"
+        ],
+        "source_locations": [
+          "L111",
+          "L123",
+          "L136",
+          "L144",
+          "L155"
+        ],
+        "contexts": [
+          "parameter_type"
+        ]
+      },
+      {
+        "source": "mobile_shared_src_iosmain_kotlin_dev_pandavideo_core_platform_iosofflineengine_delegate",
+        "target": "mobile_shared_src_iosmain_kotlin_dev_pandavideo_core_platform_iosofflineengine_delegate_urlsession",
+        "edge_count": 5,
+        "relations": [
+          "method"
+        ],
+        "source_files": [
+          "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosOfflineEngine.kt"
+        ],
+        "source_locations": [
+          "L180",
+          "L183",
+          "L187",
+          "L190",
+          "L193"
+        ],
+        "contexts": [
+          ""
+        ]
+      },
+      {
+        "source": "mobile_shared_src_iosmain_kotlin_dev_pandavideo_core_platform_iosofflineengine_delegate_urlsession",
+        "target": "nsurlsession",
+        "edge_count": 5,
+        "relations": [
+          "references"
+        ],
+        "source_files": [
+          "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosOfflineEngine.kt"
+        ],
+        "source_locations": [
+          "L180",
+          "L183",
+          "L187",
+          "L190",
+          "L193"
+        ],
+        "contexts": [
+          "parameter_type"
+        ]
+      },
+      {
+        "source": "mobile_iosapp_pandavideo_pandavideoapp_playerhostcontroller",
+        "target": "bool",
+        "edge_count": 4,
+        "relations": [
+          "references"
+        ],
+        "source_files": [
+          "mobile/iosApp/PandaVideo/PandaVideoApp.swift"
+        ],
+        "source_locations": [
+          "L38",
+          "L43",
+          "L44",
+          "L49"
+        ],
+        "contexts": [
+          "field"
+        ]
+      }
+    ]
+  },
+  "files": {
+    "frontend/app.py": "559cebef00cae856e6cba48cd59cac0aea47e8c4bc4dafa3cfc099068af5a5eb",
+    "frontend/douban.py": "3c1e53cdc3abb5a58aeb61f1b15405d769d042f2bb09174cfe5afcee603c86ad",
+    "frontend/install-launch-agent.sh": "fef9e3b1a924184715ad09427f588c308babf98c88c632303dcd36ed1baffc71",
+    "frontend/media_search.py": "3113d76b64ff9a8927142ec3ebe4e3ef5387b5cfa3df01cca0e17c388c71b5c7",
+    "frontend/movie_sources.py": "c1ba26ecc562157bc61f41c383e7e271265fef0353d573295f8f1f57bf648851",
+    "frontend/playback_library.py": "6f89c484e09921750c5dc9e277792abcabb33c8300f14245917149e340181f34",
+    "frontend/player.py": "18e5cc2e11628eacbdfd4ed24a6d81f887f640bce3013f40628a6f92abfd4491",
+    "frontend/posters.py": "d348da23837cf1a6f9f53794570f358352863363958aa973f9af4a430a815bd5",
+    "frontend/run-app.sh": "feeabfe245061d23ca53d30874e571a43c4f9cad4b06ca71a180cbbbbf82897f",
+    "frontend/run.sh": "7b8b1ddf1ba0c417de85a53762762861781a44cbc637cd6dbf840c8f148609a0",
+    "frontend/service.py": "b2f8416fb9de1eb6b8df769374589268d3733ff99aa9cbb6db4715ab86717351",
+    "frontend/service.sh": "def67e24d51bb4e944d59d63dc403dd61938b0f8388a721f5bbd3da4239d8cca",
+    "frontend/static/app.js": "4ba0bfba859ed809b812c51cf43ec4dd9cd1f250c96badc77041cfcaeb206154",
+    "frontend/static/catalog.js": "938919971c408f14eb2e48269bd9a45a4cde3841fb9444de66ac356a090b5b77",
+    "frontend/static/douban.js": "08608afd632c8a217ca90c098c04af9240b380e8f0b5d013dffbcca301f80813",
+    "frontend/static/hot.js": "aa13f535269f083431775693cfdcbba3fbdc945980066cdbbf00d8c2ede47966",
+    "frontend/static/list-pagination.js": "7d2606c75eb6c887ca1049f8d6e9d6b4ec400cc7a63cff5893f744db9f6dd88d",
+    "frontend/static/player.js": "75ae28a3d5f698d0ba5f31dfb30a8ea3162a958dfc9797d95fff49910c71ac54",
+    "frontend/static/poster.js": "00c4ed4e41ceef1dcf3eeb5815944014ffc59192c43c035b9264a61b5e12d998",
+    "frontend/static/site.js": "8a171468201d194080373597fbc2e65095101670adfdc0772b1b209f4393a0af",
+    "frontend/tests/browser/autoplay-dplayer.cjs": "306e434dfa7372fcc9d83a89b3f0cd530e5b8e7f60ee6b64aa78750e7b9b24d2",
+    "frontend/tests/browser/check.cjs": "c663985fb4b8d3a2fe7b7d119517be90cb4ae2be2229d1f6c00ca9429bee2df5",
+    "frontend/tests/browser/fixtures/dplayer-test0.ts": "d29c3cbf5570c732556fcc0da9c87356693bd6c78be84e75c419b4ec210a6f82",
+    "frontend/tests/browser/fixtures/dplayer-test1.ts": "1c7e775cee0a2015dd808285701a83899f428829c8fa506618526f41bbc505c9",
+    "frontend/tests/browser/package.json": "b45be92b07709d97fd03d4ffa87e6d13f8a12fa6b046c987210b2a13a1fbd42a",
+    "frontend/tests/browser/player-edge.cjs": "f32aeb4737a44bbf7cec68523d41c21c7536b8a75e308ee3cd10fdbbf8f7ffc7",
+    "frontend/tests/browser/player-flow.cjs": "38dbc3e3c3e25fb1f7218c30d5fc5a972655750035a978828104eab20db40ba8",
+    "frontend/tests/browser/player-stability.cjs": "a127f62ddbdc6bacfa86a7739d435fcd3cd0ecd65ed85718e529bab73423d2e2",
+    "frontend/tests/browser/real-stream.cjs": "f973cfd8c6aa933f7a90dd5f02452385bba7589e6886649c9a30d7f76b854f6d",
+    "frontend/tests/browser/test-support.cjs": "f18cd22d2a7c46f5245a2dd2a987b520a93f6d01a171aef609c3e76fa9b37c67",
+    "frontend/tests/browser/touch-controls.cjs": "fc0ee183b245ced6ff3863eff8a8b80c30e5dbc7a747c37f2da3aebf11db4fc3",
+    "frontend/tests/browser/web-sync.cjs": "04b75aa41f92a96c37a6e68552395fec1bb148fa4e9a35dba30c0fb125345011",
+    "frontend/tests/test_app.py": "fcc0cee43058711408dcd56afc3d4fdf1efdedf97e0e1a98d7982738451796fc",
+    "frontend/tests/test_catalog.py": "3f1353992911edba996dc6d076cf06099b02f99401b5584d3fbf70f4ff90ea15",
+    "frontend/tests/test_douban.py": "45c2b5bea6fa6761669783710adc8c63390e1f2791b98601986076ad21de5648",
+    "frontend/tests/test_download_workflow.py": "4dfbb574ad876f03808afb7983fa690416f6b08abfffd51fc88d9c87814d0162",
+    "frontend/tests/test_dytt_mount.py": "305266b32f4aa3f24378a915c49d83da08ecce07de2b28ace3a69d6c99109100",
+    "frontend/tests/test_list_pagination.js": "70cf57a303cc6fe85429b8db1c9f98c04a7a00bcfe0f070174365db723fc6244",
+    "frontend/tests/test_media_search.py": "36055f6627a76e8472050105ee50fba51cc39e7e16af7fc861968404ec80ce53",
+    "frontend/tests/test_movie_sources.py": "4f5a542af12f008fad91d8420dfe08fc5bba826853111239392bc589040b6e58",
+    "frontend/tests/test_playback_library.py": "f4051ce7619f1fbf056370ff76232b9aff60bf7326f49cca9b7d517fa006844f",
+    "frontend/tests/test_player.py": "19823b1f1329c901e791ab4792b88f3ecd48cd8872883c0c17342a09430307ab",
+    "frontend/tests/test_posters.py": "172230c6970aefe9f12d8e3cab33793626a425e582e30e6a2cd3a8b582eeba2c",
+    "frontend/xunlei_mcp.py": "117ead360f178cddb4b5123cf4ddceaaf76de1d2088e7dd3ae2676b5268d2935",
+    "mobile/app/build.gradle.kts": "be0e7598550654ea65d21757cbb79154863f85384e803bfe5e8e77fcdf2ee0df",
+    "mobile/app/src/main/kotlin/dev/pandavideo/MainActivity.kt": "dc05cf15ca0981a5c64fe60c36ebe8bd928a5727c47461af88972b69dbbd68df",
+    "mobile/build.gradle.kts": "b50ab91a0072e4f1698e8f896ae1ccdc5cd57b279138ed378f3df175fc7c4c56",
+    "mobile/desktop/build.gradle.kts": "f8912da1b880c5bcb2fbf3e6e6c1adb362a085a41b3b744f9ad09b15a5df30af",
+    "mobile/desktop/src/main/kotlin/Main.kt": "9ca88f07fc29958c7f669c9165d1efda4d1e68ae1baa4c08c7253956eb3f0ce6",
+    "mobile/gradlew": "fb68debc1b1acf8ec55dc0d5e5495e1dedd0bd6b61f304bee61613eeb2bd9b92",
+    "mobile/iosApp/PandaVideo/PandaVideoApp.swift": "6eaabd9968bc96ce5459a97f89332c45805578a37c172e9a98993a099d94870f",
+    "mobile/iosApp/PandaVideoUITests/FullscreenTests.swift": "7079f7e60a1017dcbe945aede07d823791f4be16bda1fdce99b6e75193a2aa22",
+    "mobile/iosApp/build-shared.sh": "d68b6bc8d9062b33778af08d39a9f1a662c9781466398a05992e58863da97d9c",
+    "mobile/qa/server.py": "0d40ff9e902464a63c3e7b322c77b1eb7b1ca7dba4d3e9d01f0276032fc1165d",
+    "mobile/settings.gradle.kts": "9ae39a8abd5c3c1866af2dae891b3644a119a4263ed55273fdf9ced52e0cffea",
+    "mobile/shared/build.gradle.kts": "f5c0819501e5c0c572686518108996c584a5f1945016886792a69ec3d75488a2",
+    "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/AndroidDlnaDeviceTest.kt": "dfa6404892590773ecfc941729622eeb0b90a5d49e6d73d76c9b49f459383563",
+    "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/AndroidFullscreenDeviceTest.kt": "517b282f77afd0b8669b429dd773db11ed997a27288ba1c6c15c54e2e1b691e7",
+    "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/AndroidPlayerConnectionDeviceTest.kt": "bbedf07d5c22160b44dc08a7a85268cc68f7f42a6397019baba77731ce60ccf5",
+    "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/AndroidSeekPreviewDeviceTest.kt": "74b058bef6e708ab5e40be22ae69ec349339746c29e602f3ee8ff17870ca6767",
+    "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/AudioModeDeviceTest.kt": "99d862c95b3eb90eb2525394d72ae24632472b4760eba281b19b2284a6c4cfdd",
+    "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/CatalogPlaybackDeviceTest.kt": "ef4e334f8dc99c45eb2efec6c6a835bb3672900b46904d4c52d65a31c766ff20",
+    "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/OfflineMediaDeviceTest.kt": "94c58d87cfe2ce0bfe505cf9abc5903ddb4085fb500628295d62585f5b3b5cc4",
+    "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidAvatarPicker.kt": "7b24711707e0934a308afbbd1e18b4305d5778028588ce87d327e0b6c7e8db2d",
+    "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidDlna.kt": "cc80de9bb5326d19a81f93768cab3881e4c94dc277cdce4d99d1148b5e186476",
+    "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidHaptics.kt": "d1ca6c1aed54ade5ce7d4df77089458e3300b3e17666e6d9ef63999cc87c93f5",
+    "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidOfflineEngine.kt": "2449df43e94fb48ea5814ed64c4ccc3f19e794cc54d5d8cffbade45273cf3570",
+    "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlatform.kt": "84fc53bf7fc7a6dc7f03c74fcb366e840ca25118906e2089bda2955f7c8ba30e",
+    "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidSeekPreview.kt": "063c08c584abef2699860306b13dec25c6f6bb9b76450ac2d79dfe5971aca151",
+    "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/PicoFullscreenWindow.kt": "c908938c5091519a475d42c9e85527bcc8176f6aad0d4e3993e920a88a811793",
+    "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/PlaybackMediaSessionService.kt": "b2bab8524bc18fa969e248f4642e215c6de4d5a4af34304ea05bfc64605409b7",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt": "1c001bbcaf0f58f2d057b51380edc99637936391eac5a837288eebf188f000e3",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt": "f88d5494e0861aa6688723dd2f89940ef9ba721d411e56ab5b560ebbc26e7893",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt": "679560c15b9d3fcf011e4741d92aeb74a460a10857b8e281a1076530ea59c8ba",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/platform/Haptics.kt": "65aa3c64d175f56b750ad9077e1f5fda18190cfc90ce6b44b0cd041b79ca2900",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/platform/Platform.kt": "8f722d577877b87ea4de596500d5192360b7a5e4ef690e8b887fe5d52fac353d",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Dlna.kt": "dd8419f14ae8497b5d93b78144dc6755d28914839c24566ee6c7be15fd2b6c58",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt": "1b58889fcb3b9534fd0240ae07313becd43ce918b2726e611ec2386a7321a03a",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/SeekPreview.kt": "1cd84f23ab5c0f398e4d17cef17b43ec89c12cc264e67571e891e1b856815dcb",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/html/HtmlNode.kt": "1839d2e3e353096de95a9b806f01d7b3fcd9b09fe20489433928a8241d7c0c04",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/BundledPosters.kt": "b6f1f772ebcd5d26db5191d2b61f58beba1adab34a622919b0b08b17466f3b82",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CacheMaintenance.kt": "792ebd39b2793861fb3e0fe119c1f24263a75a18002f3f5c9c066b4891419f44",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogAvailability.kt": "be589b38c47f470cc59d7c0d8893bad2f27ba6551a99c29a5d16a01db8e7895a",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogDatabase.kt": "515f4c6bc0e29afeb36a6ed48b87136a5dcd6ee0459086f13bd86f57e2b86d16",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt": "4c13d659563d0f9eb49b1ca2a8fd51167ec4601c1d932c0d47668457a2239b5c",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/JianpianSource.kt": "ec588082daacdd4225968459bbfb71c4e6c6a830e44fdc7f7f7b00213e43fa67",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/OfflineDownloads.kt": "3707f254a288cb3e65c708547ae155a0d5d7615c1af155343d861e334f937d74",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ParserRules.kt": "73e862c119e892241db2b23e1c6069c815632e2110e554eb2df93e6269553ca3",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/PomoSource.kt": "4be73b84cb4722f8ee9421009cab5face90b4cb2d7fea6315fdf86721585a2cb",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/UpdateStore.kt": "aece94ab9dfa2c5891afca865eeabedd47089ed9cc208ce55953be28962558b0",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/SearchHistoryStore.kt": "8190c528ea7b2eef11291e45d1bc5887c21b4eebf025ce4d67ef610aac93398b",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/SettingsStore.kt": "f1b1e5a6be426ca46cb6320f59083c813cd93d4758b4cf889f6881c5588c7855",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/UserStore.kt": "7d7bff3fd2dffd6df2778826f14a446f496122911e1b940e7df1d0c4b4b79203",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/YouthStore.kt": "a52dd807baaa0ae5031c79c6ca9a691af8247a60dfdd84f7ab8ba733fcfc70eb",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/BrowseFilterPanel.kt": "0e6b347a17fb48d7fe5b70aa71baecb98a21b6ff44e2260746690f80f14dca34",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt": "29dc8f35917b81090c21d478c9b9f47fc70c29a3c61113a2204cd74edf40b5fa",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/BottomNavigationTabs.kt": "2fdc116603f6c9afdea69f6029a3b230d72b3d16ab478dbd41d8611219040ee9",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/CommonComponents.kt": "ca0c11e409d006c577bf684a9b6c2caee70a113b3fe3d6b27a407c94dee0f71f",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/NavigationIcons.kt": "2b594d3af5e277c5e7ffd017bf2869325ad85754edd4d85f8136f721b6b1389a",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/Poster.kt": "8f82fc3b2d3ed9c43c8bb226982a0772ea05c024f17c97856ad74b25288baabe",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/SharedTransitions.kt": "0ff4b79ec3ab3866fc7f3772ab5fb3342db7f7a4210b5b8d607b778c9cb76de4",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/Theme.kt": "03360aec79b984ffa4305123fef007dc561ec3b0bb462a0eb1fae52dfd265ea4",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/TopTabSwipe.kt": "cb45185783027c5e0a0c4a4fcc70343b033f459194c9b4e1a6aefc29ccb13b6d",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/AudioModeBackdrop.kt": "a1f35d1578d498f403b4e522c62b147b9d54c53274acd27382f34a0f740811d9",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/DesktopVideoFrame.kt": "48c98214ae13f6a29d007a2f5a34aba0c24fa1f1b54d16b6c998ac21df336c61",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/DlnaCasting.kt": "69151e7546c4cdc192b35b24d714415c35f5277458c76065290952a4f14da19d",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/MiniPlayer.kt": "03703e2d3644085630e850b20262b2f3d751f0a29d206d417082424e78d5cc15",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt": "ca364b80d73d9ecd52a9471e2588be2b8f34b60e678b3ac056db5b80f965dc61",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PersistentVideoContent.kt": "4dfda87f04b036eb6f90f7597464746a8a8e4da3a3236e20ab80cda3e2f10049",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PlayerTransportIcons.kt": "1becf18cc1d4ac78d4e587bb08705c81cbb20544e35b4af06dfaf832f4f87c6a",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/VideoZoom.kt": "49d6365fb7064c06f15b5f00c30f3e3dad4bf29ce9ac5184e0468026d4f04528",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/profile/DownloadsScreen.kt": "1cebb77ae1c88b89ad6725f32e6a8068cc137fe9603aeb8968bfc0ae07dcc019",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/profile/ProfileEditor.kt": "60bcb173f8c855855894893e00abb5ff1a3bc500cae68b42f61befd280cf7433",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/profile/ProfileScreen.kt": "a04dfdcffb4b41d8313ae602103646baf24a1bbf8b9a8bac84e836713a62e81e",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/profile/SettingsScreen.kt": "0cc7dc9dbea4d074d5bd1d1934db31b347fed8a10b202a3ed3f657a67175fc1e",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/SearchScreen.kt": "d36ea3f0e2653977016335efa9d0b4923fd9edcda9a570f19d05ba4a020f4126",
+    "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/SearchSuggestions.kt": "cdd5daf31b733ce12c329376c2abc767c5ebaf8dcdbfd655c9a2ae40df608e02",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt": "c0599adb678bf58b962cafdbd90e44c5a1b8ba6298acd59bae82ae4ba773ea51",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/CacheMaintenanceTest.kt": "572e1c96422a3a674f5fd0b4f9db8d163571015ed6ae9108ddd9ba09a5b64cda",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/CatalogAvailabilityTest.kt": "eb85a851c0bc30fd4ac7ccea4b9d44ab8677f7f7be5299a9d2d41203ad70c3ba",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/CatalogPlaybackMatchTest.kt": "0c224771962f45ac819742384e1d8eacb7a18cb5f3f75d5c1712c57fdf0ac5ea",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/ContentRepositoryTest.kt": "4f1a0e53341778e31ebcac306cacfa2ef353ab60df167b58ec93a789698d4b80",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/DataManagementTest.kt": "82a68fdd68050822138a68a73bd12cb2727a2665492d3c0973b56deb10fedcd5",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/DlnaCastingTest.kt": "87abd3c61afc72a808bebd5fd680c66df2cac6abd463de778ca6e7ddbee75dba",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/DlnaTest.kt": "66b3afb1e47ececeb291102c262604d733652e2cfe2f102254c90590b19201f9",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/FormattingTest.kt": "16f6bf4ea3f7a42961925e8b106a4d49c12da76f944ef659120924f0afa9acdd",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/JianpianSourceTest.kt": "3e392f2b6e7979257cddd3f8bcfc6a8bad20b9af0513fa65bd1e566bae74bfd9",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/MockTransport.kt": "b4f864edda10068581657c5bcf8d243708ece9528eff282b5e4ee1a54fd3b809",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/ModelsTest.kt": "4d321b0edf6012c50815ba665887edbeabac0c662276b7efe407efa47d3d9509",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/NavigationConfigTest.kt": "69be45224ece2c71360c03b5ef73c092a5b6dc87e1d6d3a4f59f7bca6865f248",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/OfflineDownloadsTest.kt": "4c2f6d7e7ee8fca0d589e3f0df596e2b53ad08101b9ba2ccbcd3376c0fa9c230",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt": "3ab9722dc7675e1deb34026b62541789d7e75cf87b95f081da66fd8df4149226",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PomoFixtures.kt": "68e1cd65af926b4e1da30b219dcf876e5949adcf3d1ae212638c1bc259810b2e",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PomoSourceTest.kt": "24b0667d983f5bd9b2907ded138f262b219e2f222d0b776b7c6b868818912570",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/SeekPreviewTest.kt": "6f665f4457115e0ffbe5c641979d073a1be6f262e6e801a662c1826185bea3c1",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/SettingsStoreTest.kt": "4500d22794997c1e86f06e644635794eaf65047fceabf88f64763e8d5212e731",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/UserStoreBehaviorTest.kt": "a45f230599a1906f2db9eb4d1450042daa9cb762d8bd90b7264a4eb11fdf0111",
+    "mobile/shared/src/commonTest/kotlin/dev/pandavideo/VideoZoomTest.kt": "df647bf9f9bf5df463c814d338da79aef9d43a532bb9f8df7b9c4000fb58ce0a",
+    "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosAvatarPicker.kt": "cc21698772922b0b9b3d496b44cb3ec87d67d3ff656daee248cfb2ca52f3dc06",
+    "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosDlna.kt": "da0f1225abd9d87ccede2f6d161b15f32269b1cd797dc99248cbce57bfada3f8",
+    "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosHaptics.kt": "c804422fe2a450ee76c03d6d1c165380fcc97c7147104c10a1a863c1c80265b9",
+    "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosOfflineEngine.kt": "465a63238c7438bb0fe736fd48e011c6e69674f9e50427d5537aab7383efeec9",
+    "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt": "1ccf0689786d1d78b8402a971ed61ee8837478fe5ff6e12da81ff164f1086f24",
+    "mobile/shared/src/jvmMain/kotlin/dev/pandavideo/core/platform/DesktopAvatarPicker.kt": "5f43f99d7e3b38753ea7aeb306cb619fdc76f2fd1f6d36e5a970641e5192f82f",
+    "mobile/shared/src/jvmMain/kotlin/dev/pandavideo/core/platform/DesktopPlatform.kt": "49187b8e0ca0fd583497f7c73ad14587b4857f89ae7ed2d08447a6f1b0fd4393",
+    "mobile/shared/src/jvmMain/kotlin/dev/pandavideo/core/platform/DesktopPlayer.kt": "4ff956006a533a153f6a377e9fccb00c68f01bdf51d005d43d24c25d1f359e66",
+    "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/CacheMaintenanceStorageTest.kt": "66874370b1d7642ff5a1bd6ed141801bb4b598baa3b3c24a3da1fea1b7560f79",
+    "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/CatalogDatabaseTest.kt": "97bbe695b1806a6a2ba8ff22be01139afcabc22ba27ce5ed7781610f424acde5",
+    "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/LiveSourceProbeTest.kt": "516683c7c71525c6ecbf9f324350aee1ffc12f60f9a8e044d36a521dd32f8e95",
+    "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/PictureInPictureCompositionTest.kt": "15cac67634fa215cfd81fdc03addeeee5ba3ef891008d7893033db156380d53a",
+    "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/PlayerSeekGestureTest.kt": "3e2c3dde89110b28bd824a5df0786664f7f4a7a7c85154fb9d292373501c1eff",
+    "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/PosterCacheTest.kt": "be4ca69f2f7ced819abe23fdd1fd82275a23d1c1f82d6c57e26f9c91f2944f3f",
+    "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/ResponseCacheTest.kt": "3adc8b1d53c563a06fc34c558906bc7b98c61d1efb63facaefc1c6e2b4a5518c",
+    "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/TopTabRefreshGestureTest.kt": "9a3d889de4c4d27e1fa044b8ad51aab5b7d87e36d634f31b1c8c06a8587f4b54",
+    "mobile/tools/feature-verification.init.gradle": "963ebc128f71d44346954deed53b9984e229c8c16ba71f93526186755e0468ca",
+    "mobile/tools/generate_app_icons.py": "f8bd1ca6477ec74b72b53d9e4767b0f8cc76a40582d026b782865c2e3918fba1",
+    "mobile/tools/generate_desktop_icon.py": "1f1d779c87f209f213af36032f55a7e9a4bef573e80fade5f49e1c8ab596151e",
+    "mobile/tools/import_catalog.py": "c6afc239f39f5e7a72d4102fdef3faae0724a424ec167799e451066afb7d4e31"
+  }
+}

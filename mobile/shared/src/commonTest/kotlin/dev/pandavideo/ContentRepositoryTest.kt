@@ -45,6 +45,23 @@ internal val topFixture = """
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ContentRepositoryTest {
+    @Test fun searchRanksExactTitlesThenRelevantRecentTitlesWithoutDroppingOtherResults() = runTest {
+        val repo = ContentRepository(HttpClient(mockEngine {
+            respond(pomoSearch(
+                pomoRow("欢迎回家", 1, "2006"),
+                pomoRow("欢迎光临", 2, "2022"),
+                pomoRow("欢迎来龙餐馆", 3, "2026"),
+                pomoRow("你好，欢迎光临", 4, "2026"),
+            ))
+        }))
+        try {
+            assertEquals(listOf("欢迎来龙餐馆", "欢迎光临", "欢迎回家", "你好，欢迎光临"),
+                repo.search("欢迎", "all").results.map { it.title })
+            assertEquals("欢迎来龙餐馆", repo.search("《欢迎来龙餐馆》", "all").results.first().title)
+            assertEquals("欢迎回家", repo.search("欢迎回家", "all").results.first().title)
+        } finally { repo.close() }
+    }
+
     @Test fun resourceFilteringHidesOnlySuccessfulSearchMisses() = runTest {
         val item = CatalogItem("测试电影", "https://movie.douban.com/subject/123/", "2020")
         val page = dev.pandavideo.core.model.CatalogPage(listOf(item), 20, 20, true, "分类")
@@ -208,6 +225,34 @@ class ContentRepositoryTest {
             }
         } finally { repo.close() }
     }
+    @Test fun regionalRecommendationsCombineCountryGenreAndScoreAndKeepSeparateOfflineCaches() = runTest {
+        var offline = false
+        val requests = mutableListOf<String>()
+        val repo = ContentRepository(HttpClient(mockEngine { request ->
+            val tags = request.url.parameters["tags"].orEmpty()
+            requests += tags
+            assertEquals("8,10", request.url.parameters["range"])
+            assertEquals("S", request.url.parameters["sort"])
+            if (offline) respond("", HttpStatusCode.ServiceUnavailable)
+            else respond("""{"data":[
+                {"title":"$tags","url":"https://movie.douban.com/subject/1/","rate":"9.0"},
+                {"title":"低分","url":"https://movie.douban.com/subject/2/","rate":"7.9"}
+            ]}""")
+        }))
+        try {
+            val china = repo.list("war", country = "cn")
+            val global = repo.list("war")
+            assertEquals(listOf("电影,战争,中国大陆"), china.items.map { it.title })
+            assertEquals(listOf("电影,战争"), global.items.map { it.title })
+            assertEquals("电影,大片,中国大陆", repo.list("hollywood", country = "cn").items.single().title)
+            assertEquals("电影,日本", repo.list("top250", country = "jp").items.single().title)
+            offline = true
+            assertEquals(china.copy(stale = true), repo.list("war", country = "cn"))
+            assertEquals(global.copy(stale = true), repo.list("war"))
+            assertFailsWith<ApiError> { repo.list("war", country = "invalid") }
+        } finally { repo.close() }
+    }
+
     @Test fun homepageScoreRangeCacheIsSeparateFromBrowseAndSurvivesOffline() = runTest {
         var offline = false
         val repo = ContentRepository(HttpClient(mockEngine {
@@ -466,8 +511,8 @@ class ContentRepositoryTest {
     @Test fun resolveSearchTypeFollowsCatalogKind() {
         assertEquals("movie", ContentParsers.searchTypeFor("movie"))
         assertEquals("tv", ContentParsers.searchTypeFor("tv"))
-        assertEquals("movie", ContentParsers.searchTypeFor("documentary"))
-        assertEquals("movie", ContentParsers.searchTypeFor("animation"))
+        assertEquals("all", ContentParsers.searchTypeFor("documentary"))
+        assertEquals("all", ContentParsers.searchTypeFor("animation"))
         assertEquals("all", ContentParsers.searchTypeFor("variety"))
     }
     @Test fun castOverlapScoreUsesNormalizedNames() {
@@ -501,12 +546,15 @@ class ContentRepositoryTest {
         val requests = mutableListOf<String>()
         val repo = ContentRepository(HttpClient(mockEngine { request ->
             requests += request.url.parameters["type"].orEmpty()
-            respond(searchHtml)
+            respond(if (request.url.parameters["type"] == "auto_search") searchHtml
+                else pomoDetailFixture.replace("2020",
+                    if (request.url.parameters["id"] == "4") "1997" else "2023"))
         }))
         try {
             val result = repo.resolve(CatalogItem("美丽人生", "https://movie.douban.com/subject/9/"))
             assertFalse(result.playable)
-            assertTrue(requests.none { it == "auto_detail" })
+            // Both release years remain ambiguous after checking their actual episode lists.
+            assertEquals(2, requests.count { it == "auto_detail" })
         } finally { repo.close() }
     }
     @Test fun castOverlapBreaksSameYearTitleTie() = runTest {

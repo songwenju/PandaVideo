@@ -35,6 +35,7 @@
 | 文档 | 阅读提示 |
 | --- | --- |
 | [播放源备用、测速与自动切换](verification/source-failover-20261111.md) | 区分接口耗时、媒体探测、构建、启动与原生播放 |
+| [投屏设备发现修复与验证](verification/casting-discovery-20261111.md) | 搜索兼容性、Wi-Fi 绑定、即时显示及实机协议测试；用户电视仍待验证 |
 | [移动端实现与验证记录](../mobile/docs/实现与验证记录.md) | 按批次记录；旧结果只适用于对应版本 |
 | [Android 验证证据索引](../mobile/docs/evidence/README.md) | 历史取证文件与适用范围 |
 | [网站完整自测报告](../frontend/docs/完整自测报告.md) | 历史网站测试记录 |

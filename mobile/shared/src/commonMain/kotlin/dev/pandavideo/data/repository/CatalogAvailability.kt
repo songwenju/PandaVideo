@@ -31,6 +31,9 @@ internal class CatalogAvailability(
     private val lock = Mutex()
     private val memory = linkedMapOf<String, StoredResponse>()
 
+    /** Discards transient resource checks after the persistent response cache is cleared. */
+    suspend fun clearMemory() = lock.withLock { memory.clear() }
+
     private fun key(item: CatalogItem) =
         "availability:v1:${item.url}:${item.title}:${item.year}:${item.kind}:${ruleKey()}"
 

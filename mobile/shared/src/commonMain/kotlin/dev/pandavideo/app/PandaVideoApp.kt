@@ -9,7 +9,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.Icon
@@ -50,6 +49,8 @@ import dev.pandavideo.ui.common.LocalDarkTheme
 import dev.pandavideo.ui.common.LocalNavAnimatedVisibilityScope
 import dev.pandavideo.ui.common.LocalSharedTransitionScope
 import dev.pandavideo.ui.common.NavigationIcons
+import dev.pandavideo.ui.common.BottomNavigationTabs
+import dev.pandavideo.ui.common.topTabSwipe
 import dev.pandavideo.ui.player.MiniPlayerBar
 import dev.pandavideo.ui.player.ModernPlayerScreen
 import dev.pandavideo.ui.profile.ProfileScreen
@@ -112,7 +113,7 @@ fun PandaVideoApp(platform: PlatformServices, onReady: () -> Unit = {}) {
         runCatching {
             val loader = dev.pandavideo.ui.common.posterImageLoader(context, platform.posterCacheDirectory())
             try {
-                StartupState.Ready(AppState(platform, scope) { urls ->
+                StartupState.Ready(AppState(platform, scope, posterImageLoader = loader) { urls ->
                     dev.pandavideo.ui.common.prefetchPosters(loader, context, urls)
                 }, loader)
             } catch (error: Throwable) {
@@ -251,28 +252,12 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
                     if (model.session != null) MiniPlayerBar(model) {
                         navigation.navigate("player") { launchSingleTop = true }
                     }
-                    Row(
-                        Modifier.fillMaxWidth().height(54.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                    BottomTabs.forEach { (target, label) ->
-                        val tint = if (route == target) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                        Column(
-                            Modifier.weight(1f).fillMaxHeight().selectable(selected = route == target, role = Role.Tab) {
-                                navigateTab(target)
-                            },
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                        ) {
-                                Icon(
-                                    NavigationIcons.forRoute(target), contentDescription = null,
-                                    modifier = Modifier.size(22.dp), tint = tint,
-                                )
-                            Text(label, color = tint, fontSize = 10.sp, lineHeight = 14.sp)
-                        }
-                    }
-                    }
+                    BottomNavigationTabs(
+                        tabs = BottomTabs,
+                        savedOrder = themeMode.tabOrder,
+                        selectedRoute = route,
+                        onSelect = ::navigateTab,
+                    )
                 }
             },
         ) { padding ->
@@ -296,13 +281,22 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
                         run {
                             val state by model.discover.collectAsState()
                             var selected by rememberSaveable { mutableStateOf(model.kind) }
+                            LaunchedEffect(selected) {
+                                if (model.kind != selected || model.discoverCountry != "all")
+                                    model.loadDiscover(selected, country = "all")
+                            }
                             Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                                 SearchEntry(::openSearch)
                                 HomeCategories(selected) {
-                                    selected = it; model.loadDiscover(it)
+                                    selected = it; model.loadDiscover(it, country = "all")
                                 }
-                                CatalogContent(state, model, { model.loadDiscover(selected) }, { model.loadDiscover(selected, true) },
-                                    { item -> model.match(item) { navigation.navigate("player") } }, home = true)
+                                CatalogContent(state, model, { model.loadDiscover(selected, country = "all", refresh = true) },
+                                    { model.loadDiscover(selected, true, "all") },
+                                    { item -> model.match(item, state.items) { navigation.navigate("player") } }, home = true,
+                                    modifier = Modifier.topTabSwipe(HomeCategoryOptions.indexOfFirst { it.first == selected }, HomeCategoryOptions.size) { index ->
+                                        selected = HomeCategoryOptions[index].first
+                                        model.loadDiscover(selected, country = "all")
+                                    })
                             }
                         }
                         }
@@ -343,8 +337,11 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
                             Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                                 SearchEntry { openSearch() }
                                 BrowseFilterPanel(current, ::update)
-                                CatalogContent(state, model, { model.loadBrowse(current) }, { model.loadBrowse(current, true) },
-                                    { item -> model.match(item) { navigation.navigate("player") } })
+                                CatalogContent(state, model, { model.loadBrowse(current, refresh = true) }, { model.loadBrowse(current, true) },
+                                    { item -> model.match(item, state.items) { navigation.navigate("player") } },
+                                    modifier = Modifier.topTabSwipe(BrowseTypeOptions.indexOfFirst { it.first == current.type }, BrowseTypeOptions.size) { index ->
+                                        update(current.copy(type = BrowseTypeOptions[index].first))
+                                    })
                             }
                         }
                         }
@@ -356,9 +353,13 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
                         LaunchedEffect(Unit) { if (state.page == null && !state.loading) model.loadHot(selected) }
                         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                             SearchEntry { openSearch() }
-                            ChoiceRow(HotTypeOptions, selected) { selected = it; model.loadHot(it) }
-                            CatalogContent(state, model, { model.loadHot(selected) }, { model.loadHot(selected, more = true) },
-                                { item -> model.match(item) { navigation.navigate("player") } })
+                            ChoiceRow(HotTypeOptions, selected, tab = true) { selected = it; model.loadHot(it) }
+                            CatalogContent(state, model, { model.loadHot(selected, refresh = true) }, { model.loadHot(selected, more = true) },
+                                { item -> model.match(item, state.items) { navigation.navigate("player") } },
+                                modifier = Modifier.topTabSwipe(HotTypeOptions.indexOfFirst { it.first == selected }, HotTypeOptions.size) { index ->
+                                    selected = HotTypeOptions[index].first
+                                    model.loadHot(selected)
+                                })
                         }
                         }
                       }
@@ -366,8 +367,7 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
                         CompositionLocalProvider(LocalNavAnimatedVisibilityScope provides this) {
                             ProfileScreen(model, { navigation.navigate("settings") },
                                 topInset = padding.calculateTopPadding(),
-                                openPlayer = { navigation.navigate("player") },
-                                openDownloads = { navigation.navigate("downloads") })
+                                openPlayer = { navigation.navigate("player") })
                         }
                       }
                       composable("downloads") {

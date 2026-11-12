@@ -10,6 +10,16 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 
 class PomoSourceTest {
+    @Test fun sparseSearchMetadataDoesNotMarkAnUnresolvedResourceUnavailable() {
+        val body = """{"code":200,"data":{"西瓜":[{"id":86058,"name":"欢迎来龙餐馆",
+            "year":"2026","remarks":"HD中字","cover":"https://image.test/poster.jpg"}]}}"""
+        val item = PomoSource.search(body, "movie").results.single()
+        assertTrue(item.playable)
+        assertEquals("https://image.test/poster.jpg", item.thumbnailUrl)
+        assertFalse(PomoSource.search(body.replace("\"year\":", "\"play_url\":\"\",\"year\":"), "movie")
+            .results.single().playable)
+    }
+
     @Test fun referencesRejectForeignHostsDuplicateParametersAndForgedEpisodes() {
         for (page in listOf(pomoPage.replace("https:", "http:"), pomoPage.replace("pomo.mom", "other"),
             "$pomoPage&id=2", "$pomoPage&url=https://other", "$pomoPage#../1", "$pomoPage#0-1")) {

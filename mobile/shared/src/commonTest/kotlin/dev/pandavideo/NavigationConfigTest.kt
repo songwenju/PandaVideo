@@ -11,6 +11,7 @@ import dev.pandavideo.ui.common.NavigationIcons
 import dev.pandavideo.ui.player.PlaybackRates
 import dev.pandavideo.ui.catalog.annualTvFilters
 import dev.pandavideo.core.model.BrowseFilters
+import dev.pandavideo.data.user.DefaultTabOrder
 import kotlin.test.*
 
 /** Guards the bottom-tab swap and the filter option lists shared by the catalog screens. */
@@ -28,6 +29,7 @@ class NavigationConfigTest {
     }
 
     @Test fun bottomTabIdsAndLabelsAreUniqueAndEveryRouteHasAnIcon() {
+        assertEquals(DefaultTabOrder, BottomTabs.map { it.first })
         assertEquals(BottomTabs.size, BottomTabs.map { it.first }.distinct().size)
         assertEquals(BottomTabs.size, BottomTabs.map { it.second }.distinct().size)
         BottomTabs.forEach { (route, label) ->

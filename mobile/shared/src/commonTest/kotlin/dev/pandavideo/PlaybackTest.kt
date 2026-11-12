@@ -7,6 +7,7 @@ import dev.pandavideo.core.model.nextEpisode
 import dev.pandavideo.core.player.MediaSource
 import dev.pandavideo.core.player.PlaybackSession
 import dev.pandavideo.core.player.PlayerController
+import dev.pandavideo.core.player.PlayerCapabilities
 import dev.pandavideo.core.player.PlayerPhase
 import dev.pandavideo.core.player.PlayerState
 import dev.pandavideo.ui.player.TapZone
@@ -23,12 +24,15 @@ import kotlin.test.*
 class PlaybackTest {
     private val episodes = listOf(Episode("a1", "1", 1), Episode("b1", "1", 2), Episode("a2", "2", 1), Episode("b2", "2", 2))
     private fun info(selected: String = "a1") = PlaybackInfo("测试", "https://media/video.mp4", "video", episodes, selected, "https://page")
-    private class FakePlayer : PlayerController {
+    private class FakePlayer(audioSupported: Boolean = true) : PlayerController {
+        override val capabilities = PlayerCapabilities(audioOnly = audioSupported)
         override val state = MutableStateFlow(PlayerState())
         val loads = mutableListOf<MediaSource>()
         var closes = 0
         val rates = mutableListOf<Float>()
         val seeks = mutableListOf<Long>()
+        val audioModes = mutableListOf<Boolean>()
+        override fun setAudioOnly(enabled: Boolean) { audioModes += enabled }
         override fun load(source: MediaSource) { loads += source; state.value = PlayerState(source.id, if (source.autoplay) PlayerPhase.Playing else PlayerPhase.Paused, wantsPlay = source.autoplay) }
         override fun play() { state.value = state.value.copy(wantsPlay = true) }
         override fun pause() { state.value = state.value.copy(wantsPlay = false) }
@@ -41,6 +45,81 @@ class PlaybackTest {
         assertEquals("a2", nextEpisode(info())?.path)
         assertNull(nextEpisode(info("a2")))
         assertNull(nextEpisode(info("missing")))
+    }
+    @Test fun audioTogglePreservesTimelineRateAndPausedIntentWithoutReload() = runTest {
+        val player = FakePlayer()
+        val session = PlaybackSession({ info() }, player, backgroundScope, 1.5f)
+        session.load(PlayerRequest(page = "https://page")); runCurrent()
+        player.state.value = player.state.value.copy(position = 42_000, duration = 120_000, rate = 1.5f)
+        player.pause(); runCurrent()
+        session.setAudioOnly(true)
+        session.setAudioOnly(false)
+        runCurrent()
+        assertEquals(listOf(true, false), player.audioModes)
+        assertEquals(1, player.loads.size)
+        assertEquals(42_000L, player.state.value.position)
+        assertEquals(1.5f, player.state.value.rate)
+        assertFalse(player.state.value.wantsPlay)
+        assertTrue(player.seeks.isEmpty())
+        session.close()
+    }
+    @Test fun audioModeAllowsPendingLoadAndNextEpisodeWhileHidden() = runTest {
+        val player = FakePlayer()
+        val session = PlaybackSession({ delay(1000); info(it.episode ?: "a1") }, player, backgroundScope)
+        session.load(PlayerRequest(page = "https://page")); runCurrent()
+        session.setAudioOnly(true)
+        session.setPlaybackVisible(false)
+        advanceTimeBy(1000); runCurrent()
+        assertTrue(player.loads.single().autoplay)
+        assertTrue(session.state.value.audioOnly)
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Ended, wantsPlay = false)
+        runCurrent()
+        assertTrue(session.state.value.ended)
+        session.advanceToNext()
+        advanceTimeBy(1000); runCurrent()
+        assertEquals("a2", session.state.value.info?.selected)
+        assertTrue(session.state.value.audioOnly)
+        assertTrue(player.loads.last().autoplay)
+        session.close()
+    }
+    @Test fun switchingBackToVideoWhileHiddenPausesAndRejectsRemotePlay() = runTest {
+        val player = FakePlayer()
+        val session = PlaybackSession({ info() }, player, backgroundScope)
+        session.load(PlayerRequest(page = "https://page")); runCurrent()
+        session.setAudioOnly(true)
+        session.setPlaybackVisible(false); runCurrent()
+        assertTrue(player.state.value.wantsPlay)
+        session.setAudioOnly(false); runCurrent()
+        assertFalse(player.state.value.wantsPlay)
+        player.play(); runCurrent()
+        assertFalse(player.state.value.wantsPlay)
+        session.setPlaybackVisible(true); runCurrent()
+        assertFalse(player.state.value.wantsPlay)
+        session.close()
+    }
+    @Test fun hiddenAudioRecoversSourceAndUnsupportedHostsCannotEnableIt() = runTest {
+        val unsupported = FakePlayer(audioSupported = false)
+        val unsupportedSession = PlaybackSession({ info() }, unsupported, backgroundScope)
+        unsupportedSession.setAudioOnly(true)
+        assertFalse(unsupportedSession.state.value.audioOnly)
+        assertTrue(unsupported.audioModes.isEmpty())
+        unsupportedSession.close()
+        val player = FakePlayer()
+        val requests = mutableListOf<PlayerRequest>()
+        val session = PlaybackSession({
+            requests += it
+            info().copy(url = if (it.rejectedMedia.isEmpty()) info().url else "https://media/backup.mp4")
+        }, player, backgroundScope)
+        session.load(PlayerRequest(page = "https://page")); runCurrent()
+        session.setAudioOnly(true)
+        session.setPlaybackVisible(false)
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Error, wantsPlay = true,
+            position = 35_000, duration = 120_000)
+        runCurrent()
+        assertTrue(requests.any { it.rejectedMedia.isNotEmpty() })
+        assertTrue(session.state.value.audioOnly)
+        assertTrue(player.loads.last().autoplay)
+        session.close()
     }
     @Test fun nativeFailureSwitchesSameEpisodeAndPreservesPositionAndPause() = runTest {
         val player = FakePlayer()

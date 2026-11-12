@@ -60,14 +60,18 @@ private fun FilterChoice(
     label: String, selected: Boolean, modifier: Modifier = Modifier, tab: Boolean = false,
     select: () -> Unit,
 ) {
-    Text(
-        label, fontSize = if (tab) 14.sp else 13.sp, lineHeight = 20.sp,
-        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-        color = if (selected) Accent else MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.Center, maxLines = 1, softWrap = false,
-        modifier = modifier.clip(RoundedCornerShape(8.dp))
+    Box(
+        modifier = modifier.heightIn(min = 40.dp).clip(RoundedCornerShape(8.dp))
             .background(if (selected) Accent.copy(alpha = 0.10f) else Color.Transparent)
             .selectable(selected, role = if (tab) Role.Tab else Role.RadioButton, onClick = select)
-            .padding(horizontal = 8.dp, vertical = 10.dp),
-    )
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label, fontSize = if (tab) 14.sp else 13.sp, lineHeight = 20.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) Accent else MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center, maxLines = 1, softWrap = false,
+        )
+    }
 }

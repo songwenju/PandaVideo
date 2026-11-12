@@ -45,7 +45,7 @@ internal object JianpianSource {
             (it as? JsonPrimitive)?.contentOrNull ?: (it as? JsonObject)?.text(field)
         }.joinToString("、")
 
-    fun search(body: String, type: String, imageOrigin: String): SearchResult {
+    fun search(body: String, type: String, imageOrigin: String?): SearchResult {
         val rows = data(body) as? JsonArray ?: throw ApiError("荐片搜索结果格式异常")
         val items = rows.take(80).mapNotNull { entry ->
             val row = entry as? JsonObject ?: return@mapNotNull null
@@ -58,12 +58,26 @@ internal object JianpianSource {
                 type == "tv" && category in setOf("1", "50")) return@mapNotNull null
             val cover = row.text("thumbnail").ifBlank { row.text("tvimg") }
             SearchItem(title, "荐片", "jianpian:$id", true, address(id),
-                if (isWebUrl(cover)) cover else if (cover.startsWith("/") && !cover.startsWith("//"))
-                    imageOrigin.trimEnd('/') + cover else "",
+                posterUrl(cover, imageOrigin),
                 row.names("years", "year"), row.names("areas", "area"),
                 row.names("types"), row.names("actors"), row.text("mask").take(80))
         }.distinctBy { it.detailUrl }
         return SearchResult(items, listOf(SourceCount("荐片", items.size, "可在线播放")))
+    }
+
+    private fun posterUrl(cover: String, imageOrigin: String?): String {
+        if (isWebUrl(cover)) {
+            if (imageOrigin == null) return cover
+            // The provider rotates image hosts independently of API mirrors, including
+            // hosts embedded in absolute thumbnails. Preserve the original path/query.
+            return URLBuilder(cover).apply {
+                protocol = URLProtocol.HTTPS
+                host = Url(imageOrigin).host
+                port = 443
+            }.buildString()
+        }
+        return if (imageOrigin != null && cover.startsWith("/") && !cover.startsWith("//"))
+            imageOrigin + cover else ""
     }
 
     fun episodes(body: String, page: String): List<Pair<Episode, String>> {
@@ -101,11 +115,13 @@ internal class JianpianClient(
 ) {
     private data class Server(val origin: String, val secret: String, var latency: Long)
     private val mutex = Mutex()
+    private val imageMutex = Mutex()
     private var servers = emptyList<Server>()
     private var checkedAt: Long? = null
     private var discoveredAt: Long? = null
     private var origins = JianpianSource.initialOrigins
-    private var imageOrigin = "https://static.ztcuc.com"
+    private var imageOrigin: String? = null
+    private var imageCheckedAt: Long? = null
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun search(keyword: String, type: String): SearchResult {
@@ -115,11 +131,54 @@ internal class JianpianClient(
             if (type != "all") append("category_id", if (type == "tv") "2" else "1")
         }
         val path = "/v2/search/videoV2?" + parameters.formUrlEncode()
-        return JianpianSource.search(request(path), type, imageOrigin)
+        val body = request(path)
+        val hasPosters = (JianpianSource.data(body) as JsonArray).any {
+            val row = it as? JsonObject
+            row != null && (row.text("thumbnail").isNotBlank() || row.text("tvimg").isNotBlank())
+        }
+        return JianpianSource.search(body, type, if (hasPosters) loadImageOrigin() else imageOrigin)
     }
 
     suspend fun detail(page: String): String =
         request("/video/detailv2?id=${Url(JianpianSource.page(page)).parameters["id"]}")
+
+    private fun signedHeaders(server: Server): Map<String, String> {
+        val timestamp = (clock() / 1000).toString()
+        return mapOf(
+            "platform" to "pc", "version" to "504", "timestamp" to timestamp,
+            "signature" to ("504" + timestamp + server.secret).encodeUtf8().md5().hex(),
+        )
+    }
+
+    /** Image configuration failures must not discard useful search results or API mirrors. */
+    private suspend fun loadImageOrigin(): String? = imageMutex.withLock {
+        if (imageCheckedAt?.let { clock() - it in 0 until 10 * 60_000L } == true)
+            return@withLock imageOrigin
+        val resolved = withTimeoutOrNull(3_000) {
+            for (server in initialize()) {
+                try {
+                    val body = fetch("${server.origin}/api/v2/settings/resourceDomainConfig",
+                        3_000, signedHeaders(server))
+                    val data = JianpianSource.data(body) as? JsonObject ?: continue
+                    // Accept only hostnames supplied by the resource configuration. Paths,
+                    // credentials and ports must not become part of an image origin.
+                    val domain = data.text("imgDomain").split(',').map(String::trim).firstOrNull {
+                        it.length <= 253 && it.matches(Regex(
+                            "(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,63}",
+                        ))
+                    }
+                    if (domain != null) return@withTimeoutOrNull "https://$domain"
+                } catch (error: CancellationException) { throw error }
+                catch (_: Exception) { /* Keep the current domain and retry on the next search. */ }
+            }
+            null
+        }
+        if (resolved != null) {
+            imageOrigin = resolved
+            imageCheckedAt = clock()
+        }
+        imageOrigin
+    }
 
     private suspend fun initialize(force: Boolean = false): List<Server> = mutex.withLock {
         if (!force && checkedAt?.let { clock() - it in 0 until 10 * 60_000L } == true)
@@ -189,12 +248,8 @@ internal class JianpianClient(
             val candidates = initialize(force = round > 0).sortedBy { it.latency }
             for (server in candidates.filter { attempted.add(it.origin) }) {
                 try {
-                    val timestamp = (clock() / 1000).toString()
                     val started = clock()
-                    val body = fetch("${server.origin}/api$path", 5_000, mapOf(
-                        "platform" to "pc", "version" to "504", "timestamp" to timestamp,
-                        "signature" to ("504" + timestamp + server.secret).encodeUtf8().md5().hex(),
-                    ))
+                    val body = fetch("${server.origin}/api$path", 5_000, signedHeaders(server))
                     val data = JianpianSource.data(body)
                     if (path.startsWith("/v2/search/") && data !is JsonArray ||
                         path.startsWith("/video/detailv2") && data !is JsonObject)

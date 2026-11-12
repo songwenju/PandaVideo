@@ -19,7 +19,17 @@ if [ "$#" -eq 0 ]; then
         iphoneos*) KOTLIN_TARGET=IosArm64 ;;
         *) KOTLIN_TARGET=IosSimulatorArm64 ;;
     esac
-    set -- ":shared:assemble${CONFIGURATION_NAME}AppleFrameworkForXcode${KOTLIN_TARGET}"
+    # Assembling the static framework does not copy Compose resources into the app.
+    # Sync them using Xcode's target environment for both simulator and device builds;
+    # otherwise painterResource succeeds at compile time but crashes when first rendered.
+    if [ "${OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED:-}" = "YES" ]; then
+        # A prebuilt framework still needs its resources in this specific app bundle.
+        # Skipping the whole phase produces a valid binary that crashes on painterResource.
+        set -- ":shared:syncComposeResourcesForIos"
+    else
+        set -- ":shared:assemble${CONFIGURATION_NAME}AppleFrameworkForXcode${KOTLIN_TARGET}" \
+            ":shared:syncComposeResourcesForIos"
+    fi
 fi
 
 exec "$MOBILE_ROOT/gradlew" -p "$MOBILE_ROOT" "$@"
