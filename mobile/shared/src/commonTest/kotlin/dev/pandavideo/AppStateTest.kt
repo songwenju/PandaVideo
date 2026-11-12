@@ -40,6 +40,7 @@ class AppStateTest {
         var matchDelay = 0L
         var matchFails = false
         var catalogUnavailable = false
+        var networkUnavailable = false
         val players = mutableListOf<TestPlayer>()
         val catalogStarts = mutableListOf<Int>()
         val hotRequests = mutableListOf<Pair<String, Int>>()
@@ -54,6 +55,7 @@ class AppStateTest {
         val hotSorts = mutableListOf<String>()
         override fun httpClient() = HttpClient(testScope.mockEngine(backupSources = catalogUnavailable) { request ->
             hosts += request.url.host
+            if (networkUnavailable) return@mockEngine respond("offline", io.ktor.http.HttpStatusCode.ServiceUnavailable)
             when (request.url.parameters["type"] ?: request.url.encodedPath) {
                 "/api/v2/sys/init" -> respond("""{"code":1,"data":{"secret":"test-secret"}}""")
                 "/api/v2/search/videoV2" -> respond("""{"code":1,"data":[]}""")
@@ -138,6 +140,82 @@ class AppStateTest {
         override fun close() { closed = true }
     }
     private val matchingItem = CatalogItem("匹配影片", "https://movie.douban.com/subject/123/", year = "2020")
+
+    @Test fun failedCatalogRetryPreservesFiltersAndReplacementClearsOldPrompt() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope)
+        runCurrent()
+        platform.networkUnavailable = true
+        val filters = BrowseFilters(type = "movie", genre = "action", year = "2021", sort = "rating", country = "cn")
+        model.loadBrowse(filters)
+        advanceTimeBy(30_000); runCurrent()
+        val prompt = model.retryPrompts.pending.value.single { it.key == "browse" }
+        assertEquals("browse", prompt.destination)
+        assertNotNull(model.browse.value.error)
+        platform.networkUnavailable = false
+        model.retryPrompts.retry(prompt.id)
+        runCurrent()
+        assertEquals(filters, model.filters)
+        assertTrue(model.browse.value.items.isNotEmpty())
+        assertNull(model.browse.value.error)
+        assertTrue(model.retryPrompts.pending.value.none { it.key == "browse" })
+        // A different selection supersedes any failed request; its old action cannot reload it.
+        platform.networkUnavailable = true
+        model.loadBrowse(filters.copy(genre = "war"))
+        advanceTimeBy(30_000); runCurrent()
+        val old = model.retryPrompts.pending.value.single { it.key == "browse" }
+        platform.networkUnavailable = false
+        model.loadBrowse(filters.copy(type = "tv"))
+        model.retryPrompts.retry(old.id)
+        runCurrent()
+        assertEquals("tv", model.filters.type)
+        model.close()
+    }
+
+    @Test fun failedSearchRetryKeepsKeywordAndClearSearchDiscardsItsAction() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope)
+        runCurrent()
+        platform.networkUnavailable = true
+        model.search("专门重试的影片", "tv")
+        advanceTimeBy(30_000); runCurrent()
+        val prompt = model.retryPrompts.pending.value.single { it.key == "search" }
+        platform.networkUnavailable = false
+        model.retryPrompts.retry(prompt.id)
+        runCurrent()
+        assertEquals("专门重试的影片", model.search.value.result?.results?.single()?.title)
+        assertNull(model.search.value.error)
+        platform.networkUnavailable = true
+        model.search("另一个失败的关键词", "all")
+        advanceTimeBy(30_000); runCurrent()
+        val old = model.retryPrompts.pending.value.single { it.key == "search" }
+        model.clearSearch()
+        model.retryPrompts.retry(old.id)
+        assertEquals(SearchState(), model.search.value)
+        assertTrue(model.retryPrompts.pending.value.none { it.key == "search" })
+        model.close()
+    }
+
+    @Test fun failedPlaybackRetryKeepsTheTitleAndClosingInvalidatesIt() = runTest {
+        val platform = TestPlatform(this).apply { matchFails = true }
+        val model = AppState(platform, backgroundScope)
+        model.match(matchingItem) {}
+        advanceTimeBy(30_000); runCurrent()
+        val prompt = model.retryPrompts.pending.value.single { it.key == "player" }
+        val session = assertNotNull(model.session)
+        assertNotNull(session.state.value.error)
+        platform.matchFails = false
+        model.retryPrompts.retry(prompt.id)
+        runCurrent()
+        assertSame(session, model.session)
+        assertNotNull(session.state.value.info)
+        assertNull(session.state.value.error)
+        model.closePlayer()
+        model.retryPrompts.retry(prompt.id)
+        assertNull(model.session)
+        assertTrue(model.retryPrompts.pending.value.none { it.key == "player" })
+        model.close()
+    }
 
     @Test fun discoverRetainsCountryForCategoryRefreshAndPagingButResetsOnRegionChange() = runTest {
         val platform = TestPlatform(this)

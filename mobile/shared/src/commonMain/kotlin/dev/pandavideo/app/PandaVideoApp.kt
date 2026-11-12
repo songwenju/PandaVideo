@@ -51,6 +51,7 @@ import dev.pandavideo.ui.common.LocalSharedTransitionScope
 import dev.pandavideo.ui.common.NavigationIcons
 import dev.pandavideo.ui.common.BottomNavigationTabs
 import dev.pandavideo.ui.common.topTabSwipe
+import dev.pandavideo.ui.common.RetryDialog
 import dev.pandavideo.ui.player.MiniPlayerBar
 import dev.pandavideo.ui.player.ModernPlayerScreen
 import dev.pandavideo.ui.profile.ProfileScreen
@@ -239,6 +240,17 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
     }
     CompositionLocalProvider(LocalDarkTheme provides darkTheme) {
         MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors) {
+        val retryPrompts by model.retryPrompts.pending.collectAsState()
+        val downloadTasks by model.downloads.tasks.collectAsState()
+        val maintenance by model.cacheMaintenance.state.collectAsState()
+        LaunchedEffect(downloadTasks, maintenance) { model.retryPrompts.discardUnavailable() }
+        retryPrompts.firstOrNull {
+            (it.destination == null || it.destination == route) && it.available()
+        }?.let { prompt ->
+            RetryDialog(prompt.title, prompt.message,
+                retry = { model.retryPrompts.retry(prompt.id) },
+                dismiss = { model.retryPrompts.dismiss(prompt.id) })
+        }
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             contentColor = MaterialTheme.colorScheme.onBackground,

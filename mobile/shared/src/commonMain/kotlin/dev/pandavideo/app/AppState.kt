@@ -53,6 +53,7 @@ class AppState(
     val hot = hotMutable.asStateFlow()
     private val searchMutable = MutableStateFlow(SearchState())
     val search = searchMutable.asStateFlow()
+    internal val retryPrompts = RetryPrompts()
     private val messages = Channel<String>(Channel.BUFFERED)
     /** One-shot Chinese user messages, collected by the host Snackbar. */
     val userMessages: Flow<String> = messages.receiveAsFlow()
@@ -67,15 +68,19 @@ class AppState(
     val updates = UpdateStore(platform.storage())
     private val checkingUpdateMutable = MutableStateFlow(false)
     val checkingUpdate = checkingUpdateMutable.asStateFlow()
-    fun checkUpdate(url: String) {
+    fun checkUpdate(url: String, userInitiated: Boolean = true) {
         if (checkingUpdateMutable.value) return
         checkingUpdateMutable.value = true
+        retryPrompts.clear("update")
         serviceScope.launch {
             try {
                 updates.accept(api.configuration(url.trim()), url.trim())
                 emitMessage(if (updates.notice.value == null) "当前已是最新版本" else "发现新版本，请在设置中查看")
             } catch (error: CancellationException) { throw error }
-            catch (_: Exception) { emitMessage("无法获取更新信息，请检查地址和网络") }
+            catch (_: Exception) {
+                if (userInitiated) retryPrompts.offer("update", "检查更新失败",
+                    "无法获取更新信息，请检查地址和网络后重试", "settings") { checkUpdate(url) }
+            }
             finally { checkingUpdateMutable.value = false }
         }
     }
@@ -85,22 +90,27 @@ class AppState(
     ) { parserRules.rules.value }
     private val updatingRulesMutable = MutableStateFlow(false)
     val updatingRules = updatingRulesMutable.asStateFlow()
-    fun updateParserRules(url: String) {
+    fun updateParserRules(url: String, userInitiated: Boolean = true) {
         if (updatingRulesMutable.value) return
         updatingRulesMutable.value = true
+        retryPrompts.clear("rules")
         serviceScope.launch {
             try {
                 parserRules.import(api.configuration(url.trim()), url.trim())
                 emitMessage("解析规则已更新")
             } catch (error: CancellationException) { throw error }
-            catch (error: Exception) { emitMessage(error.message ?: "规则更新失败，已保留原规则") }
+            catch (_: Exception) {
+                if (userInitiated) retryPrompts.offer("rules", "规则更新失败",
+                    "请检查地址和网络后重试，原有规则已保留", "settings") { updateParserRules(url) }
+            }
             finally { updatingRulesMutable.value = false }
         }
     }
     private var serviceJob = SupervisorJob(scope.coroutineContext[Job])
     private var serviceScope = CoroutineScope(scope.coroutineContext + serviceJob)
     /** App-owned maintenance of expendable image/content caches, independent of playback. */
-    internal val cacheMaintenance = dev.pandavideo.data.repository.CacheMaintenance(
+    internal val cacheMaintenance: dev.pandavideo.data.repository.CacheMaintenance =
+        dev.pandavideo.data.repository.CacheMaintenance(
         serviceScope,
         posterBytes = { withContext(Dispatchers.Default) { posterImageLoader?.diskCache?.size ?: 0L } },
         contentUsage = api::cacheUsage,
@@ -113,11 +123,27 @@ class AppState(
             }
         },
         clearContent = api::clearCache,
+        onFailure = { message, retry ->
+            retryPrompts.offer("maintenance", "缓存管理失败", message, "settings",
+                available = { cacheMaintenance.state.value.error != null && !cacheMaintenance.state.value.busy },
+                action = retry)
+        },
     )
     /** Explicit episode downloads and offline playback metadata. */
     val downloads = dev.pandavideo.data.repository.OfflineDownloads(
-        platform.storage(), platform.offlineEngine(), serviceScope, api::player,
+        platform.storage(), platform.offlineEngine(), serviceScope,
+        onFailure = ::reportDownloadFailure, resolve = api::player,
     )
+    private fun reportDownloadFailure(entry: dev.pandavideo.data.repository.OfflineDownload, retry: () -> Unit) {
+        val deleting = entry.error == "删除失败，请重试"
+        retryPrompts.offer("download:${entry.id}", if (deleting) "删除缓存失败" else "下载失败",
+            "${entry.info.title} ${entry.episodeLabel}\n${entry.error}".trim(),
+            available = {
+                downloads.tasks.value.any {
+                    it.id == entry.id && it.status == dev.pandavideo.data.repository.DownloadStatus.Failed
+                }
+            }, action = retry)
+    }
     /** Queues the resolved current episode and reports a transient result. */
     fun cacheCurrentEpisode() {
         val info = session?.state?.value?.takeUnless { it.loading }?.info ?: return
@@ -133,6 +159,7 @@ class AppState(
     }
     /** Deletes an episode cache without requiring the current playback session to close. */
     fun removeDownload(id: String) {
+        retryPrompts.clear("download:$id")
         downloads.remove(id)
     }
     private var discoverJob: Job? = null
@@ -140,6 +167,7 @@ class AppState(
     private var browseJob: Job? = null
     private var hotJob: Job? = null
     private var searchJob: Job? = null
+    private var playerErrorJob: Job? = null
     private var sleepJob: Job? = null
     private var playerLevelsActive = false
     private val sleepRemainingMutable = MutableStateFlow(0)
@@ -207,8 +235,8 @@ class AppState(
 
     init {
         loadDiscover()
-        if (parserRules.sourceUrl.isNotBlank()) updateParserRules(parserRules.sourceUrl)
-        if (updates.sourceUrl.isNotBlank()) checkUpdate(updates.sourceUrl)
+        if (parserRules.sourceUrl.isNotBlank()) updateParserRules(parserRules.sourceUrl, userInitiated = false)
+        if (updates.sourceUrl.isNotBlank()) checkUpdate(updates.sourceUrl, userInitiated = false)
         serviceScope.launch {
             while (true) {
                 delay(1_000)
@@ -233,6 +261,7 @@ class AppState(
         val active = api
         if (more && (discoverMutable.value.loading || discoverMutable.value.page?.hasMore != true)) return
         discoverJob?.cancel()
+        retryPrompts.clear("discover")
         val previous = if (selected == kind && country == discoverCountry) discoverMutable.value else CatalogState()
         kind = selected
         discoverCountry = country
@@ -248,13 +277,20 @@ class AppState(
                 }
                 inspectCatalog(discoverMutable)
             } catch (error: CancellationException) { throw error }
-            catch (error: Exception) { discoverMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false, error = error.message) }
+            catch (_: Exception) {
+                discoverMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false,
+                    error = "加载失败，请检查网络后重试")
+                retryPrompts.offer("discover", "加载失败", "请检查网络连接后重试", "discover") {
+                    loadDiscover(selected, more, country, refresh)
+                }
+            }
         }
     }
     fun loadBrowse(selected: BrowseFilters = filters, more: Boolean = false, refresh: Boolean = false) {
         val active = api
         if (more && (browseMutable.value.loading || browseMutable.value.page?.hasMore != true)) return
         browseJob?.cancel()
+        retryPrompts.clear("browse")
         val previous = if (selected == filters) browseMutable.value else CatalogState()
         filters = selected
         browseMutable.value = previous.copy(loading = true, loadingMore = more, refreshing = refresh && !more, error = null)
@@ -266,11 +302,18 @@ class AppState(
                 warmPosters(page.items.map { it.cover })
                 inspectCatalog(browseMutable)
             } catch (error: CancellationException) { throw error }
-            catch (error: Exception) { browseMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false, error = error.message) }
+            catch (_: Exception) {
+                browseMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false,
+                    error = "加载失败，请检查网络后重试")
+                retryPrompts.offer("browse", "加载失败", "请检查网络连接后重试", "browse") {
+                    loadBrowse(selected, more, refresh)
+                }
+            }
         }
     }
     fun search(query: String, type: String) {
         searchJob?.cancel()
+        retryPrompts.clear("search")
         if (youth.enabled.value) {
             searchMutable.value = SearchState(error = "青少年模式下已关闭自由搜索，请由家长选择影片")
             return
@@ -286,14 +329,18 @@ class AppState(
                 searchMutable.value = SearchState(result)
                 warmPosters(result.results.map { it.thumbnailUrl })
             } catch (error: CancellationException) { throw error }
-            catch (error: Exception) { searchMutable.value = SearchState(error = error.message) }
+            catch (_: Exception) {
+                searchMutable.value = SearchState(error = "搜索失败，请检查网络后重试")
+                retryPrompts.offer("search", "搜索失败", "请检查网络连接后重试", "search") { search(query, type) }
+            }
         }
     }
-    fun clearSearch() { searchJob?.cancel(); searchMutable.value = SearchState() }
+    fun clearSearch() { searchJob?.cancel(); retryPrompts.clear("search"); searchMutable.value = SearchState() }
     fun loadHot(type: String = hotType, more: Boolean = false, refresh: Boolean = false) {
         val option = HotTypeOptions.firstOrNull { it.first == type } ?: return
         if (more && (hotMutable.value.loading || hotMutable.value.page?.hasMore != true)) return
         hotJob?.cancel()
+        retryPrompts.clear("hot")
         val previous = if (type == hotType) hotMutable.value else CatalogState()
         hotType = type
         hotMutable.value = previous.copy(loading = true, loadingMore = more, refreshing = refresh && !more, error = null)
@@ -306,8 +353,10 @@ class AppState(
                 warmPosters(page.items.map { it.cover })
                 inspectCatalog(hotMutable)
             } catch (error: CancellationException) { throw error }
-            catch (error: Exception) {
-                hotMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false, error = error.message)
+            catch (_: Exception) {
+                hotMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false,
+                    error = "加载失败，请检查网络后重试")
+                retryPrompts.offer("hot", "加载失败", "请检查网络连接后重试", "hot") { loadHot(type, more, refresh) }
             }
         }
     }
@@ -369,6 +418,7 @@ class AppState(
             ::checkpoint, ::resumePosition, ::playbackArtwork).also {
             it.load(PlayerRequest(title = item.title))
         }
+        watchPlayerErrors(session!!)
         play()
     }
     fun startPlayer(
@@ -387,6 +437,27 @@ class AppState(
         }, platform.player(), serviceScope,
             settings.settings.value.defaultRate, ::checkpoint, ::resumePosition,
             ::playbackArtwork).also { it.load(request) }
+        watchPlayerErrors(session!!)
+    }
+    private fun watchPlayerErrors(active: PlaybackSession) {
+        playerErrorJob = serviceScope.launch {
+            active.state.collect { state ->
+                if (state.loading || state.refreshing || state.error == null) {
+                    retryPrompts.clear("player")
+                } else {
+                    val player = active.controller.state.value
+                    // A failed episode switch can retain the previous info. Only a still
+                    // active media instance may retry metadata refresh instead of playback.
+                    val refresh = state.info != null && player.mediaId == state.mediaId &&
+                        player.phase in setOf(PlayerPhase.Ready, PlayerPhase.Playing, PlayerPhase.Paused, PlayerPhase.Buffering)
+                    retryPrompts.offer("player", if (refresh) "播放信息刷新失败" else "播放失败",
+                        "请检查网络连接，或稍后重试", "player",
+                        available = { session === active && active.state.value.error != null }) {
+                        if (refresh) active.refresh() else active.retry()
+                    }
+                }
+            }
+        }
     }
     private fun playbackArtwork(info: PlaybackInfo): String? =
         coverFor(playingCatalog?.title ?: playingSearch?.title ?: info.title, playingCover)
@@ -488,6 +559,8 @@ class AppState(
     // Opening/replacing a title releases its old session without cancelling an
     // app-wide sleep timer that the user may have already armed in Settings.
     private fun releasePlayer() {
+        playerErrorJob?.cancel()
+        retryPrompts.clear("player")
         if (session != null) rememberPlayerLevels()
         session?.close(); session = null; playingCatalog = null; playingSearch = null; playingCover = null
         playingRecommendations = null

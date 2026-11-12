@@ -125,17 +125,6 @@ internal fun ModernPlayerScreen(
         }
     }
     DisposableEffect(Unit) { onDispose { platform.fullscreen(false) } }
-    // Refresh failures keep the playing title; surface them as a transient snackbar rather
-    // than the full-screen error state, which is reserved for initial resolution failures.
-    var lastRefreshError by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(state.error) {
-        val error = state.error
-        if (error != null && state.info != null && error != lastRefreshError) {
-            lastRefreshError = error
-            model.emitMessage("刷新失败，请稍后重试")
-        }
-        if (error == null) lastRefreshError = null
-    }
     Box(Modifier.fillMaxSize().background(Color.Black)
         .then(if (!fullscreen && !pipWindow) Modifier.statusBarsPadding() else Modifier)) {
         BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {

@@ -70,12 +70,14 @@ data class OfflineDownload(
  * @param storage Private metadata preferences.
  * @param engine Native media transfer and playback adapter.
  * @param scope Application lifetime scope; leaving a screen does not cancel downloads.
+ * @param onFailure Reports a fresh failure with an action retrying the operation that failed.
  * @param resolve Resolves a fresh URL immediately before each attempt.
  */
 class OfflineDownloads(
     private val storage: KeyValueStorage,
     private val engine: OfflineEngine,
     private val scope: CoroutineScope,
+    private val onFailure: (OfflineDownload, () -> Unit) -> Unit = { _, _ -> },
     private val resolve: suspend (PlayerRequest) -> PlaybackInfo,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -106,6 +108,11 @@ class OfflineDownloads(
     }
     private fun update(id: String, transform: (OfflineDownload) -> OfflineDownload) =
         publish(tasks.value.map { if (it.id == id) transform(it) else it })
+
+    private fun fail(id: String, message: String, retry: () -> Unit) {
+        update(id) { it.copy(status = DownloadStatus.Failed, error = message) }
+        tasks.value.firstOrNull { it.id == id }?.let { onFailure(it, retry) }
+    }
 
     /** Returns whether caching is available for the currently resolved media type. */
     fun supports(kind: String): Boolean = engine.supports(kind)
@@ -164,7 +171,7 @@ class OfflineDownloads(
                 engine.remove(id)
                 publish(tasks.value.filterNot { it.id == id })
             } catch (error: CancellationException) { throw error }
-            catch (_: Exception) { update(id) { it.copy(status = DownloadStatus.Failed, error = "删除失败，请重试") } }
+            catch (_: Exception) { fail(id, "删除失败，请重试") { remove(id) } }
             finally { deleting.remove(id) }
         }
     }
@@ -181,7 +188,7 @@ class OfflineDownloads(
         val entry = (candidates.firstOrNull { request.episode == it.info.selected }
             ?: if (request.episode == null) candidates.firstOrNull() else null) ?: return null
         val asset = engine.asset(entry.id, entry.locator) ?: run {
-            update(entry.id) { it.copy(status = DownloadStatus.Failed, error = "缓存文件已失效，请重新缓存") }
+            fail(entry.id, "缓存文件已失效，请重新缓存") { resume(entry.id) }
             return null
         }
         val available = candidates.filter { engine.asset(it.id, it.locator) != null }
@@ -227,7 +234,7 @@ class OfflineDownloads(
                 }
                 throw error
             } catch (_: Exception) {
-                update(entry.id) { it.copy(status = DownloadStatus.Failed, error = "缓存失败，请检查网络或存储空间后重试") }
+                fail(entry.id, "缓存失败，请检查网络或存储空间后重试") { resume(entry.id) }
             } finally {
                 activeId = null
                 worker = null

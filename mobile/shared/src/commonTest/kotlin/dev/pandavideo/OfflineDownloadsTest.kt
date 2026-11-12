@@ -109,4 +109,68 @@ class OfflineDownloadsTest {
         assertNull(store.offline(PlayerRequest(page = info().pageUrl, episode = "e1")))
         assertEquals(DownloadStatus.Failed, store.tasks.value.single().status)
     }
+
+    @Test fun failedTransferReportsRetryThatResolvesTheSameEpisodeAgain() = runTest {
+        val engine = Engine()
+        var retry: (() -> Unit)? = null
+        val requests = mutableListOf<PlayerRequest>()
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope,
+            onFailure = { entry, action ->
+                assertEquals("e2", entry.info.selected)
+                assertEquals(DownloadStatus.Failed, entry.status)
+                retry = action
+            }) { request -> requests += request; info(request.episode!!) }
+        val id = store.enqueue(info("e2"))
+        runCurrent()
+        engine.waits.getValue(id).completeExceptionally(IllegalStateException("offline"))
+        runCurrent()
+        assertEquals(DownloadStatus.Failed, store.tasks.value.single().status)
+        assertEquals(1, requests.size)
+        assertNotNull(retry).invoke()
+        runCurrent()
+        assertEquals(2, requests.size)
+        assertTrue(requests.all { it.page == info().pageUrl && it.episode == "e2" })
+        assertEquals(DownloadStatus.Downloading, store.tasks.value.single().status)
+        engine.finish(id); runCurrent()
+        assertEquals(DownloadStatus.Completed, store.tasks.value.single().status)
+    }
+
+    @Test fun deleteFailureRetriesDeletionInsteadOfDownloadingAgain() = runTest {
+        var removingFails = true
+        var removed = 0
+        var retry: (() -> Unit)? = null
+        val engine = object : OfflineEngine {
+            override fun supports(kind: String) = true
+            override suspend fun download(id: String, info: PlaybackInfo, progress: (Float?) -> Unit) = id
+            override fun cancel(id: String) {}
+            override suspend fun remove(id: String) {
+                removed++
+                check(!removingFails)
+            }
+            override fun asset(id: String, locator: String) = OfflineAsset("file:///$id", "offline")
+        }
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope,
+            onFailure = { _, action -> retry = action }) { info() }
+        val id = store.enqueue(info())
+        runCurrent()
+        store.remove(id); runCurrent()
+        assertEquals(1, removed)
+        assertEquals(DownloadStatus.Failed, store.tasks.value.single().status)
+        removingFails = false
+        assertNotNull(retry).invoke(); runCurrent()
+        assertEquals(2, removed)
+        assertTrue(store.tasks.value.isEmpty())
+    }
+
+    @Test fun pauseDoesNotReportAnErrorPrompt() = runTest {
+        val engine = Engine()
+        var failures = 0
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope,
+            onFailure = { _, _ -> failures++ }) { info() }
+        val id = store.enqueue(info())
+        runCurrent()
+        store.pause(id); runCurrent()
+        assertEquals(0, failures)
+        assertEquals(DownloadStatus.Paused, store.tasks.value.single().status)
+    }
 }

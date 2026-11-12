@@ -34,6 +34,7 @@ internal class CacheMaintenance(
     private val contentUsage: suspend () -> ContentCacheUsage,
     private val clearPosters: suspend () -> Unit,
     private val clearContent: suspend () -> Unit,
+    private val onFailure: (String, () -> Unit) -> Unit = { _, _ -> },
 ) {
     private val mutable = MutableStateFlow(CacheMaintenanceState())
     val state = mutable.asStateFlow()
@@ -54,6 +55,7 @@ internal class CacheMaintenance(
             } catch (error: CancellationException) { throw error }
             catch (_: Exception) {
                 mutable.value = CacheMaintenanceState(error = "扫描失败，请重试")
+                onFailure("缓存扫描失败，请重试") { scan() }
             } finally {
                 mutable.value = state.value.copy(scanning = false)
             }
@@ -81,9 +83,11 @@ internal class CacheMaintenance(
                     error = if (failed) "部分缓存清理失败，请重试" else null,
                     cleanedBytes = if (failed) null else (before - remaining.totalBytes).coerceAtLeast(0),
                 )
+                if (failed) onFailure("部分缓存清理失败，请重试") { clear() }
             } catch (error: CancellationException) { throw error }
             catch (_: Exception) {
                 mutable.value = CacheMaintenanceState(error = "清理后扫描失败，请重新扫描")
+                onFailure("清理后扫描失败，请重新扫描") { scan() }
             } finally {
                 mutable.value = state.value.copy(cleaning = false)
             }

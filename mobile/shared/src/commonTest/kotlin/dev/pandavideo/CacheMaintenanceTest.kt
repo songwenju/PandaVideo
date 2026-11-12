@@ -89,6 +89,31 @@ class CacheMaintenanceTest {
         assertNull(manager.state.value.error)
     }
 
+    @Test fun scanFailureActionRescansAndCleanupFailureActionCleans() = runTest {
+        var scanFails = true
+        var clearFails = true
+        var bytes = 512L
+        var clearAttempts = 0
+        var retry: (() -> Unit)? = null
+        val manager = CacheMaintenance(backgroundScope,
+            { check(!scanFails); bytes }, { ContentCacheUsage() },
+            { clearAttempts++; check(!clearFails); bytes = 0 }, {},
+            onFailure = { _, action -> retry = action })
+        manager.scan(); runCurrent()
+        assertEquals(0, clearAttempts)
+        scanFails = false
+        assertNotNull(retry).invoke(); runCurrent()
+        assertEquals(512L, manager.state.value.usage?.totalBytes)
+        assertNull(manager.state.value.error)
+        manager.clear(); runCurrent()
+        assertEquals(1, clearAttempts)
+        clearFails = false
+        assertNotNull(retry).invoke(); runCurrent()
+        assertEquals(2, clearAttempts)
+        assertEquals(0L, manager.state.value.usage?.totalBytes)
+        assertNull(manager.state.value.error)
+    }
+
     @Test fun byteLabelsHandleSmallValuesUnitBoundariesAndLargeFiles() {
         assertEquals("0 B", formatCacheBytes(-1))
         assertEquals("512 B", formatCacheBytes(512))
