@@ -59,6 +59,14 @@ class SettingsStoreTest {
         assertEquals(order, SettingsStore(storage).settings.value.tabOrder)
         assertEquals(1.5f, SettingsStore(storage).settings.value.defaultRate)
     }
+    @Test fun everyTabCanRemainFirstAfterColdReload() {
+        val routes = listOf("hot", "discover", "browse", "profile")
+        for (first in routes) {
+            val storage = FakeStorage()
+            SettingsStore(storage).setTabOrder(listOf(first) + routes.filterNot { it == first })
+            assertEquals(first, SettingsStore(storage).settings.value.tabOrder.first())
+        }
+    }
     @Test fun invalidStoredOrderRetainsKnownTabsAndRestoresMissingDestinations() {
         val storage = FakeStorage()
         storage.putString("settings", """{"tabOrder":["profile","removed","profile","discover"]}""")

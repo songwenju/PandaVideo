@@ -7,6 +7,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DataSourceInputStream
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.cache.CacheDataSource
@@ -51,22 +52,26 @@ internal class AndroidOfflineEngine private constructor(context: Context) : Offl
     @Synchronized private fun cache(id: String): SimpleCache =
         caches.getOrPut(id) { SimpleCache(File(directory(id), "media"), NoOpCacheEvictor(), database) }
 
-    private fun factory(id: String, online: Boolean): CacheDataSource.Factory =
+    private fun factory(id: String, online: Boolean, bilibili: Boolean = false): CacheDataSource.Factory =
         CacheDataSource.Factory().setCache(cache(id)).apply {
             // Offline playback intentionally has no upstream: missing media fails rather than
             // silently reconnecting to the source and claiming to be available offline.
-            if (online) setUpstreamDataSourceFactory(network)
+            if (online) setUpstreamDataSourceFactory(if (bilibili)
+                DefaultHttpDataSource.Factory().setUserAgent(dev.pandavideo.core.player.BilibiliMedia.userAgent)
+                    .setConnectTimeoutMs(15_000).setReadTimeoutMs(30_000) else network)
         }
 
     override suspend fun download(id: String, info: PlaybackInfo, progress: (Float?) -> Unit): String {
         require(supports(info.kind))
         val dir = directory(id).apply { mkdirs() }
         val executor = Executors.newSingleThreadExecutor()
+        val bilibili = dev.pandavideo.core.player.BilibiliMedia.owns(info.url)
         val item = MediaItem.Builder().setUri(info.url)
+            .apply { if (bilibili) setCustomCacheKey(id) }
             .setMimeType(if (info.kind == "hls") MimeTypes.APPLICATION_M3U8 else MimeTypes.VIDEO_MP4).build()
         val downloader: Downloader = if (info.kind == "hls") HlsDownloader.Factory(factory(id, true))
             .setExecutor(executor).create(item)
-            else ProgressiveDownloader(item, factory(id, true), executor)
+            else ProgressiveDownloader(item, factory(id, true, bilibili), executor)
         active = id to downloader
         try {
             withContext(Dispatchers.IO) {
@@ -91,7 +96,10 @@ internal class AndroidOfflineEngine private constructor(context: Context) : Offl
                 }
                 ensureActive()
                 val metadata = File(dir, "source.json.tmp")
-                metadata.writeText(json.encodeToString(info))
+                // The stable cache key locates completed MP4 bytes without retaining the
+                // expiring CDN token. Offline sources have no network upstream.
+                metadata.writeText(json.encodeToString(if (bilibili)
+                    info.copy(url = "https://offline.invalid/$id.mp4") else info))
                 check(metadata.renameTo(File(dir, "source.json")))
             }
             return id
@@ -115,6 +123,7 @@ internal class AndroidOfflineEngine private constructor(context: Context) : Offl
     fun mediaSource(id: String, requested: MediaItem): MediaSource {
         val info = json.decodeFromString<PlaybackInfo>(File(directory(id), "source.json").readText())
         val item = requested.buildUpon().setUri(info.url)
+            .apply { if (info.url == "https://offline.invalid/$id.mp4") setCustomCacheKey(id) }
             .setMimeType(if (info.kind == "hls") MimeTypes.APPLICATION_M3U8 else MimeTypes.VIDEO_MP4).build()
         return DefaultMediaSourceFactory(factory(id, false)).createMediaSource(item)
     }
@@ -132,13 +141,16 @@ internal class AndroidOfflineEngine private constructor(context: Context) : Offl
 @UnstableApi
 internal class OfflineMediaSourceFactory(context: Context) : MediaSource.Factory {
     private val online = DefaultMediaSourceFactory(context)
+    private val bilibili = DefaultMediaSourceFactory(DefaultDataSource.Factory(context,
+        DefaultHttpDataSource.Factory().setUserAgent(dev.pandavideo.core.player.BilibiliMedia.userAgent)))
     private val offline = AndroidOfflineEngine.get(context)
     override fun createMediaSource(mediaItem: MediaItem): MediaSource {
         val uri = mediaItem.localConfiguration?.uri
         return if (uri?.scheme == "pandavideo-offline") {
             require(uri.path.isNullOrEmpty() && uri.query == null)
             offline.mediaSource(requireNotNull(uri.host), mediaItem)
-        } else online.createMediaSource(mediaItem)
+        } else if (dev.pandavideo.core.player.BilibiliMedia.owns(uri?.toString().orEmpty()))
+            bilibili.createMediaSource(mediaItem) else online.createMediaSource(mediaItem)
     }
     override fun getSupportedTypes(): IntArray = online.supportedTypes
     override fun setDrmSessionManagerProvider(

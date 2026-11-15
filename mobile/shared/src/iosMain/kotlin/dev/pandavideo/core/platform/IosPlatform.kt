@@ -15,6 +15,9 @@ import dev.pandavideo.core.player.PlayerController
 import dev.pandavideo.core.player.PlayerPhase
 import dev.pandavideo.core.player.PlayerState
 import dev.pandavideo.core.player.PreviewFrame
+import dev.pandavideo.core.player.PendingSeek
+import dev.pandavideo.core.player.startupPosition
+import dev.pandavideo.core.player.ScreenWakeLock
 import dev.pandavideo.data.repository.isWebUrl
 import dev.pandavideo.data.repository.BundledPosters
 import dev.pandavideo.data.repository.OnlineOrigin
@@ -52,6 +55,8 @@ fun MainViewController(): UIViewController = ComposeUIViewController {
 }
 
 class IosPlatform : PlatformServices {
+    private val douban by lazy { IosDoubanSession() }
+    override fun doubanSession(): DoubanSession = douban
     private val offline by lazy { IosOfflineEngine() }
     override fun offlineEngine(): dev.pandavideo.data.repository.OfflineEngine = offline
     override fun avatarDirectory(): String =
@@ -70,6 +75,10 @@ class IosPlatform : PlatformServices {
         UIKitView(
             factory = {
                 AVRoutePickerView(frame = CGRectZero.readValue()).apply {
+                    // UIKit interop views are composited above the Compose dialog layer. Without
+                    // an opaque backdrop the page behind the sheet showed through the transparent
+                    // route button, which looked like a stray portrait during discovery.
+                    backgroundColor = UIColor.secondarySystemBackgroundColor
                     tintColor = UIColor(red = tint.red.toDouble(), green = tint.green.toDouble(),
                         blue = tint.blue.toDouble(), alpha = tint.alpha.toDouble())
                     activeTintColor = tintColor
@@ -102,7 +111,12 @@ class IosPlatform : PlatformServices {
             "SuiXinKanFullscreenDenied", null, NSOperationQueue.mainQueue,
         ) { _ -> fullscreenBlockedMutable.tryEmit(Unit) }
     }
-    override fun httpClient() = HttpClient(Darwin) { followRedirects = false }
+    override fun httpClient() = HttpClient(Darwin) {
+        followRedirects = false
+        // Session cookies are attached explicitly after origin checks in ContentRepository.
+        // Disable NSURLSession's ambient cookie handling, including on redirected requests.
+        engine { configureRequest { setHTTPShouldHandleCookies(false) } }
+    }
     override fun player(): PlayerController = IosPlayer(
         onPipChanged = { active -> pipMutable.value = active },
     ).also { activePlayer = it }
@@ -194,10 +208,24 @@ internal actual fun currentEpochMillis(): Long =
     (NSDate().timeIntervalSince1970 * 1000.0).toLong()
 
 class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerController {
-    val native = AVPlayer()
+    /**
+     * The only AVPlayer for this session. It stays bound to [PlayerContainerView.videoLayer] and
+     * the PiP controller; preloaded media is adopted as an item, never as another player instance.
+     */
+    val native: AVPlayer = AVPlayer()
+    private data class Prepared(
+        val source: MediaSource, val item: AVPlayerItem, var ready: Boolean = false,
+    )
+    private var prepared: Prepared? = null
+    private var prepareJob: Job? = null
+    internal var displayLayer: AVPlayerLayer? = null
     private val mutable = MutableStateFlow(PlayerState())
+    private val pendingSeek = PendingSeek()
+    private var startupSource: MediaSource? = null
+    private var startupSeeking = false
     override val state = mutable.asStateFlow()
-    override val capabilities = PlayerCapabilities(pictureInPicture = true, framePreview = true, audioOnly = true)
+    override val capabilities = PlayerCapabilities(pictureInPicture = true, framePreview = true,
+        audioOnly = true, initialPosition = true, initialSkipping = true)
     private var audioOnly = false
     private var previewGenerator: AVAssetImageGenerator? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -225,32 +253,64 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
         installRemoteCommands()
         scope.launch {
             while (isActive) {
-                delay(250)
+                delay(if (!mutable.value.firstFrameRendered && mutable.value.wantsPlay) 50 else 250)
                 val item = native.currentItem ?: continue
                 // HLS tracks can arrive after load. Apply the current mode when they become
                 // available as well, without replacing the item or disturbing its timeline.
                 applyAudioOnly(item)
                 val duration = CMTimeGetSeconds(item.duration).takeIf { it.isFinite() && it > 0 } ?: 0.0
+                // Keep autoplay behind the single history/intro seek. Publishing a Playing
+                // sample first used to paint the opening and immediately show loading again.
+                val startup = startupSource
+                if (startup != null && !startupSeeking && item.status == AVPlayerItemStatusReadyToPlay) {
+                    val target = startup.startupPosition((duration * 1000).toLong())
+                    if (target > 0) {
+                        startupSeeking = true
+                        native.seekToTime(CMTimeMakeWithSeconds(target / 1000.0, 600),
+                            toleranceBefore = CMTimeMake(0, 1), toleranceAfter = CMTimeMake(0, 1),
+                            completionHandler = { _ ->
+                                scope.launch {
+                                    if (released || startupSource !== startup || native.currentItem != item) return@launch
+                                    startupSource = null
+                                    startupSeeking = false
+                                    if (mutable.value.wantsPlay) native.playImmediatelyAtRate(mutable.value.rate)
+                                }
+                            })
+                    } else {
+                        // A ready indefinite timeline is live; do not wait for a VOD duration.
+                        startupSource = null
+                        if (mutable.value.wantsPlay) native.playImmediatelyAtRate(mutable.value.rate)
+                    }
+                }
                 val position = CMTimeGetSeconds(native.currentTime()).takeIf { it.isFinite() && it > 0 } ?: 0.0
                 val previous = mutable.value
+                val seeking = pendingSeek.active(previous.mediaId)
+                val displayedPosition = pendingSeek.position(previous.mediaId, (position * 1000).toLong())
                 val phase = when {
                     item.status == AVPlayerItemStatusFailed -> PlayerPhase.Error
+                    startupSource != null -> PlayerPhase.Preparing
+                    seeking -> if (previous.wantsPlay) PlayerPhase.Buffering else PlayerPhase.Paused
                     previous.phase == PlayerPhase.Ended -> PlayerPhase.Ended
                     item.status == AVPlayerItemStatusUnknown -> PlayerPhase.Preparing
                     native.timeControlStatus == AVPlayerTimeControlStatusWaitingToPlayAtSpecifiedRate -> PlayerPhase.Buffering
                     native.timeControlStatus == AVPlayerTimeControlStatusPlaying -> PlayerPhase.Playing
                     else -> PlayerPhase.Paused
                 }
-                val wants = when (phase) {
+                val wants = if (seeking && phase != PlayerPhase.Error) previous.wantsPlay else when (phase) {
                     PlayerPhase.Playing -> true
                     PlayerPhase.Paused, PlayerPhase.Ended, PlayerPhase.Error -> false
                     else -> previous.wantsPlay
                 }
                 mutable.value = previous.copy(
-                    phase = phase, wantsPlay = wants, duration = (duration * 1000).toLong(), position = (position * 1000).toLong(),
+                    phase = phase, wantsPlay = wants, duration = (duration * 1000).toLong(), position = displayedPosition,
                     error = if (phase == PlayerPhase.Error) "视频无法播放，请重新解析或切换线路" else null,
+                    // A ready AVPlayerItem is not a rendered frame. Require the bound video
+                    // layer's display readiness and a progressing active player as well.
+                    firstFrameRendered = previous.firstFrameRendered || (phase == PlayerPhase.Playing &&
+                        position > 0 && displayLayer?.player == native &&
+                        displayLayer?.isReadyForDisplay() == true),
                 )
-                publishNowPlaying(phase, (position * 1000).toLong(), (duration * 1000).toLong())
+                publishNowPlaying(phase, displayedPosition, (duration * 1000).toLong())
             }
         }
     }
@@ -357,15 +417,32 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
 
     override fun load(source: MediaSource) {
         if (released) return
+        pendingSeek.clear()
+        startupSource = source.takeIf { it.startPosition > 0 || it.startupSkip.introSeconds > 0 }
+        startupSeeking = false
         cancelPreview()
         native.pause()
         removeEndObserver()
         val url = NSURL.URLWithString(source.url) ?: return
-        val item = AVPlayerItem(uRL = url)
+        val upcoming = prepared?.takeIf { it.ready && it.source.url == source.url &&
+            it.source.kind == source.kind && source.startPosition == 0L &&
+            pipController?.isPictureInPictureActive() != true }
+        val item: AVPlayerItem
+        if (upcoming != null) {
+            prepared = null
+            prepareJob?.cancel()
+            prepareJob = null
+            item = upcoming.item
+        } else {
+            preload(null)
+            item = playbackItem(url, source.url)
+        }
+        native.replaceCurrentItemWithPlayerItem(item)
         currentTitle = source.title
         currentEpisode = source.episodeLabel
         nowPlayingPhase = null
-        mutable.value = PlayerState(mediaId = source.id, phase = PlayerPhase.Preparing, wantsPlay = source.autoplay)
+        mutable.value = PlayerState(mediaId = source.id, phase = PlayerPhase.Preparing,
+            wantsPlay = source.autoplay, dataPreloadHit = upcoming != null)
         loadArtwork(source)
         endObserver = NSNotificationCenter.defaultCenter.addObserverForName(
             AVPlayerItemDidPlayToEndTimeNotification, item, NSOperationQueue.mainQueue,
@@ -374,10 +451,53 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
                 mutable.value = mutable.value.copy(phase = PlayerPhase.Ended, wantsPlay = false)
             }
         }
-        native.replaceCurrentItemWithPlayerItem(item)
         applyAudioOnly(item)
-        if (source.autoplay) native.play()
+        if (source.autoplay && startupSource == null) native.play()
     }
+    /**
+     * Warms one upcoming item without audio output or Now Playing changes.
+     * The item is adopted on load only when its asset is playable and no active PiP controller
+     * uses the current player.
+     */
+    override fun preload(source: MediaSource?) {
+        if (released) return
+        if (source != null && prepared?.source?.url == source.url &&
+            prepared?.source?.kind == source.kind) return
+        prepareJob?.cancel()
+        prepareJob = null
+        prepared = null
+        if (source == null || !isWebUrl(source.url)) return
+        val url = NSURL.URLWithString(source.url) ?: return
+        val item = playbackItem(url, source.url).apply { preferredForwardBufferDuration = 3.0 }
+        val candidate = Prepared(source, item)
+        prepared = candidate
+        prepareJob = scope.launch {
+            // An AVPlayerItem can belong to only one AVPlayer, so the candidate is never attached
+            // to a standby player. Loading the asset keys warms the playlist and transport while
+            // leaving the item free to be adopted by the single session player on load.
+            val ready = withTimeoutOrNull(15_000) {
+                suspendCancellableCoroutine<Boolean> { continuation ->
+                    item.asset.loadValuesAsynchronouslyForKeys(listOf("playable", "duration")) {
+                        if (continuation.isActive) {
+                            continuation.resumeWith(Result.success(
+                                item.asset.statusOfValueForKey("playable", null) ==
+                                    AVKeyValueStatusLoaded,
+                            ))
+                        }
+                    }
+                }
+            } == true
+            if (!released && prepared === candidate) {
+                if (ready) candidate.ready = true else prepared = null
+            }
+        }
+    }
+    /** Uses the documented asset User-Agent option for official public MP4 transport. */
+    private fun playbackItem(url: NSURL, address: String): AVPlayerItem =
+        if (dev.pandavideo.core.player.BilibiliMedia.owns(address)) AVPlayerItem(asset = AVURLAsset(
+            uRL = url, options = mapOf(AVURLAssetHTTPUserAgentKey to dev.pandavideo.core.player.BilibiliMedia.userAgent)))
+        else AVPlayerItem(uRL = url)
+
     /** Disables video tracks on the existing AVPlayerItem while retaining audio and time. */
     override fun setAudioOnly(enabled: Boolean) {
         if (released) return
@@ -392,15 +512,47 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
         }
     }
     override fun play() {
-        if (!released) { mutable.value = mutable.value.copy(wantsPlay = true); native.playImmediatelyAtRate(mutable.value.rate) }
+        if (!released) {
+            mutable.value = mutable.value.copy(wantsPlay = true)
+            if (startupSource == null) native.playImmediatelyAtRate(mutable.value.rate)
+        }
     }
     override fun pause() {
         if (!released) { native.pause(); mutable.value = mutable.value.copy(wantsPlay = false, phase = PlayerPhase.Paused) }
     }
     override fun seekTo(position: Long) {
-        if (!released && mutable.value.duration > 0 && native.currentItem?.seekableTimeRanges?.isNotEmpty() == true) {
-            native.seekToTime(CMTimeMakeWithSeconds(position.coerceIn(0, mutable.value.duration).toDouble() / 1000, 600))
+        val player = native
+        val item = player.currentItem ?: return
+        val previous = mutable.value
+        if (released || previous.duration <= 0 || item.seekableTimeRanges.isEmpty()) return
+        val wasStarting = startupSource != null
+        if (wasStarting) {
+            // An explicit scrub overrides the opening policy even while its native seek
+            // is pending. Its obsolete completion must not restore autoplay or position.
+            startupSource = null
+            startupSeeking = false
+            item.cancelPendingSeeks()
         }
+        val target = position.coerceIn(0, previous.duration)
+        val request = pendingSeek.begin(previous.mediaId, target)
+        // Release the drag preview into an optimistic timeline, rather than a stale native
+        // sample. AVPlayer temporarily pauses/waits during seek; preserve explicit play intent.
+        mutable.value = previous.copy(position = target,
+            phase = if (previous.wantsPlay) PlayerPhase.Buffering else PlayerPhase.Paused)
+        player.seekToTime(CMTimeMakeWithSeconds(target.toDouble() / 1000, 600),
+            // kCMTimeZero bridges as a plain struct here, so build a CValue<CMTime> explicitly.
+            toleranceBefore = CMTimeMake(0, 1), toleranceAfter = CMTimeMake(0, 1),
+            completionHandler = { finished ->
+                scope.launch {
+                    if (released || native !== player || player.currentItem != item ||
+                        mutable.value.mediaId != request.mediaId || !pendingSeek.complete(request)) return@launch
+                    val seconds = CMTimeGetSeconds(player.currentTime())
+                    val actual = seconds.takeIf { it.isFinite() && it >= 0 }
+                        ?.let { (it * 1000).toLong() } ?: if (finished) target else previous.position
+                    mutable.value = mutable.value.copy(position = actual.coerceIn(0, mutable.value.duration))
+                    if (wasStarting && mutable.value.wantsPlay) player.playImmediatelyAtRate(mutable.value.rate)
+                }
+            })
     }
     override suspend fun previewFrame(position: Long): PreviewFrame? = withContext(Dispatchers.Main) {
         val item = native.currentItem ?: return@withContext null
@@ -451,7 +603,7 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
     override fun setPlaybackRate(rate: Float) {
         if (!released && rate in 0.5f..2f) {
             mutable.value = mutable.value.copy(rate = rate)
-            if (mutable.value.wantsPlay) native.playImmediatelyAtRate(rate)
+            if (mutable.value.wantsPlay && startupSource == null) native.playImmediatelyAtRate(rate)
         }
     }
     override fun setRemoteEpisodeActions(onNext: (() -> Unit)?, onPrevious: (() -> Unit)?) {
@@ -484,6 +636,9 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
     }
     override fun stop() {
         if (released) return
+        pendingSeek.clear()
+        startupSource = null
+        startupSeeking = false
         cancelPreview()
         artworkJob?.cancel()
         artworkJob = null
@@ -497,6 +652,7 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
     }
     override fun close() {
         if (released) return
+        preload(null)
         stop(); released = true; scope.cancel()
         artworkClient.close()
         remoteTokens.forEach { (command, token) -> command.removeTarget(token) }
@@ -580,14 +736,37 @@ private class PipDelegate(private val onActive: (Boolean) -> Unit) : NSObject(),
     }
 }
 
+// AVPlayer's playback sleep prevention is not a presentation lifetime guarantee: during
+// buffering there may be no active video output keeping iOS awake. Own the idle timer for
+// mounted video surfaces, including startup/seek waits, and restore it for audio-only mode.
+private val videoScreenWakeLock = ScreenWakeLock(
+    readDisabled = { UIApplication.sharedApplication.idleTimerDisabled },
+    writeDisabled = { UIApplication.sharedApplication.idleTimerDisabled = it },
+)
+
 @Composable
-actual fun PlayerSurface(controller: PlayerController, modifier: Modifier, zoom: Float) {
+actual fun PlayerSurface(controller: PlayerController, modifier: Modifier, zoom: Float, audioOnly: Boolean, fillViewport: Boolean) {
     val player = controller as IosPlayer
+    DisposableEffect(audioOnly) {
+        val release = if (audioOnly) ({}) else videoScreenWakeLock.acquire()
+        onDispose { release() }
+    }
     UIKitView(
         factory = { PlayerContainerView(player) },
         modifier = modifier,
-        update = { it.videoLayer.player = player.native; it.zoom = zoom },
-        onRelease = { it.videoLayer.player = null },
+        // Rebind the existing layer when returning to video, without racing a disposed host
+        // or replacing the AVPlayerItem. Playback position, speed and pause intent stay intact.
+        update = {
+            player.displayLayer = it.videoLayer
+            it.videoLayer.player = if (audioOnly) null else player.native
+            it.videoLayer.videoGravity = if (fillViewport) AVLayerVideoGravityResizeAspectFill
+                else AVLayerVideoGravityResizeAspect
+            it.zoom = zoom
+        },
+        onRelease = {
+            if (player.displayLayer === it.videoLayer) player.displayLayer = null
+            it.videoLayer.player = null
+        },
         // The container only hosts an AVPlayerLayer and has no native touch handling. With the
         // default interactive mode the interop view owns touch sequences, so the Compose layers
         // above it never receive taps or horizontal/vertical drags. Disable native interaction so

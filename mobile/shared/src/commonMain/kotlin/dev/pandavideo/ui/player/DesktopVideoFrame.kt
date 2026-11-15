@@ -34,6 +34,7 @@ internal fun DesktopVideoFrame(
     fullscreen: Boolean, title: String, modifier: Modifier,
     back: () -> Unit, home: () -> Unit, search: () -> Unit,
     toggleFullscreen: () -> Unit, openDetails: () -> Unit,
+    openSkipSettings: () -> Unit = {},
 ) {
     var scrubbing by remember(player.mediaId) { mutableStateOf<Float?>(null) }
     var rateMenu by remember { mutableStateOf(false) }
@@ -42,7 +43,7 @@ internal fun DesktopVideoFrame(
     val next = state.info?.let(::nextEpisode)
     fun togglePlay() {
         when {
-            player.phase == PlayerPhase.Ended -> session.retry()
+            player.phase == PlayerPhase.Ended || state.finished -> session.retry()
             player.wantsPlay -> session.controller.pause()
             else -> session.controller.play()
         }
@@ -58,18 +59,15 @@ internal fun DesktopVideoFrame(
             TextButton(home) { Text("返回首页", color = Color.White) }
             Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            if (state.info?.episodes?.groupingBy { it.line }?.eachCount()?.values?.any { it > 1 } == true) {
+                IconButton(openSkipSettings) {
+                    Icon(NavigationIcons.More, "播放设置", tint = Color.White)
+                }
+            }
         }
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            // Error actions also live outside the native component, so retry remains clickable.
-            if (error != null) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(16.dp)) {
-                    Text("暂时无法播放，请重试或切换线路", color = Color.White, fontSize = 13.sp)
-                    Row {
-                        TextButton(session::retry) { Text("重试", color = Accent) }
-                        if (state.info == null) TextButton(search) { Text("搜索资源", color = Accent) }
-                    }
-                }
-            } else {
+            // AppState presents the same single recovery dialog on desktop and mobile.
+            if (error == null) {
                 PlayerSurface(session.controller, Modifier.fillMaxSize())
             }
         }
@@ -80,7 +78,7 @@ internal fun DesktopVideoFrame(
                     value = scrubbing ?: player.position.coerceIn(0, player.duration.coerceAtLeast(1)).toFloat(),
                     onValueChange = { scrubbing = it },
                     onValueChangeFinished = {
-                        scrubbing?.let { session.controller.seekTo(it.toLong()) }
+                        scrubbing?.let { session.seekTo(it.toLong()) }
                         scrubbing = null
                     },
                     valueRange = 0f..player.duration.coerceAtLeast(1).toFloat(),
@@ -102,27 +100,19 @@ internal fun DesktopVideoFrame(
                 }
                 if (busy) Text(if (state.loading) "正在解析…" else "缓冲中…",
                     color = Color.White, fontSize = 12.sp)
-                if (state.ended && next != null) Text("${state.countdownSeconds} 秒后播放下一集",
-                    color = Accent, fontSize = 12.sp)
                 Spacer(Modifier.weight(1f))
-                if (session.controller.capabilities.playbackRate) Box {
-                    TextButton({ rateMenu = true }, enabled = error == null && state.info != null) {
-                        Text("倍速 ${player.rate.stripRate()}×", color = Color.White, fontSize = 13.sp)
-                    }
-                    // The menu grows upward over the video, so use a separate popup window.
-                    // Compose Desktop's default popup window receives its own mouse events.
-                    DropdownMenu(rateMenu, { rateMenu = false }) {
-                        PlaybackRates.forEach { rate ->
-                            DropdownMenuItem(text = { Text("${rate.stripRate()}×") }, onClick = {
-                                session.setPlaybackRate(rate)
-                                rateMenu = false
-                            })
-                        }
-                    }
-                }
+                if (session.controller.capabilities.playbackRate) PlayerRateControl(
+                    rate = player.rate,
+                    expanded = rateMenu,
+                    onOpen = { rateMenu = true },
+                    onDismiss = { rateMenu = false },
+                    onSelect = session::setPlaybackRate,
+                    enabled = error == null && state.info != null,
+                )
                 if (fullscreen) TextButton(openDetails) { Text("选集", color = Color.White) }
                 if (session.controller.capabilities.fullscreen) IconButton(toggleFullscreen) {
-                    Icon(NavigationIcons.Fullscreen, if (fullscreen) "退出全屏" else "全屏", tint = Color.White)
+                    Icon(if (fullscreen) NavigationIcons.FullscreenExit else NavigationIcons.Fullscreen,
+                        if (fullscreen) "退出全屏" else "全屏", tint = Color.White)
                 }
             }
         }

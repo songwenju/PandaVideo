@@ -1,0 +1,10 @@
+<!-- Android 12+ draws a 288dp splash canvas and masks its center. An 88dp logo
+     needs 100dp of transparent space on each side (100 / 288 = 34.72%).
+     This preserves the complete rounded tile and matches the legacy window logo,
+     instead of letting the system enlarge and cut the artwork's corners. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_startup_logo"
+    android:insetLeft="34.72%"
+    android:insetTop="34.72%"
+    android:insetRight="34.72%"
+    android:insetBottom="34.72%" />

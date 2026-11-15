@@ -70,6 +70,10 @@ internal class IosOfflineEngine : OfflineEngine {
                     requireNotNull(hlsSession.assetDownloadTaskWithURLAsset(
                         AVURLAsset(uRL = url, options = null), info.title, null, null,
                     ))
+                } else if (dev.pandavideo.core.player.BilibiliMedia.owns(info.url)) {
+                    val request = NSMutableURLRequest.requestWithURL(url)
+                    request.setValue(dev.pandavideo.core.player.BilibiliMedia.userAgent, "User-Agent")
+                    fileSession.downloadTaskWithRequest(request)
                 } else fileSession.downloadTaskWithURL(url)
                 files.createDirectoryAtPath(directory(id), true, null, null)
                 pending = Pending(id, task, continuation, progress)

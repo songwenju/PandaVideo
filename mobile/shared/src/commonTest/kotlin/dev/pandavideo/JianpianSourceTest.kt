@@ -15,7 +15,7 @@ import kotlin.test.*
 private val jpPage = JianpianSource.address("1")
 private val jpSearch = """{"code":1,"data":[{"id":1,"title":"测试电影","top_category":{"id":1},"years":[{"year":"2020"}],"actors":["张三"],"types":["剧情"]}]}"""
 private fun jpDetail(url: String = "https://media.test/jp.m3u8", year: String = "2020") =
-    """{"code":1,"data":{"id":1,"title":"测试电影","year":"$year","source_list_source":[{"source_list":[{"source_name":"第 1 集","url":"$url"},{"source_name":"第 2 集","url":"https://media.test/second.m3u8"}]}]}}"""
+    """{"code":1,"data":{"id":1,"title":"测试电影","year":"$year","area":"美国","source_list_source":[{"source_list":[{"source_name":"第 1 集","url":"$url"},{"source_name":"第 2 集","url":"https://media.test/second.m3u8"}]}]}}"""
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class JianpianSourceTest {
@@ -151,7 +151,28 @@ class JianpianSourceTest {
         assertEquals(listOf("pv2026.zxfmj.com", "pv2026.zxfmj.com", "japi.zxfmj.com"), requests)
     }
 
-    @Test fun usefulFastSearchCancelsTheSlowerProvider() = runTest {
+    @Test fun slowerPomoSearchWinsWithoutStartingJianpian() = runTest {
+        var backupRequests = 0
+        val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+            when {
+                request.url.host == "pomo.mom" -> {
+                    delay(500)
+                    respond(pomoSearch(pomoRow("测试电影")))
+                }
+                request.url.encodedPath.endsWith("/init") -> {
+                    backupRequests++
+                    respond("""{"code":1,"data":{"secret":"s"}}""")
+                }
+                else -> { backupRequests++; respond(jpSearch) }
+            }
+        }))
+        try {
+            assertEquals(pomoPage, repo.search("测试电影", "movie").results.single().detailUrl)
+            assertEquals(0, backupRequests, "Response speed must not override the preferred provider")
+        } finally { repo.close() }
+    }
+
+    @Test fun preferredPomoTimeoutCancelsRequestAndFallsBackToJianpian() = runTest {
         var cancelled = false
         val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
             if (request.url.host == "pomo.mom") {
@@ -245,6 +266,7 @@ class JianpianSourceTest {
             val info = repo.player(PlayerRequest(page = jpPage))
             assertEquals("hls", info.kind)
             assertEquals("$jpPage#1-0", info.selected)
+            assertEquals("美国", info.region)
             val store = UserStore(FakeStorage())
             store.recordHistory("测试电影", jpPage, "", "2020", "第 1 集", info.selected)
             store.saveProgress(jpPage, info.selected, "第 1 集", 1000, 10000)

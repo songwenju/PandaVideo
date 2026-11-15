@@ -10,6 +10,10 @@ import dev.pandavideo.data.repository.ParserRules
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.runTest
 import java.io.File
 import kotlin.test.*
@@ -26,6 +30,145 @@ class ResponseCacheTest {
                 it.bindLong(1, currentEpochMillis() - age)
                 it.step()
             }
+        }
+    }
+
+    @Test fun searchRatingsUseExactLocalCatalogAndPersistVerifiedOnlineScores() = runTest {
+        database { path ->
+            val old = dev.pandavideo.core.model.SearchItem("西游记86版", "西瓜",
+                detailUrl = pomoPage, year = "1986", playable = true)
+            val newer = old.copy(title = "西游记2010", year = "2010", detailUrl = "$pomoPage#1-0")
+            val db = CatalogDatabase(path)
+            db.write("tv:0", dev.pandavideo.core.model.CatalogPage(listOf(
+                dev.pandavideo.core.model.CatalogItem("西游记", "https://movie.douban.com/subject/2156663/",
+                    year = "1986", rating = 9.7, kind = "tv"),
+            ), 0, 20, false), currentEpochMillis())
+            var requests = 0
+            val first = ContentRepository(HttpClient(mockEngine { request ->
+                requests++
+                if (request.url.encodedPath.endsWith("subject_suggest"))
+                    respond("""[{"id":"2","type":"movie","title":"西游记","year":"2010","episode":"52"}]""")
+                else respond("""{"title":"西游记","year":"2010","is_tv":true,"rating":{"value":6.0}}""")
+            }), db)
+            val input = dev.pandavideo.core.model.SearchResult(listOf(newer, old))
+            val expected = try {
+                // SQLite runs on a real dispatcher. Keep the optional lookup budget on a
+                // real clock too, so virtual time cannot expire it before disk I/O resumes.
+                withContext(Dispatchers.Default) { first.searchRatings(input, "西游记") }.also {
+                    assertEquals(listOf(9.7, 6.0), it.results.map { row -> row.rating })
+                    assertEquals(2, requests)
+                }
+            } finally { first.close() }
+            val restarted = ContentRepository(HttpClient(mockEngine {
+                requests++
+                respond("", HttpStatusCode.Forbidden)
+            }), CatalogDatabase(path))
+            try {
+                assertEquals(expected, withContext(Dispatchers.Default) { restarted.searchRatings(input, "西游记") })
+                assertEquals(2, requests, "Local catalog and persisted score must survive restart offline")
+            } finally { restarted.close() }
+        }
+    }
+
+    @Test fun yearlessSeedSubjectDetailsSupplyOnlyTheMatchingReleaseScore() = runTest {
+        database { path ->
+            val db = CatalogDatabase(path)
+            db.write("tv:0", dev.pandavideo.core.model.CatalogPage(listOf(
+                dev.pandavideo.core.model.CatalogItem("西游记", "https://movie.douban.com/subject/2156663/",
+                    rating = 9.7),
+            ), 0, 20, false), currentEpochMillis())
+            val repo = ContentRepository(HttpClient(mockEngine { request ->
+                if (request.url.encodedPath.endsWith("subject_suggest")) respond("[]")
+                else {
+                    assertEquals("/rexxar/api/v2/tv/2156663", request.url.encodedPath)
+                    respond("""{"title":"西游记","year":"1986","is_tv":true,"rating":{"value":9.7}}""")
+                }
+            }), db)
+            try {
+                val first = dev.pandavideo.core.model.SearchItem("西游记86版", "西瓜",
+                    detailUrl = pomoPage, year = "1986", playable = true)
+                val input = dev.pandavideo.core.model.SearchResult(listOf(first,
+                    first.copy(title = "西游记2010", year = "2010", detailUrl = "$pomoPage#1-0")))
+                val result = withContext(Dispatchers.Default) { repo.searchRatings(input, "西游记") }
+                assertEquals(listOf(9.7, null), result.results.map { it.rating })
+            } finally { repo.close() }
+        }
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun expiredCatalogAppearsBeforeNetworkAfterRestart() = runTest {
+        database { path ->
+            val filters = BrowseFilters(type = "tv", sort = "hot")
+            val first = ContentRepository(HttpClient(mockEngine {
+                respond("""{"data":[{"title":"旧剧集","url":"https://movie.douban.com/subject/123/","rate":"8.5"}]}""")
+            }), CatalogDatabase(path))
+            val old = try { first.browse(filters) } finally { first.close() }
+            BundledSQLiteDriver().open(path).use { db ->
+                db.prepare("UPDATE catalog_pages SET saved_at = ?").use {
+                    it.bindLong(1, currentEpochMillis() - 16L * 60 * 1000)
+                    it.step()
+                }
+            }
+            val networkStarted = CompletableDeferred<Unit>()
+            val releaseNetwork = CompletableDeferred<Unit>()
+            val cached = CompletableDeferred<dev.pandavideo.core.model.CatalogPage>()
+            val second = ContentRepository(HttpClient(mockEngine {
+                assertTrue(cached.isCompleted, "Disk snapshot must be published before the network starts")
+                networkStarted.complete(Unit)
+                releaseNetwork.await()
+                respond("""{"data":[{"title":"新剧集","url":"https://movie.douban.com/subject/456/","rate":"9.0"}]}""")
+            }), CatalogDatabase(path))
+            try {
+                val request = async { second.browse(filters, onCached = { cached.complete(it) }) }
+                networkStarted.await()
+                assertEquals(old.copy(stale = true), cached.await())
+                assertEquals("tv", cached.await().items.single().kind)
+                assertFalse(request.isCompleted)
+                releaseNetwork.complete(Unit)
+                assertEquals("新剧集", request.await().items.single().title)
+            } finally { releaseNetwork.complete(Unit); second.close() }
+        }
+    }
+
+    @Test fun explicitCatalogRefreshSkipsSnapshotAndFreshRestartSkipsNetwork() = runTest {
+        database { path ->
+            var requests = 0
+            fun repo() = ContentRepository(HttpClient(mockEngine {
+                requests++
+                respond("""{"data":[{"title":"影片$requests","url":"https://movie.douban.com/subject/123/","rate":"8.5"}]}""")
+            }), CatalogDatabase(path))
+            val first = repo()
+            val old = try { first.browse(BrowseFilters()) } finally { first.close() }
+            val second = repo()
+            try {
+                var snapshot: dev.pandavideo.core.model.CatalogPage? = null
+                assertEquals(old, second.browse(BrowseFilters(), onCached = { snapshot = it }))
+                assertEquals(old, snapshot)
+                assertEquals(1, requests)
+                snapshot = null
+                val refreshed = second.browse(BrowseFilters(), refresh = true, onCached = { snapshot = it })
+                assertNull(snapshot)
+                assertEquals("影片2", refreshed.items.single().title)
+                assertEquals(2, requests)
+            } finally { second.close() }
+        }
+    }
+
+    @Test fun cachedHomepageStillFiltersLegacyScoresAndRestoresCategory() = runTest {
+        database { path ->
+            val db = CatalogDatabase(path)
+            db.write("tv:0", dev.pandavideo.core.model.CatalogPage(listOf(
+                dev.pandavideo.core.model.CatalogItem("高分剧", "https://movie.douban.com/subject/123/", rating = 9.0),
+                dev.pandavideo.core.model.CatalogItem("低分剧", "https://movie.douban.com/subject/456/", rating = 7.0),
+            ), 0, 20, false), currentEpochMillis())
+            val repo = ContentRepository(HttpClient(mockEngine { error("Fresh cache must not access the network") }), db)
+            try {
+                var snapshot: dev.pandavideo.core.model.CatalogPage? = null
+                val page = repo.list("tv", onCached = { snapshot = it })
+                assertEquals(page, snapshot)
+                assertEquals("高分剧", snapshot!!.items.single().title)
+                assertEquals("tv", snapshot.items.single().kind)
+            } finally { repo.close() }
         }
     }
 

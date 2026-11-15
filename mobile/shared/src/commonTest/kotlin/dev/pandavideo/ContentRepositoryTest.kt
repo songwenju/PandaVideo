@@ -10,6 +10,8 @@ import dev.pandavideo.data.repository.ContentRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.*
 import kotlinx.coroutines.test.*
 import kotlin.io.encoding.Base64
@@ -195,6 +197,31 @@ class ContentRepositoryTest {
             assertEquals(40, page.nextStart())
         } finally { repo.close() }
     }
+    @Test fun highRatedSeriesExcludeEventsAndFactualProgramsWithoutDroppingSportsDramas() = runTest {
+        val titles = listOf("2008年第29届北京奥运会", "武林外传", "冰雪之名", "自然纪录片", "综艺节目",
+            "蕾伊在皇家阿尔伯特音乐厅", "MIT 线性代数", "十分钟速成课：哲学", "3Blue 1Brown Season 1")
+        val rows = titles.mapIndexed { index, title ->
+            val genres = when (index) {
+                2 -> """["剧情","运动"]"""
+                3 -> """["纪录片"]"""
+                4 -> """["真人秀"]"""
+                else -> "[]"
+            }
+            """{"title":"$title","url":"https://movie.douban.com/subject/${index + 1}/","rate":"9.7","genres":$genres}"""
+        } + (10..20).map {
+            """{"title":"正常剧集$it","url":"https://movie.douban.com/subject/$it/","rate":"9.0"}"""
+        }
+        val repo = ContentRepository(HttpClient(mockEngine { respond("""{"data":[${rows.joinToString(",")}]}""") }))
+        try {
+            val page = repo.list("tv")
+            assertEquals(listOf("武林外传", "冰雪之名"), page.items.take(2).map { it.title })
+            assertEquals(13, page.items.size)
+            assertTrue(page.hasMore)
+            assertEquals(20, page.nextStart())
+            assertEquals(page.copy(stale = true), repo.list("tv").copy(stale = true))
+        } finally { repo.close() }
+    }
+
     @Test fun everyHomeCategoryRequestsHighScoresAndKeepsUpstreamPaging() = runTest {
         val expectedTags = mapOf(
             "tv" to "电视剧", "comedy" to "电影,喜剧", "anime" to "动画", "nature" to "纪录片,自然",
@@ -231,33 +258,42 @@ class ContentRepositoryTest {
         val repo = ContentRepository(HttpClient(mockEngine { request ->
             val tags = request.url.parameters["tags"].orEmpty()
             requests += tags
+            assertEquals("/j/new_search_subjects", request.url.encodedPath)
             assertEquals("8,10", request.url.parameters["range"])
-            assertEquals("S", request.url.parameters["sort"])
             if (offline) respond("", HttpStatusCode.ServiceUnavailable)
-            else respond("""{"data":[
-                {"title":"$tags","url":"https://movie.douban.com/subject/1/","rate":"9.0"},
-                {"title":"低分","url":"https://movie.douban.com/subject/2/","rate":"7.9"}
-            ]}""")
+            else {
+                val ids = when {
+                    "中国大陆" in tags -> listOf(123)
+                    "日本" in tags -> listOf(456)
+                    else -> listOf(123, 456, 789)
+                }
+                respond("""{"data":[${ids.joinToString(",") {
+                    """{"title":"电影$it","url":"https://movie.douban.com/subject/$it/","rate":"9.1"}"""
+                }}]}""")
+            }
         }))
         try {
             val china = repo.list("war", country = "cn")
             val global = repo.list("war")
-            assertEquals(listOf("电影,战争,中国大陆"), china.items.map { it.title })
-            assertEquals(listOf("电影,战争"), global.items.map { it.title })
-            assertEquals("电影,大片,中国大陆", repo.list("hollywood", country = "cn").items.single().title)
-            assertEquals("电影,日本", repo.list("top250", country = "jp").items.single().title)
+            assertEquals(listOf("https://movie.douban.com/subject/123/"), china.items.map { it.url })
+            assertEquals(3, global.items.size)
+            assertEquals(china.items, repo.list("hollywood", country = "cn").items)
+            assertEquals("https://movie.douban.com/subject/456/", repo.list("top250", country = "jp").items.single().url)
             offline = true
             assertEquals(china.copy(stale = true), repo.list("war", country = "cn"))
             assertEquals(global.copy(stale = true), repo.list("war"))
+            assertTrue("电影,战争,中国大陆" in requests)
+            assertTrue("电影,大片,中国大陆" in requests)
             assertFailsWith<ApiError> { repo.list("war", country = "invalid") }
         } finally { repo.close() }
     }
 
     @Test fun homepageScoreRangeCacheIsSeparateFromBrowseAndSurvivesOffline() = runTest {
         var offline = false
-        val repo = ContentRepository(HttpClient(mockEngine {
+        val repo = ContentRepository(HttpClient(mockEngine { request ->
             if (offline) error("offline")
-            respond("""{"data":[
+            if (request.url.encodedPath == "/top250") respond(topFixture.replace("中国", "中国 / 喜剧"))
+            else respond("""{"data":[
                 {"title":"低分","url":"https://movie.douban.com/subject/1/","rate":"7.9"},
                 {"title":"高分","url":"https://movie.douban.com/subject/2/","rate":"8.0"}
             ]}""")
@@ -270,6 +306,20 @@ class ContentRepositoryTest {
             offline = true
             assertEquals(home.copy(stale = true), repo.list("comedy"))
             assertEquals(browse.copy(stale = true), repo.browse(BrowseFilters(genre = "comedy", sort = "rating")))
+        } finally { repo.close() }
+    }
+    @Test fun fullCategoriesPaginateBeyondTop250AndTelevisionWarmLimit() = runTest {
+        val repo = ContentRepository(HttpClient(mockEngine { request ->
+            assertEquals("/j/new_search_subjects", request.url.encodedPath)
+            assertEquals("400", request.url.parameters["start"])
+            respond("""{"data":[{"title":"榜单外作品","url":"https://movie.douban.com/subject/99999999/","rate":"8.3"}]}""")
+        }))
+        try {
+            for (kind in listOf("comedy", "tv")) {
+                val page = repo.list(kind, 400)
+                assertEquals("榜单外作品", page.items.single().title)
+                assertEquals(420, page.nextStart())
+            }
         } finally { repo.close() }
     }
     @Test fun selectedHomepageAlsoEnforcesScoreThresholdOnStaleResults() = runTest {
@@ -349,6 +399,37 @@ class ContentRepositoryTest {
             assertEquals("一位旅人和同伴踏上旅程。", info.synopsis)
             assertFailsWith<ApiError> { repo.player(PlayerRequest(page = info.pageUrl, episode = "/vodplay/2-1-1.html")) }
         } finally { repo.close() }
+    }
+    @Test fun mediaProbeReturnsAfterPrefixWithoutWaitingForWholeVideo() = runTest {
+        for (kind in listOf("hls", "video")) {
+            val channel = ByteChannel(autoFlush = true)
+            val prefix = ByteArray(8192) { ' '.code.toByte() }
+            val signature = if (kind == "hls") "#EXTM3U\n".encodeToByteArray()
+                else byteArrayOf(0, 0, 0, 24, 'f'.code.toByte(), 't'.code.toByte(),
+                    'y'.code.toByte(), 'p'.code.toByte(), 0, 0, 0, 0)
+            signature.copyInto(prefix)
+            val producer = backgroundScope.launch {
+                channel.writeFully(prefix)
+                delay(10_000) // The rest of a large video must not enter the startup budget.
+                channel.close()
+            }
+            val repo = ContentRepository(HttpClient(mockEngine { request ->
+                when (request.url.host) {
+                    "probe.test" -> {
+                        assertEquals("bytes=0-8191", request.headers[HttpHeaders.Range])
+                        respond(channel, HttpStatusCode.OK)
+                    }
+                    else -> respond(if (request.url.parameters["type"] == "auto_detail") pomoDetailFixture
+                        else """{"code":200,"direct":"https://probe.test/media.${if (kind == "hls") "m3u8" else "mp4"}","data":""}""")
+                }
+            }))
+            try {
+                val before = testScheduler.currentTime
+                val info = repo.player(PlayerRequest(page = pomoPage, episode = "$pomoPage#1-1"))
+                assertEquals(kind, info.kind)
+                assertTrue(testScheduler.currentTime - before < 5_000, "Probe waited for the entire response")
+            } finally { repo.close(); producer.cancel(); channel.cancel(null) }
+        }
     }
     @Test fun episodeLabelsAndLineOrder() {
         val episodes = ContentParsers.episodes(detailFixture, "1")
@@ -578,6 +659,71 @@ class ContentRepositoryTest {
             ))
             assertTrue(result.playable)
             assertEquals(pomoPage.replace("id=1", "id=2"), result.pageUrl)
+        } finally { repo.close() }
+    }
+    @Test fun artworkDetailResolvesHistoryPlaybackByExactTitleAndYear() = runTest {
+        val hosts = mutableListOf<String>()
+        val repo = ContentRepository(HttpClient(mockEngine { request ->
+            hosts += request.url.host
+            respond(when (request.url.host) {
+                "movie.douban.com" -> """[{"episode":"46","title":"大明王朝1566","type":"movie","year":"2007","id":"2210001"},
+                    {"episode":"","title":"大明王朝1566","type":"movie","year":"2026","id":"999999"}]"""
+                "m.douban.com" -> """{"title":"大明王朝1566","year":2007,"is_tv":true,
+                    "rating":{"value":9.8},"cover_url":"https://image/d.jpg","intro":"嘉靖与海瑞的故事。",
+                    "actors":[{"name":"陈宝国"},{"name":"黄志忠"}]}"""
+                else -> error("unexpected ${request.url}")
+            })
+        }))
+        try {
+            val details = repo.artworkDetail(null, "大明王朝1566", "2007")
+            assertEquals("嘉靖与海瑞的故事。", details?.synopsis)
+            assertEquals(listOf("陈宝国", "黄志忠"), details?.casts)
+            assertEquals(9.8, details?.rating)
+            assertEquals("tv", details?.kind)
+            assertEquals("2007", details?.year)
+            assertEquals("https://movie.douban.com/subject/2210001/", details?.url)
+            assertEquals(1, hosts.count { it == "m.douban.com" })
+        } finally { repo.close() }
+    }
+    @Test fun artworkDetailPreservesFullSourceCastOrderBeyondPreviewAndTenNames() = runTest {
+        val names = (1..11).map { "演员$it" } + "倪大红" + "演员13"
+        val actorRows = (names + listOf("倪大红", "  ")).joinToString(",") { """{"name":"$it"}""" }
+        val repo = ContentRepository(HttpClient(mockEngine {
+            respond("""{"title":"三国","year":"2010","is_tv":true,"actors":[$actorRows]}""")
+        }))
+        try {
+            val preview = CatalogItem("三国", "https://movie.douban.com/subject/3237723/", "2010",
+                casts = names.take(3), kind = "tv")
+            val detail = assertNotNull(repo.artworkDetail(preview, "", ""))
+            assertEquals(names, detail.casts)
+            assertEquals("倪大红", detail.casts[11])
+        } finally { repo.close() }
+    }
+    @Test fun artworkDetailSkipsAmbiguousTitlesAndKeepsKnownCatalogIdentity() = runTest {
+        var detailRequests = 0
+        val repo = ContentRepository(HttpClient(mockEngine { request ->
+            respond(when (request.url.host) {
+                "movie.douban.com" -> """[{"episode":"","title":"重名影片","type":"movie","year":"2001","id":"1"},
+                    {"episode":"","title":"重名影片","type":"movie","year":"2001","id":"2"}]"""
+                "m.douban.com" -> {
+                    detailRequests++
+                    """{"title":"重名影片","year":2001,"rating":{"value":8.1},
+                        "intro":"真实简介","actors":[{"name":"演员甲"}]}"""
+                }
+                else -> error("unexpected ${request.url}")
+            })
+        }))
+        try {
+            assertNull(repo.artworkDetail(null, "重名影片", ""))
+            assertEquals(0, detailRequests)
+            val seed = CatalogItem("重名影片", "https://movie.douban.com/subject/9/", "2001",
+                rating = 8.5, cover = "https://image/seed.jpg", kind = "movie")
+            val merged = repo.artworkDetail(seed, "", "")
+            assertEquals(seed.url, merged?.url)
+            assertEquals(8.5, merged?.rating)
+            assertEquals("https://image/seed.jpg", merged?.cover)
+            assertEquals(listOf("演员甲"), merged?.casts)
+            assertEquals("真实简介", merged?.synopsis)
         } finally { repo.close() }
     }
 }

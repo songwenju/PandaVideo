@@ -27,11 +27,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.CachePolicy
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.TextStyle
@@ -44,6 +46,7 @@ import dev.pandavideo.core.model.Episode
 import dev.pandavideo.core.model.nextEpisode
 import dev.pandavideo.core.platform.PlatformServices
 import dev.pandavideo.core.platform.PlayerSurface
+import dev.pandavideo.core.platform.PlayerOverlayBackHandler
 import dev.pandavideo.core.player.PlaybackSession
 import dev.pandavideo.core.player.MediaSource
 import dev.pandavideo.core.player.PlaybackState
@@ -59,6 +62,8 @@ import dev.pandavideo.ui.common.CompactActionButtonPadding
 import dev.pandavideo.ui.common.NavigationIcons
 import dev.pandavideo.ui.common.Poster
 import dev.pandavideo.ui.common.playbackTime
+import dev.pandavideo.ui.search.ActorHalfSheet
+import dev.pandavideo.ui.search.ActorScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
@@ -89,8 +94,15 @@ internal fun ModernPlayerScreen(
     val browse by model.browse.collectAsState()
     val hot by model.hot.collectAsState()
     val results by model.search.collectAsState()
-    var fullscreen by remember { mutableStateOf(false) }
+    val fullscreenLayout = remember(session) { FullscreenLayoutState() }
+    val fullscreen = fullscreenLayout.requested
     var episodePickerRequested by remember { mutableStateOf(false) }
+    var selectedActor by remember(session) { mutableStateOf<dev.pandavideo.core.model.ActorRef?>(null) }
+    var actorSheetVisible by remember(session) { mutableStateOf(false) }
+    fun openActor(actor: dev.pandavideo.core.model.ActorRef) {
+        selectedActor = actor
+        actorSheetVisible = true
+    }
     val pipActive by platform.pictureInPictureActive.collectAsState()
     val pipWindow = pipActive && platform.pipResizesAppWindow
     val catalog = (discover.items + browse.items + hot.items).distinctBy { it.url }
@@ -108,14 +120,15 @@ internal fun ModernPlayerScreen(
     val detailsBackgroundColor = MaterialTheme.colorScheme.surface
     LaunchedEffect(fullscreen) {
         platform.fullscreen(fullscreen)
+        if (!fullscreen) episodePickerRequested = false
     }
-    LaunchedEffect(state.audioOnly) {
-        if (state.audioOnly) fullscreen = false
-    }
+    PlayerOverlayBackHandler(enabled = fullscreen && episodePickerRequested) { episodePickerRequested = false }
+    // Audio mode changes the output, not the presentation. Keep the inline/fullscreen choice
+    // until the user explicitly toggles it; PiP exit must not expand an inline audio session.
     // Entering picture-in-picture must leave immersive fullscreen first, otherwise the app
     // keeps the fullscreen state and UI flags while the video shrinks into a floating window.
     LaunchedEffect(pipActive) {
-        if (pipActive && fullscreen) fullscreen = false
+        if (pipActive) fullscreenLayout.enterPictureInPicture()
     }
     LaunchedEffect(state.info?.pageUrl, state.info?.selected) {
         val info = state.info
@@ -125,10 +138,40 @@ internal fun ModernPlayerScreen(
         }
     }
     DisposableEffect(Unit) { onDispose { platform.fullscreen(false) } }
-    Box(Modifier.fillMaxSize().background(Color.Black)
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
+    val landscape = maxWidth > maxHeight
+    LaunchedEffect(landscape) { fullscreenLayout.windowChanged(landscape) }
+    LaunchedEffect(fullscreenLayout.restoring) {
+        if (fullscreenLayout.restoring) {
+            // Sensor-based Android policies can keep landscape after restoring the original
+            // policy. No resize callback arrives in that case; do not strand the inline UI.
+            // Normal rotations finish on their first matching constraints and cancel this job.
+            delay(1_000)
+            fullscreenLayout.finishUnchangedWindow()
+        }
+    }
+    // Native rotation is asynchronous. Switching to inline at the button press briefly
+    // mounts the landscape details/episode panel before the portrait constraints arrive.
+    // Keep the video-only branch until the restored constraints arrive, without reloading.
+    val fullscreen = fullscreenLayout.usesFullscreenLayout(landscape) && !pipActive
+    fun changeFullscreen(enabled: Boolean) {
+        if (!enabled) episodePickerRequested = false
+        fullscreenLayout.request(enabled, landscape)
+    }
+    val density = LocalDensity.current
+    var inlineVideoHeight by remember(session) { mutableStateOf(0.dp) }
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)
         .then(if (!fullscreen && !pipWindow) Modifier.statusBarsPadding() else Modifier)) {
+        val dualPane = maxWidth >= 840.dp && maxHeight >= 360.dp && !fullscreen && !pipWindow
+        // Measure the complete video host, including platform controls. A fixed half-screen
+        // sheet leaves an unnecessary gap on tall phones and can cover controls in audio mode.
+        val actorViewport = when {
+            dualPane -> Modifier.align(Alignment.CenterEnd).width(maxWidth / 2.65f).fillMaxHeight()
+            fullscreen || landscape -> Modifier.align(Alignment.CenterEnd)
+                .width(minOf(360.dp, maxWidth * 0.45f)).fillMaxHeight()
+            else -> Modifier.fillMaxSize().padding(top = inlineVideoHeight.coerceAtMost(maxHeight))
+        }
         BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
-            val dualPane = maxWidth >= 840.dp && maxHeight >= 360.dp && !fullscreen && !pipWindow
             if (dualPane) {
                 Row(Modifier.fillMaxSize()) {
                     BoxWithConstraints(Modifier.weight(1.65f).fillMaxHeight().background(Color.Black),
@@ -140,7 +183,7 @@ internal fun ModernPlayerScreen(
                             casting = casting,
                             home = home,
                             search = { search(title) },
-                            toggleFullscreen = { fullscreen = true },
+                            toggleFullscreen = { changeFullscreen(true) },
                             openDetails = {}, pipMode = pipActive)
                     }
                     PullToRefreshBox(state.refreshing, session::refresh,
@@ -148,23 +191,25 @@ internal fun ModernPlayerScreen(
                         PlayerDetails(session, state, model, cover, artwork, related, search,
                             Modifier.fillMaxSize(), panel = true,
                             scrollToEpisodes = episodePickerRequested,
-                            onEpisodesShown = { episodePickerRequested = false })
+                            onEpisodesShown = { episodePickerRequested = false }, openActor = ::openActor)
                     }
                 }
             } else Column(Modifier.fillMaxSize()) {
             val videoModifier = when {
                 pipWindow -> Modifier.fillMaxSize()
                 fullscreen -> Modifier.fillMaxSize()
+                // Audio actions need room above the timeline even on a narrow portrait phone.
+                state.audioOnly -> Modifier.fillMaxWidth().height(240.dp)
                 else -> Modifier.fillMaxWidth().aspectRatio(16f / 9f)
             }
-            VideoFrame(session, player, state, fullscreen, title, platform, videoModifier, model, cover,
-                back = { if (fullscreen) fullscreen = false else back() },
+            VideoFrame(session, player, state, fullscreen, title, platform,
+                videoModifier.onSizeChanged { inlineVideoHeight = with(density) { it.height.toDp() } }, model, cover,
+                back = { if (fullscreen) changeFullscreen(false) else back() },
                 home = home,
                 casting = casting,
                 search = { search(artwork?.title ?: model.playingSearch?.title ?: state.info?.title.orEmpty()) },
-                toggleFullscreen = { fullscreen = !fullscreen },
+                toggleFullscreen = { changeFullscreen(!fullscreenLayout.requested) },
                 openDetails = {
-                    fullscreen = false
                     episodePickerRequested = true
                 },
                 pipMode = pipActive)
@@ -175,10 +220,37 @@ internal fun ModernPlayerScreen(
                 PlayerDetails(session, state, model, cover, artwork, related, search,
                     Modifier.fillMaxSize().background(detailsBackgroundColor),
                     panel = false, scrollToEpisodes = episodePickerRequested,
-                    onEpisodesShown = { episodePickerRequested = false })
+                    onEpisodesShown = { episodePickerRequested = false }, openActor = ::openActor)
             }
             }
         }
+        // Keep this overlay outside VideoFrame's gesture detectors and leave the native
+        // playback surface mounted while the episode drawer opens, closes or changes source.
+        FullscreenEpisodeDrawer(
+            visible = fullscreenLayout.requested && !pipActive && episodePickerRequested,
+            state = state,
+            onDismiss = { episodePickerRequested = false },
+            onLineSelected = session::selectLine,
+            onEpisodeSelected = {
+                model.platform.haptics.tick()
+                session.select(it)
+                episodePickerRequested = false
+            },
+        )
+        // This is an in-place sibling overlay, not a navigation destination or a native dialog.
+        // Keeping the player route and surface mounted preserves playback visibility, timeline,
+        // paused intent and fullscreen state while actor data loads or the panel is dismissed.
+        ActorHalfSheet(visible = actorSheetVisible && !pipActive,
+            onDismiss = { actorSheetVisible = false }, modifier = actorViewport) {
+            selectedActor?.let { actor ->
+                key(actor.id) {
+                    ActorScreen(actor, model, back = { actorSheetVisible = false },
+                        play = { item -> model.match(item) { actorSheetVisible = false } },
+                        compact = true)
+                }
+            }
+        }
+    }
     }
     DlnaDevicePicker(casting, state.info?.takeUnless { state.loading }?.let {
         MediaSource(state.mediaId, it.url, it.kind, it.title,
@@ -193,15 +265,19 @@ private fun PlayerDetails(
     search: (String) -> Unit, modifier: Modifier, panel: Boolean,
     scrollToEpisodes: Boolean = false,
     onEpisodesShown: () -> Unit = {},
+    openActor: (dev.pandavideo.core.model.ActorRef) -> Unit = {},
 ) {
     val info = state.info
     val favorites by model.user.favorites.collectAsState()
-    val downloads by model.downloads.tasks.collectAsState()
+    var cachePickerVisible by remember(info?.pageUrl) { mutableStateOf(false) }
+    val canCache = info != null && model.downloads.supports(info.kind)
     val favoriteUrl = info?.pageUrl ?: model.playingSearch?.detailUrl.orEmpty()
     val saved = favoriteUrl.isNotBlank() && favorites.any { it.pageUrl == favoriteUrl }
     var synopsisExpanded by remember(info?.title) { mutableStateOf(false) }
     var synopsisOverflows by remember(info?.synopsis) { mutableStateOf(false) }
-    val lines = info?.episodes?.groupBy { it.line }.orEmpty()
+    // Only changes to the episode list invalidate grouping; progress and download updates
+    // must not allocate a new map and line lists on every recomposition.
+    val lines = remember(info?.episodes) { info?.episodes?.groupBy { it.line }.orEmpty() }
     var selectedLine by remember(info?.pageUrl) { mutableStateOf<Int?>(null) }
     var episodeRange by remember(info?.pageUrl) { mutableStateOf(0) }
     LaunchedEffect(info?.selected) {
@@ -211,20 +287,25 @@ private fun PlayerDetails(
     }
     val line = selectedLine?.takeIf { it in lines } ?: lines.keys.firstOrNull()
     val episodes = lines[line].orEmpty()
-    val ranges = episodes.chunked(30)
+    val ranges = remember(episodes) { episodes.chunked(30) }
     val titleSize = 18.sp
     val sectionTitleSize = if (panel) 17.sp else 16.sp
     val bodySize = 12.5.sp
     val supportingSize = 11.sp
     val listState = rememberLazyListState()
+    val actorNames = artwork?.casts?.takeIf { it.isNotEmpty() }
+        ?: model.playingSearch?.cast.orEmpty().split(Regex("[/、,，]"))
+    val panelActors = panel && actorNames.any(String::isNotBlank)
+    // Playback sources such as Pomo often omit the plot, so prefer their text when present
+    // and fall back to the catalog subject synopsis resolved after the episode list loads.
+    val synopsis = info?.synopsis?.takeIf(String::isNotBlank) ?: artwork?.synopsis.orEmpty()
     LaunchedEffect(scrollToEpisodes, info, panel) {
         if (scrollToEpisodes && lines.isNotEmpty()) {
-            // The picker follows the header, recommendation rail, expanded synopsis and error. Exiting
+            // The picker follows the header (including expanded synopsis) and recommendation rail. Exiting
             // fullscreen creates this list again, so scroll only after it enters composition.
             val headingIndex = (if (!panel) 1 else 0) +
-                (if (!panel && related.isNotEmpty()) 1 else 0) +
-                (if (!panel && info != null && synopsisExpanded) 1 else 0) +
-                (if (state.error != null && !state.loading && info != null) 1 else 0)
+                (if (panelActors) 1 else 0) +
+                (if (!panel && related.isNotEmpty()) 1 else 0)
             listState.scrollToItem(headingIndex)
             onEpisodesShown()
         }
@@ -281,31 +362,24 @@ private fun PlayerDetails(
                         )
                     }
                 }
-                if (info != null && model.downloads.supports(info.kind)) {
-                    val cached = downloads.firstOrNull {
-                        it.info.pageUrl == info.pageUrl && it.info.selected == info.selected
-                    }
-                    TextButton(
-                        onClick = { model.cacheCurrentEpisode() },
-                        enabled = !state.loading && cached?.status !in setOf(
-                            dev.pandavideo.data.repository.DownloadStatus.Completed,
-                            dev.pandavideo.data.repository.DownloadStatus.Queued,
-                            dev.pandavideo.data.repository.DownloadStatus.Downloading,
-                        ),
-                        contentPadding = ActionButtonPadding,
-                    ) {
-                        Icon(
-                            if (cached?.status == dev.pandavideo.data.repository.DownloadStatus.Completed)
-                                NavigationIcons.Check else NavigationIcons.Download,
-                            contentDescription = null, modifier = Modifier.size(18.dp), tint = Accent,
+                if (info != null && synopsisExpanded) {
+                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Text("剧情简介", fontSize = sectionTitleSize, lineHeight = 22.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            synopsis.ifBlank { "暂无简介" },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = bodySize, lineHeight = 20.sp,
+                            maxLines = if (synopsisExpanded) Int.MAX_VALUE else 3,
+                            overflow = TextOverflow.Ellipsis,
+                            onTextLayout = { if (!synopsisExpanded) synopsisOverflows = it.hasVisualOverflow },
                         )
-                        Spacer(Modifier.width(6.dp))
-                        Text(when (cached?.status) {
-                            dev.pandavideo.data.repository.DownloadStatus.Completed -> "本集已缓存"
-                            dev.pandavideo.data.repository.DownloadStatus.Queued -> "等待缓存"
-                            dev.pandavideo.data.repository.DownloadStatus.Downloading -> "本集缓存中"
-                            else -> "缓存本集"
-                        }, color = Accent)
+                        if (synopsisOverflows || synopsisExpanded) Text(
+                            if (synopsisExpanded) "收起" else "展开",
+                            fontSize = supportingSize, color = Accent,
+                            modifier = Modifier.clip(RoundedCornerShape(8.dp))
+                                .clickable(role = Role.Button) { synopsisExpanded = !synopsisExpanded }
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                        )
                     }
                 }
                 // Use only available metadata. Search results may supply region/genre while
@@ -314,24 +388,28 @@ private fun PlayerDetails(
                     artwork?.rating?.let { add("豆瓣 $it 分") }
                     (artwork?.year?.takeIf(String::isNotBlank)
                         ?: model.playingSearch?.year?.takeIf(String::isNotBlank))?.let(::add)
-                    addAll(artwork?.casts?.takeIf { it.isNotEmpty() }?.take(2)
-                        ?: model.playingSearch?.cast.orEmpty().split(Regex("[/、,，]"))
-                            .map(String::trim).filter(String::isNotBlank).take(2))
-                    model.playingSearch?.region?.takeIf(String::isNotBlank)?.let(::add)
-                    model.playingSearch?.genre?.takeIf(String::isNotBlank)?.let(::add)
                 }.distinct()
-                if (metadata.isNotEmpty()) LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val extraMetadata = listOfNotNull(
+                    model.playingSearch?.region?.takeIf(String::isNotBlank),
+                    model.playingSearch?.genre?.takeIf(String::isNotBlank),
+                ).distinct().filterNot { it in metadata }
+                if (metadata.isNotEmpty() || extraMetadata.isNotEmpty() || canCache) LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     items(metadata) { text ->
-                        Text(
-                            text, fontSize = 12.sp, lineHeight = 18.sp,
-                            fontWeight = if (text.startsWith("豆瓣")) FontWeight.Bold else FontWeight.Normal,
-                            color = MaterialTheme.colorScheme.onSurface, maxLines = 1,
-                            modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant,
-                                RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 5.dp),
-                        )
+                        PlayerMetadataChip(text)
                     }
+                    if (canCache) item {
+                        PlayerCacheButton(enabled = !state.loading) { cachePickerVisible = true }
+                    }
+                    items(extraMetadata) { text -> PlayerMetadataChip(text) }
                 }
+                dev.pandavideo.ui.search.CastRail(model, actorNames, artwork?.url.orEmpty(), openActor)
             }
+        }
+        if (panelActors) item {
+            dev.pandavideo.ui.search.CastRail(model, actorNames, artwork?.url.orEmpty(), openActor)
         }
         if (!panel && related.isNotEmpty()) item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -348,38 +426,24 @@ private fun PlayerDetails(
                 }
             }
         }
-        if (!panel && info != null && synopsisExpanded) item {
-            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Text("剧情简介", fontSize = sectionTitleSize, lineHeight = 22.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    info.synopsis.ifBlank { "暂无简介" },
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = bodySize, lineHeight = 20.sp,
-                    maxLines = if (synopsisExpanded) Int.MAX_VALUE else 3,
-                    overflow = TextOverflow.Ellipsis,
-                    onTextLayout = { if (!synopsisExpanded) synopsisOverflows = it.hasVisualOverflow },
-                )
-                if (synopsisOverflows || synopsisExpanded) Text(
-                    if (synopsisExpanded) "收起" else "展开",
-                    fontSize = supportingSize, color = Accent,
-                    modifier = Modifier.clip(RoundedCornerShape(8.dp))
-                        .clickable(role = Role.Button) { synopsisExpanded = !synopsisExpanded }
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                )
-            }
-        }
-        if (state.error != null && !state.loading && info != null) item {
-            Text("刷新失败，请稍后重试", color = MaterialTheme.colorScheme.error, fontSize = supportingSize)
-        }
         if (lines.isNotEmpty()) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("选集", fontSize = sectionTitleSize, lineHeight = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    if (panel && canCache) {
+                        PlayerCacheButton(enabled = !state.loading) { cachePickerVisible = true }
+                        Spacer(Modifier.width(8.dp))
+                    }
                     Text("共 ${episodes.size} 集", fontSize = supportingSize, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (lines.size > 1) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(lines.keys.toList()) { target ->
-                        DetailChip("线路 $target", target == line) { selectedLine = target; episodeRange = 0 }
+                        DetailChip("线路 $target", target == line) {
+                            selectedLine = target
+                            episodeRange = 0
+                            model.platform.haptics.tick()
+                            session.selectLine(target)
+                        }
                     }
                 }
             }
@@ -406,6 +470,30 @@ private fun PlayerDetails(
         }
         item { Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.safeDrawing)) }
     }
+    if (cachePickerVisible && info != null) {
+        EpisodeCacheSheet(info, model, cover) { cachePickerVisible = false }
+    }
+}
+
+@Composable
+private fun PlayerMetadataChip(text: String) {
+    Text(
+        text, fontSize = 12.sp, lineHeight = 18.sp,
+        fontWeight = if (text.startsWith("豆瓣")) FontWeight.Bold else FontWeight.Normal,
+        color = MaterialTheme.colorScheme.onSurface, maxLines = 1,
+        modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant,
+            RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 5.dp),
+    )
+}
+
+@Composable
+private fun PlayerCacheButton(enabled: Boolean, onClick: () -> Unit) {
+    TextButton(onClick = onClick, enabled = enabled, modifier = Modifier.height(32.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp)) {
+        Icon(NavigationIcons.Download, null, Modifier.size(16.dp), tint = Accent)
+        Spacer(Modifier.width(4.dp))
+        Text("缓存", color = Accent, fontSize = 12.sp)
+    }
 }
 
 /** Landscape recommendation card with the title below and rating over the artwork. */
@@ -417,8 +505,10 @@ private fun PlayerRecommendation(
     Column(Modifier.width(152.dp)
         .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier),
         verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp))) {
-            Poster(cover, title, Modifier.fillMaxSize())
+        Box(Modifier.fillMaxWidth().aspectRatio(0.7f).clip(RoundedCornerShape(8.dp))) {
+            // Use the same portrait proportions as catalog cards. A landscape slot shrinks
+            // portrait posters into narrow thumbnails; preserve the complete artwork here.
+            Poster(cover, title, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
             Box(Modifier.matchParentSize().background(Brush.verticalGradient(
                 listOf(Color.Transparent, Color.Black.copy(alpha = 0.5f)))))
             rating?.let {
@@ -511,12 +601,22 @@ private fun VideoFrame(
         DlnaRemoteFrame(casting, title, modifier, back)
         return
     }
+    var skipSettingsRequested by remember(session) { mutableStateOf(false) }
+    if (skipSettingsRequested) state.info?.let { info ->
+        // Pomo details carry no area label, so a result tapped from search supplies it.
+        val region = info.region.ifBlank { model.playingSearch?.region.orEmpty() }
+        SkipDurationsDialog(info.pageUrl, region, model.seriesSkipping) {
+            skipSettingsRequested = false
+        }
+    }
     if (platform.persistentPlayerControls) {
         DesktopVideoFrame(session, player, state, fullscreen, title, modifier,
-            back, home, search, toggleFullscreen, openDetails)
+            back, home, search, toggleFullscreen, openDetails,
+            openSkipSettings = { skipSettingsRequested = true })
         return
     }
     var controls by remember { mutableStateOf(true) }
+    var sleepTimerRequested by remember(session) { mutableStateOf(false) }
     var locked by remember(fullscreen) { mutableStateOf(false) }
     var interaction by remember { mutableStateOf(0) }
     var scrubbing by remember(player.mediaId) { mutableStateOf<Float?>(null) }
@@ -538,7 +638,10 @@ private fun VideoFrame(
             if (target != null) previewFrame = previewCache.frame(target)
         }
     }
-    var zoom by remember(player.mediaId) { mutableFloatStateOf(1f) }
+    // Start each presentation at aspect fit. Carrying a pinch scale into fullscreen,
+    // or scaling to cover an assumed 16:9 frame, can crop subtitles burned into the video.
+    var zoom by remember(player.mediaId, fullscreen) { mutableFloatStateOf(1f) }
+    var fillViewport by remember(player.mediaId, fullscreen) { mutableStateOf(false) }
     var zoomActive by remember { mutableStateOf(false) }
     var fineScrub by remember(player.mediaId) { mutableStateOf(false) }
     var dragBase by remember(player.mediaId) { mutableStateOf(0L) }
@@ -552,23 +655,35 @@ private fun VideoFrame(
     LaunchedEffect(tapFeedback?.token) {
         if (tapFeedback != null) { delay(650); tapFeedback = null }
     }
-    val busy = state.loading || player.phase in listOf(PlayerPhase.Preparing, PlayerPhase.Buffering, PlayerPhase.Ready)
+    // Keep the startup overlay until the first frame is actually painted: the resolver can
+    // finish while the player is still Idle or preparing. Once a frame is visible, hide it
+    // immediately even if the initial buffer is still filling; positional buffering later in
+    // playback still shows the overlay.
+    val busy = state.loading ||
+        (!player.firstFrameRendered && player.error == null && state.error == null &&
+            player.phase in listOf(PlayerPhase.Idle, PlayerPhase.Preparing, PlayerPhase.Buffering)) ||
+        (player.phase in listOf(PlayerPhase.Preparing, PlayerPhase.Buffering, PlayerPhase.Ready) &&
+            player.position > 0)
     val error = player.error ?: state.error?.takeIf { state.info == null || player.phase == PlayerPhase.Idle }
+    // Android keeps the previous SurfaceView frame while the next item is resolved and buffered.
+    // Cover the video until the new item paints its first frame so a switch never shows the
+    // previous episode; mid-playback rebuffering keeps its last frame because it is already rendered.
+    val frameVisibility = remember(session) { VideoFrameVisibility() }
+    val coverStaleFrame = frameVisibility.cover(player, state.loading, state.audioOnly, error)
     val next = state.info?.let { nextEpisode(it) }
     val hasMultipleEpisodes = state.info?.episodes.orEmpty()
         .groupingBy { it.line }.eachCount().values.any { it > 1 }
     val dragSeekEnabled = state.info != null && error == null &&
         player.duration > 0 && session.controller.capabilities.seeking
     val seekPreview = gestureScrub ?: scrubbing
-    LaunchedEffect(player.phase, controls, interaction, scrubbing != null, gestureScrub != null, rateMenu, state.loading, adjustment?.active, zoomActive, state.audioOnly) {
-        if (!state.audioOnly && !platform.persistentPlayerControls && player.phase == PlayerPhase.Playing && controls && scrubbing == null && gestureScrub == null && !rateMenu && !state.loading && adjustment?.active != true && !zoomActive) {
+    LaunchedEffect(player.phase, controls, interaction, scrubbing != null, gestureScrub != null, rateMenu, sleepTimerRequested, skipSettingsRequested, state.loading, adjustment?.active, zoomActive, state.audioOnly) {
+        if (!state.audioOnly && !platform.persistentPlayerControls && player.phase == PlayerPhase.Playing && controls && scrubbing == null && gestureScrub == null && !rateMenu && !sleepTimerRequested && !skipSettingsRequested && !state.loading && adjustment?.active != true && !zoomActive) {
             delay(3500); controls = false
         }
     }
     LaunchedEffect(player.phase, player.mediaId) {
         if (player.phase != PlayerPhase.Playing) controls = true
     }
-    LaunchedEffect(state.ended) { if (state.ended) controls = true }
     LaunchedEffect(state.audioOnly) {
         controls = true
         locked = false
@@ -577,7 +692,7 @@ private fun VideoFrame(
     fun togglePlay() {
         interaction++
         when {
-            player.phase == PlayerPhase.Ended -> session.retry()
+            player.phase == PlayerPhase.Ended || state.finished -> session.retry()
             player.wantsPlay -> session.controller.pause()
             else -> session.controller.play()
         }
@@ -589,8 +704,16 @@ private fun VideoFrame(
         // A clamped result means the seek hit the start/end boundary: signal the rejection.
         if (target <= 0L || target >= player.duration) platform.haptics.warning()
         else platform.haptics.tick()
-        session.controller.seekTo(target)
+        session.seekTo(target)
         tapFeedback = TapFeedback(if (forward) TapFeedbackKind.Forward else TapFeedbackKind.Rewind)
+    }
+    fun seekBySeconds(forward: Boolean) {
+        if (!quickSeekEnabled) return
+        session.seekTo(quickSeekPosition(
+            player.position, player.duration, forward, distanceMs = 10_000L,
+        ))
+        platform.haptics.tick()
+        interaction++
     }
     fun doubleTapPlayPause() {
         if (state.info == null || error != null) return
@@ -601,13 +724,14 @@ private fun VideoFrame(
     // Pointer handlers survive recompositions. Read the current playback intent so repeated
     // double taps alternate pause/resume instead of using the state captured on first playback.
     val doubleTapAction by rememberUpdatedState<(Offset) -> Unit> { offset ->
-        when (tapZone(offset.x, frameWidth, fullscreen)) {
+        when (tapZone(offset.x, frameWidth)) {
             TapZone.Left -> quickSeek(false)
             TapZone.Right -> quickSeek(true)
             TapZone.Center -> doubleTapPlayPause()
         }
     }
     val zoomAction by rememberUpdatedState<(Float) -> Unit> { multiplier ->
+        fillViewport = false
         zoom = videoZoom(zoom, multiplier)
     }
     val zoomActivity by rememberUpdatedState<(Boolean) -> Unit> { active ->
@@ -631,13 +755,14 @@ private fun VideoFrame(
         PersistentVideoContent(
             pipMode = pipMode,
             surface = {
-                if (state.audioOnly) {
-                    // Unmount the native surface instead of covering it: this also releases its
-                    // screen-on request and detaches AVPlayerLayer for background audio playback.
-                    AudioModeBackdrop(cover, title, showArtwork = !busy && error == null)
-                } else PlayerSurface(session.controller, Modifier.fillMaxSize(), if (pipMode) 1f else zoom)
+                PlayerSurface(session.controller, Modifier.fillMaxSize(),
+                    if (pipMode) 1f else zoom,
+                    audioOnly = state.audioOnly, fillViewport = fillViewport && !pipMode && !state.audioOnly)
             },
+            audioOnly = state.audioOnly,
+            audioBackdrop = { AudioModeBackdrop(cover, title) },
             overlays = {
+        if (coverStaleFrame) Box(Modifier.fillMaxSize().background(Color.Black))
         if (!locked) {
         // Keep taps on the parent so the drag zones receive the same pointer stream.
         // An overlapping sibling would intercept hit testing before the zones can seek.
@@ -661,7 +786,7 @@ private fun VideoFrame(
                     interaction++
                 },
                 onSeekEnd = {
-                    gestureScrub?.let { session.controller.seekTo(it.toLong()) }
+                    gestureScrub?.let { session.seekTo(it.toLong()) }
                     gestureScrub = null; interaction++
                 },
                 onSeekCancel = { gestureScrub = null; interaction++ },
@@ -685,7 +810,7 @@ private fun VideoFrame(
                     interaction++
                 },
                 onSeekEnd = {
-                    gestureScrub?.let { session.controller.seekTo(it.toLong()) }
+                    gestureScrub?.let { session.seekTo(it.toLong()) }
                     gestureScrub = null; interaction++
                 },
                 onSeekCancel = { gestureScrub = null; interaction++ },
@@ -718,32 +843,53 @@ private fun VideoFrame(
                         modifier = Modifier.weight(1f).padding(start = 4.dp))
                 }
                 if (!fullscreen) Spacer(Modifier.weight(1f))
-                if (session.controller.capabilities.audioOnly && state.info != null) IconToggleButton(
-                    checked = state.audioOnly,
-                    onCheckedChange = {
-                        platform.haptics.tick()
-                        session.setAudioOnly(it)
+                if (fullscreen && !state.audioOnly && state.info != null) TextButton(
+                    onClick = {
+                        fillViewport = !fillViewport
+                        zoom = 1f
                         controls = true
                         interaction++
                     },
-                    modifier = Modifier.size(44.dp),
-                    colors = IconButtonDefaults.iconToggleButtonColors(
-                        containerColor = Color.Transparent,
-                        contentColor = Color.White,
-                        checkedContainerColor = Accent.copy(alpha = 0.16f),
-                        checkedContentColor = Accent,
-                    ),
                 ) {
-                    Icon(
-                        NavigationIcons.Headphones,
-                        contentDescription = if (state.audioOnly) "切回视频" else "音频模式",
-                        modifier = Modifier.size(22.dp),
-                    )
+                    Text(if (fillViewport) "原始比例" else "铺满屏幕", color = Color.White, fontSize = 13.sp)
                 }
+                if (hasMultipleEpisodes && state.info != null && !state.loading) {
+                    IconButton(onClick = {
+                        skipSettingsRequested = true
+                        controls = true
+                        interaction++
+                    }, modifier = Modifier.size(44.dp)) {
+                        Icon(NavigationIcons.More, "播放设置", Modifier.size(22.dp), tint = Color.White)
+                    }
+                }
+                if (!state.audioOnly && session.controller.capabilities.audioOnly && state.info != null) PlayerAudioButton(
+                    session = session,
+                    tint = Color.White,
+                    onOpen = { platform.haptics.tick(); controls = true; interaction++ },
+                )
                 if (!state.audioOnly && fullscreen && session.controller.capabilities.pictureInPicture && platform.pipSupported) {
                     IconButton({ platform.haptics.tick(); platform.enterPictureInPicture() }, Modifier.size(44.dp)) {
                         Icon(NavigationIcons.Pip, "画中画", Modifier.size(22.dp), tint = Color.White)
                     }
+                }
+            }
+        }
+        if (state.audioOnly && error == null && !locked) {
+            AudioModeContent(cover, title) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    AudioReturnButton {
+                        platform.haptics.tick()
+                        returnToVideo(session)
+                        controls = true
+                        interaction++
+                    }
+                    PlayerSleepTimerButton(model, onClick = {
+                        platform.haptics.tick()
+                        sleepTimerRequested = true
+                        controls = true
+                        interaction++
+                    })
                 }
             }
         }
@@ -757,16 +903,9 @@ private fun VideoFrame(
             CircularProgressIndicator(Modifier.size(30.dp), color = Accent, strokeWidth = 2.dp)
             Text(if (state.loading) "正在解析视频…" else if (player.phase == PlayerPhase.Buffering) "缓冲中…" else "准备播放…",
                 color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
-        } else if (error != null) Column(
-            Modifier.align(Alignment.Center).padding(horizontal = 48.dp), horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(if (state.info == null) "暂时无法播放，请重试或搜索其他资源" else "暂时无法播放，请重试或切换线路",
-                color = Color.White, fontSize = 12.sp, maxLines = 3)
-            Row {
-                TextButton(session::retry) { Text("重试", color = Accent) }
-                if (state.info == null) TextButton(search) { Text("搜索资源", color = Accent) }
-            }
         }
+        // AppState owns the single retry dialog after automatic recovery finishes.
+        // Native errors still mask stale frames, but must not create a second error prompt.
         seekPreview?.let { preview ->
             Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.35f)))
             ScrubFeedback(
@@ -836,56 +975,6 @@ private fun VideoFrame(
                 Text("下一集 ${next.label}", color = Color.White, fontSize = 13.sp, maxLines = 1)
             }
         }
-        if (state.ended && next != null) {
-            Box(
-                Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.55f))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null, role = null,
-                    ) {},
-            )
-            Surface(
-                Modifier.align(Alignment.Center).widthIn(min = 280.dp).padding(24.dp),
-                shape = RoundedCornerShape(18.dp), color = Color(0xF2202020),
-            ) {
-                Column(
-                    Modifier.padding(horizontal = 26.dp, vertical = 24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text("本集播放结束", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
-                    Text(
-                        "下一集 ${next.label}",
-                        color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 10.dp),
-                    )
-                    Text(
-                        "${state.countdownSeconds} 秒后自动播放",
-                        color = Accent, fontSize = 14.sp, modifier = Modifier.padding(top = 8.dp),
-                    )
-                    Row(
-                        Modifier.padding(top = 20.dp).fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        TextButton(
-                            { session.dismissEnded() },
-                            Modifier.weight(1f),
-                            colors = ButtonDefaults.textButtonColors(contentColor = Color.White),
-                        ) { Text("取消", fontSize = 14.sp) }
-                        TextButton(
-                            { session.retry() },
-                            Modifier.weight(1f),
-                            colors = ButtonDefaults.textButtonColors(contentColor = Color.White),
-                        ) { Text("重播", fontSize = 14.sp) }
-                        Button(
-                            { session.advanceToNext() },
-                            Modifier.weight(1.4f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Accent),
-                        ) { Text("立即播放", fontSize = 14.sp, maxLines = 1) }
-                    }
-                }
-            }
-        }
         if (fullscreen && controls && !busy && error == null && gestureScrub == null) {
             // Side buttons reveal the same feedback used by vertical dragging; the gesture
             // zones underneath remain responsible for brightness/volume changes.
@@ -934,7 +1023,7 @@ private fun VideoFrame(
                 Slider(
                     value = previewPosition ?: player.position.coerceIn(0, player.duration.coerceAtLeast(1)).toFloat(),
                     onValueChange = { scrubbing = it; controls = true; interaction++ },
-                    onValueChangeFinished = { scrubbing?.let { session.controller.seekTo(it.toLong()) }; scrubbing = null; interaction++ },
+                    onValueChangeFinished = { scrubbing?.let { session.seekTo(it.toLong()) }; scrubbing = null; interaction++ },
                     valueRange = 0f..player.duration.coerceAtLeast(1).toFloat(),
                     enabled = player.duration > 0 && session.controller.capabilities.seeking,
                     modifier = Modifier.weight(1f).height(32.dp),
@@ -960,10 +1049,12 @@ private fun VideoFrame(
                 if (!fullscreen) Text(playbackTime(player.duration), color = Color.White, fontSize = 11.sp)
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                if (fullscreen) SeekButton(forward = false, enabled = quickSeekEnabled) { seekBySeconds(false) }
                 IconButton(::togglePlay, Modifier.size(46.dp)) {
                     Icon(if (player.wantsPlay) PlayerTransportIcons.Pause else PlayerTransportIcons.Play,
                         if (player.wantsPlay) "暂停" else "播放", Modifier.size(28.dp), tint = Color.White)
                 }
+                if (fullscreen) SeekButton(forward = true, enabled = quickSeekEnabled) { seekBySeconds(true) }
                 IconButton(
                     { next?.let(session::select) },
                     Modifier.size(44.dp).padding(start = 2.dp),
@@ -982,25 +1073,13 @@ private fun VideoFrame(
                 }
                 if (!state.audioOnly && !platform.dlnaSupported && platform.nativeCastingSupported)
                     platform.CastingButton(Modifier.size(44.dp))
-                if (session.controller.capabilities.playbackRate) Box {
-                    ControlTextPill(
-                        if (fullscreen && player.rate == 1f) "倍速"
-                        else if (fullscreen) "${player.rate.stripRate()}×"
-                        else "倍速 ${player.rate.stripRate()}×",
-                        plain = fullscreen,
-                    ) { rateMenu = true; interaction++ }
-                    DropdownMenu(rateMenu, { rateMenu = false }, containerColor = Color(0xF21F1F1F)) {
-                        PlaybackRates.forEach { rate ->
-                            DropdownMenuItem(text = {
-                                Text("${rate.stripRate()}×", fontSize = 15.sp,
-                                    color = if (rate == player.rate) Accent else Color.White,
-                                    fontWeight = if (rate == player.rate) FontWeight.SemiBold else FontWeight.Normal)
-                            }, onClick = {
-                                session.setPlaybackRate(rate); rateMenu = false; interaction++
-                            })
-                        }
-                    }
-                }
+                if (session.controller.capabilities.playbackRate) PlayerRateControl(
+                    rate = player.rate,
+                    expanded = rateMenu,
+                    onOpen = { rateMenu = true; interaction++ },
+                    onDismiss = { rateMenu = false },
+                    onSelect = { session.setPlaybackRate(it); interaction++ },
+                )
                 if (fullscreen && hasMultipleEpisodes) ControlTextPill("选集", plain = true) {
                     rateMenu = false
                     openDetails()
@@ -1010,10 +1089,26 @@ private fun VideoFrame(
                         Icon(NavigationIcons.Pip, "画中画", Modifier.size(20.dp), tint = Color.White)
                     }
                 }
-                if (!state.audioOnly && !fullscreen && session.controller.capabilities.fullscreen) IconButton(toggleFullscreen, Modifier.size(44.dp)) {
-                    Icon(NavigationIcons.Fullscreen, if (fullscreen) "退出全屏" else "全屏", Modifier.size(20.dp), tint = Color.White)
-                }
+                // Reserve the transport slot for the independently mounted fullscreen button.
+                if (session.controller.capabilities.fullscreen) Spacer(Modifier.size(44.dp))
             }
+        }
+        // Keep the inline fullscreen entry discoverable when transport controls auto-hide,
+        // including during resolution, buffering and errors. In fullscreen it follows the
+        // overlay as usual. This only changes presentation; video sizing stays aspect fit.
+        if ((!fullscreen || controls || seekPreview != null) && session.controller.capabilities.fullscreen) IconButton(
+            onClick = toggleFullscreen,
+            modifier = Modifier.align(Alignment.BottomEnd)
+                .then(if (fullscreen) Modifier.windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal),
+                ) else Modifier)
+                .padding(end = if (fullscreen) 24.dp else 12.dp, bottom = 9.dp)
+                .size(44.dp)
+                .then(if (!fullscreen && !controls)
+                    Modifier.background(Color.Black.copy(alpha = 0.35f), CircleShape) else Modifier),
+        ) {
+            Icon(if (fullscreen) NavigationIcons.FullscreenExit else NavigationIcons.Fullscreen,
+                if (fullscreen) "退出全屏" else "全屏", Modifier.size(20.dp), tint = Color.White)
         }
         } else {
             // Locked playback still accepts a single tap to reveal/hide the unlock control.
@@ -1039,10 +1134,8 @@ private fun VideoFrame(
             },
         )
     }
+    if (sleepTimerRequested) PlayerSleepTimerSheet(model, fullscreen) { sleepTimerRequested = false }
 }
-
-/** Speeds exposed by the player rate menu, ascending and always including normal speed. */
-internal val PlaybackRates = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
 
 /** Player phases where the media has a known duration and accepts an initial seek. */
 internal val ResumeSeekPhases = setOf(
@@ -1095,9 +1188,8 @@ private data class TapFeedback(val kind: TapFeedbackKind, val token: Long = next
 internal fun adjustedLevel(start: Float, dragRatio: Float): Float =
     (start - dragRatio).coerceIn(0f, 1f)
 
-/** Fullscreen double taps toggle playback everywhere; inline taps retain edge seek shortcuts. */
-internal fun tapZone(x: Float, width: Int, fullscreen: Boolean = false): TapZone {
-    if (fullscreen) return TapZone.Center
+/** Both inline and fullscreen video use edge seek shortcuts and center playback toggling. */
+internal fun tapZone(x: Float, width: Int): TapZone {
     val safeWidth = width.coerceAtLeast(1).toFloat()
     return when {
         x < safeWidth / 3f -> TapZone.Left
@@ -1106,9 +1198,11 @@ internal fun tapZone(x: Float, width: Int, fullscreen: Boolean = false): TapZone
     }
 }
 
-/** Clamps the result of a ±10s double-tap seek to the playable range. */
-internal fun quickSeekPosition(position: Long, duration: Long, forward: Boolean): Long =
-    (position + if (forward) 10_000L else -10_000L).coerceIn(0L, duration.coerceAtLeast(0L))
+/** Clamps a step seek to the playable range. */
+internal fun quickSeekPosition(
+    position: Long, duration: Long, forward: Boolean, distanceMs: Long = 10_000L,
+): Long = (position + if (forward) distanceMs else -distanceMs)
+    .coerceIn(0L, duration.coerceAtLeast(0L))
 
 /**
  * Preview position for a horizontal scrub drag. The pixel [delta] since the last event is
@@ -1180,6 +1274,29 @@ private fun SeekHint(forward: Boolean, modifier: Modifier) = Column(
     )
     Text(if (forward) "+10秒" else "-10秒", color = Color.White,
         fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+}
+
+/** Rewind/forward 10-second control shown on both sides of the fullscreen play button. */
+@Composable
+private fun SeekButton(forward: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val tint = if (enabled) Color.White else Color.White.copy(alpha = 0.35f)
+    IconButton(onClick, Modifier.size(44.dp), enabled = enabled) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                PlayerTransportIcons.Replay,
+                contentDescription = if (forward) "快进 10 秒" else "快退 10 秒",
+                modifier = Modifier.size(28.dp).graphicsLayer { scaleX = if (forward) -1f else 1f },
+                tint = tint,
+            )
+            Text(
+                "10",
+                color = tint,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.offset(y = 1.dp).clearAndSetSemantics {},
+            )
+        }
+    }
 }
 
 /**

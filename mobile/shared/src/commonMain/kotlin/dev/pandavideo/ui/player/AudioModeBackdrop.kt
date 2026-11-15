@@ -5,7 +5,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -18,17 +17,15 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.pandavideo.ui.common.Accent
-import dev.pandavideo.ui.common.NavigationIcons
 import dev.pandavideo.ui.common.Poster
 
 /** Static artwork keeps audio playback inexpensive while giving the player a soft backdrop. */
 @Composable
-internal fun AudioModeBackdrop(cover: String?, title: String, showArtwork: Boolean) {
+internal fun AudioModeBackdrop(cover: String?, title: String) {
     BoxWithConstraints(
         Modifier.fillMaxSize().clip(RoundedCornerShape(0.dp)).background(Color(0xFF1B2025)),
     ) {
@@ -54,16 +51,27 @@ internal fun AudioModeBackdrop(cover: String?, title: String, showArtwork: Boole
                 listOf(Color.Black.copy(alpha = 0.1f), Color.Transparent, Color.Black.copy(alpha = 0.4f)),
             ))
         }
-        if (showArtwork) {
-            // Reserve the existing toolbar and timeline rather than placing art behind
-            // their hit targets. Size from the actual player bounds, including split panes.
-            val artworkHeight = (maxHeight - 140.dp).coerceIn(48.dp, 176.dp)
-            val compact = artworkHeight < 92.dp
-            val horizontalPadding = if (maxWidth < 400.dp) 28.dp else 48.dp
+    }
+}
+
+/** Foreground actions live above the gesture layer so real touch input reaches the buttons. */
+@Composable
+internal fun AudioModeContent(cover: String?, title: String, actions: @Composable () -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val compact = maxHeight < 250.dp
+        val artworkHeight = (maxHeight - 132.dp).coerceIn(40.dp, 160.dp)
+        val horizontalPadding = if (compact) 12.dp else if (maxWidth < 400.dp) 16.dp else 40.dp
+        Box(
+            Modifier.fillMaxSize().padding(
+                top = if (compact) 44.dp else 0.dp,
+                bottom = if (compact) 88.dp else 0.dp,
+            ),
+        ) {
+            // Center the measured artwork/action group rather than a full-width row.
+            // Only inline players reserve extra space for their timeline and transport controls.
             Row(
-                Modifier.fillMaxSize().padding(
-                    start = horizontalPadding, end = horizontalPadding, top = 52.dp, bottom = 88.dp,
-                ),
+                Modifier.align(Alignment.Center).padding(horizontal = horizontalPadding)
+                    .widthIn(max = 480.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(if (compact) 16.dp else 24.dp),
             ) {
@@ -73,23 +81,13 @@ internal fun AudioModeBackdrop(cover: String?, title: String, showArtwork: Boole
                         .shadow(16.dp, RoundedCornerShape(8.dp))
                         .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp)),
                 )
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 8.dp)) {
-                    if (!compact) Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Icon(NavigationIcons.Headphones, null, Modifier.size(14.dp), tint = Accent)
-                        Text("听视频", color = Accent, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                    }
+                Column(Modifier.widthIn(max = 320.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        title, color = Color.White, fontSize = if (compact) 14.sp else 17.sp,
-                        fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        "在锁屏或切换后台时也能播放音频",
+                        color = Color.White.copy(alpha = 0.62f), fontSize = if (compact) 11.sp else 13.sp,
+                        lineHeight = if (compact) 16.sp else 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        "锁屏或切到后台\n也能继续听",
-                        color = Color.White.copy(alpha = 0.62f), fontSize = if (compact) 11.sp else 12.sp,
-                        lineHeight = if (compact) 16.sp else 19.sp,
-                    )
+                    actions()
                 }
             }
         }

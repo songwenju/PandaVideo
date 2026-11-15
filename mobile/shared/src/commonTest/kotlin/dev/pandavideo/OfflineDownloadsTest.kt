@@ -49,6 +49,69 @@ class OfflineDownloadsTest {
         assertTrue(store.tasks.value.all { it.status == DownloadStatus.Completed })
     }
 
+    @Test fun batchSelectionResolvesEachEpisodeInSourceOrderAndKeepsPlaybackSnapshot() = runTest {
+        val engine = Engine()
+        val requests = mutableListOf<String>()
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope) {
+            requests += it.episode!!
+            info(it.episode)
+        }
+        val playing = info()
+        val ids = store.enqueueEpisodes(playing, listOf("e2", "e1", "e2"), "poster")
+        assertEquals(2, ids.size)
+        assertEquals("e1", playing.selected)
+        assertTrue(store.tasks.value.all { it.info.url.isEmpty() && it.cover == "poster" })
+        runCurrent()
+        assertEquals(listOf("e1"), requests)
+        engine.finish(ids[0]); runCurrent()
+        assertEquals(listOf("e1", "e2"), requests)
+        engine.finish(ids[1]); runCurrent()
+        val local = assertNotNull(store.offline(PlayerRequest(page = playing.pageUrl, episode = "e1")))
+        assertEquals(listOf("e1", "e2"), local.episodes.map { it.path })
+        assertEquals(ids, store.enqueueEpisodes(playing, listOf("e1", "e2")))
+        assertEquals(2, store.tasks.value.size)
+        assertEquals(2, engine.started.size)
+    }
+
+    @Test fun invalidBatchSelectionNeverQueuesAPartialDownload() = runTest {
+        val engine = Engine()
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope) { info() }
+        assertFailsWith<IllegalArgumentException> {
+            store.enqueueEpisodes(info(), listOf("e1", "missing"))
+        }
+        assertFailsWith<IllegalArgumentException> { store.enqueueEpisodes(info(), emptyList()) }
+        assertTrue(store.tasks.value.isEmpty())
+        runCurrent()
+        assertTrue(engine.started.isEmpty())
+    }
+
+    @Test fun cachePickerKeepsSingleFilmWithoutAnEpisodeListDownloadable() = runTest {
+        val engine = Engine()
+        val film = info().copy(episodes = emptyList(), selected = "")
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope) { film }
+        val ids = store.enqueueEpisodes(film, listOf(""))
+        assertEquals(1, ids.size)
+        runCurrent()
+        engine.finish(ids.single()); runCurrent()
+        assertEquals(DownloadStatus.Completed, store.tasks.value.single().status)
+        assertNotNull(store.offline(PlayerRequest(page = film.pageUrl)))
+    }
+
+    @Test fun batchSelectionResumesPausedEpisodesWithoutDuplicatingCompletedWork() = runTest {
+        val engine = Engine()
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope) { info(it.episode!!) }
+        val ids = store.enqueueEpisodes(info(), listOf("e1", "e2"))
+        runCurrent()
+        store.pause(ids[1])
+        engine.finish(ids[0]); runCurrent()
+        assertEquals(ids, store.enqueueEpisodes(info(), listOf("e1", "e2")))
+        runCurrent()
+        assertEquals(listOf(ids[0], ids[1]), engine.started)
+        assertEquals(2, store.tasks.value.size)
+        engine.finish(ids[1]); runCurrent()
+        assertTrue(store.tasks.value.all { it.status == DownloadStatus.Completed })
+    }
+
     @Test fun interruptedWorkRestoresPausedAndNeverPretendsToBeComplete() = runTest {
         val engine = Engine()
         val storage = FakeStorage()

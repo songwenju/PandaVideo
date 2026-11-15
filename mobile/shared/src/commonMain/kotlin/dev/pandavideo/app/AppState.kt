@@ -10,6 +10,7 @@ import dev.pandavideo.core.model.PlayerRequest
 import dev.pandavideo.core.model.SearchItem
 import dev.pandavideo.core.model.SearchResult
 import dev.pandavideo.core.model.appendCatalog
+import dev.pandavideo.core.model.withPlayingCredit
 import dev.pandavideo.core.model.formatMinutesSeconds
 import dev.pandavideo.core.platform.PlatformServices
 import dev.pandavideo.core.player.PlaybackSession
@@ -43,6 +44,11 @@ data class SearchState(val result: SearchResult? = null, val loading: Boolean = 
 class AppState(
     val platform: PlatformServices, private val scope: CoroutineScope,
     private val posterImageLoader: coil3.ImageLoader? = null,
+    /**
+     * Dispatcher for source resolution. Detail pages are large and episode lists can hold
+     * hundreds of entries, so resolving on the UI dispatcher delays the player's first frame.
+     */
+    private val resolveDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val cachePosters: suspend (List<String>) -> Unit = {},
 ) {
     private val discoverMutable = MutableStateFlow(CatalogState())
@@ -61,8 +67,10 @@ class AppState(
     fun emitMessage(text: String) {
         messages.trySend(text)
     }
-    val user = UserStore(platform.storage())
+    val user = UserStore(platform.storage(), platform.catalogDatabasePath()?.let { "$it.playback.db" })
     val settings = SettingsStore(platform.storage())
+    /** Source-owned series skip preferences, snapshotted at each new episode load. */
+    val seriesSkipping = dev.pandavideo.data.user.SkipDurationsStore(platform.storage())
     val searchHistory = SearchHistoryStore(platform.storage())
     val youth = YouthStore(platform.storage())
     val updates = UpdateStore(platform.storage())
@@ -87,6 +95,7 @@ class AppState(
     val parserRules = ParserRulesStore(platform.storage())
     private val api = ContentRepository(
         platform.httpClient(), platform.catalogDatabasePath()?.let { CatalogDatabase(it, initializeFromBundle = true) },
+        doubanSession = platform.doubanSession(),
     ) { parserRules.rules.value }
     private val updatingRulesMutable = MutableStateFlow(false)
     val updatingRules = updatingRulesMutable.asStateFlow()
@@ -108,6 +117,56 @@ class AppState(
     }
     private var serviceJob = SupervisorJob(scope.coroutineContext[Job])
     private var serviceScope = CoroutineScope(scope.coroutineContext + serviceJob)
+    internal val douban = DoubanConnection(platform.doubanSession(), serviceScope, api::doubanIdentity) {
+        loadDiscover(refresh = true)
+        loadBrowse(refresh = true)
+    }
+    internal val actors = ActorBrowser(serviceScope, api::searchActors)
+    private val resolvedCastActors = linkedMapOf<String, dev.pandavideo.core.model.ActorRef>()
+
+    /** Resolves a filmography without changing the active playback session. */
+    internal suspend fun actorWorks(actor: dev.pandavideo.core.model.ActorRef): dev.pandavideo.core.model.ActorFilmography {
+        val info = session?.state?.value?.info
+        val catalog = playingCatalog
+        val search = playingSearch
+        val page = dev.pandavideo.data.repository.ContentParsers.playbackPageOrNull(info?.pageUrl.orEmpty())
+        var confirmed = dev.pandavideo.core.model.ActorFilmography(emptyList())
+            .withPlayingCredit(actor, info, catalog, search, page)
+        if (confirmed.works.isNotEmpty()) {
+            // Cast metadata carries names, not person IDs. Supplement only the unique identity
+            // resolved by the cast rail; selecting another same-name person must not inherit it.
+            val identity = resolvedCastActors[actor.name] ?: try { findCastActor(actor.name) }
+            catch (error: CancellationException) { throw error }
+            catch (_: Exception) { null }
+            if (identity?.id != actor.id) confirmed = confirmed.copy(works = emptyList())
+        }
+        val snapshot = try { api.actorWorks(actor) }
+        catch (error: CancellationException) { throw error }
+        catch (error: Exception) {
+            if (confirmed.works.isEmpty()) throw error
+            return confirmed.copy(stale = true, limited = true)
+        }
+        return if (confirmed.works.isEmpty()) snapshot
+            else snapshot.withPlayingCredit(actor, info, catalog, search, page)
+    }
+    /** Loads source-owned person properties independently of filmography and playback. */
+    internal suspend fun actorProfile(actor: dev.pandavideo.core.model.ActorRef) = api.actorProfile(actor)
+    internal suspend fun actorCatalogWork(work: dev.pandavideo.core.model.ActorWork) = api.actorCatalogWork(work)
+
+    /** Resolves unique exact-name iQIYI identities without merging same-name people. */
+    internal suspend fun findCastActor(name: String): dev.pandavideo.core.model.ActorRef? {
+        val actor = api.searchActors(name).actors.filter { it.name == name }.singleOrNull()
+        if (actor == null) resolvedCastActors.remove(name) else resolvedCastActors[name] = actor
+        if (resolvedCastActors.size > 64) resolvedCastActors.remove(resolvedCastActors.keys.first())
+        return actor
+    }
+
+    /** Applies known resource failures and inspects new rows without treating errors as misses. */
+    internal suspend fun visibleActorWorks(items: List<CatalogItem>) =
+        api.visibleCatalog(CatalogPage(items, 0, items.size, false)).items
+
+    internal suspend fun inspectActorWorks(items: List<CatalogItem>, missing: (CatalogItem) -> Unit) =
+        api.inspectCatalog(items, missing)
     /** App-owned maintenance of expendable image/content caches, independent of playback. */
     internal val cacheMaintenance: dev.pandavideo.data.repository.CacheMaintenance =
         dev.pandavideo.data.repository.CacheMaintenance(
@@ -152,6 +211,24 @@ class AppState(
             emitMessage("已加入缓存，可在我的离线缓存中查看")
         } catch (_: Exception) { emitMessage("当前视频暂不支持缓存") }
     }
+    /**
+     * Queues the user's episode selection without changing the active playback session.
+     *
+     * @param info Snapshot of the detail page shown by the cache picker.
+     * @param paths Selected episode paths belonging to that snapshot.
+     * @param cover Optional artwork for the offline task list.
+     * @return Whether the selection was accepted by the offline queue.
+     */
+    fun cacheEpisodes(info: PlaybackInfo, paths: Collection<String>, cover: String = ""): Boolean {
+        return try {
+            val ids = downloads.enqueueEpisodes(info, paths, cover)
+            emitMessage("已加入 ${ids.size} 集缓存，可在我的离线缓存中查看")
+            true
+        } catch (_: Exception) {
+            emitMessage("无法加入缓存，请检查选集或稍后重试")
+            false
+        }
+    }
     /** Opens a completed episode directly from private media, without source lookup. */
     fun playDownload(entry: dev.pandavideo.data.repository.OfflineDownload) {
         startPlayer(PlayerRequest(page = entry.info.pageUrl, title = entry.info.title,
@@ -168,6 +245,7 @@ class AppState(
     private var hotJob: Job? = null
     private var searchJob: Job? = null
     private var playerErrorJob: Job? = null
+    private var artworkJob: Job? = null
     private var sleepJob: Job? = null
     private var playerLevelsActive = false
     private val sleepRemainingMutable = MutableStateFlow(0)
@@ -176,12 +254,27 @@ class AppState(
     private val sleepTimerMinutesMutable = MutableStateFlow(0)
     /** Selected sleep duration in minutes; retained during countdown and cleared on cancellation or expiry. */
     val sleepTimerMinutes = sleepTimerMinutesMutable.asStateFlow()
+    private val sleepAfterCurrentMutable = MutableStateFlow(false)
+    /** True while the current-episode sleep action is armed; mutually exclusive with a countdown. */
+    val sleepAfterCurrent = sleepAfterCurrentMutable.asStateFlow()
+    /** Replaces the countdown with a one-shot pause when the current episode finishes. */
+    fun setSleepAfterCurrent() {
+        setSleepTimer(0)
+        sleepAfterCurrentMutable.value = true
+        session?.setPauseAtEnd(true)
+    }
+    private fun finishSleepAfterCurrent() {
+        sleepAfterCurrentMutable.value = false
+        emitMessage("当前已播完，播放已暂停")
+    }
     /**
      * Starts or replaces the app-wide sleep countdown, including before playback opens.
      *
      * @param minutes Duration clamped to 0–180 minutes; zero cancels the countdown.
      */
     fun setSleepTimer(minutes: Int) {
+        sleepAfterCurrentMutable.value = false
+        session?.setPauseAtEnd(false)
         sleepJob?.cancel()
         sleepJob = null
         val duration = minutes.coerceIn(0, 180)
@@ -195,8 +288,7 @@ class AppState(
             }
             sleepTimerMinutesMutable.value = 0
             val active = session
-            active?.dismissEnded()
-            active?.controller?.pause()
+            active?.pauseForSleepTimer()
             emitMessage(if (active == null) "睡眠定时已结束" else "睡眠定时已结束，播放已暂停")
         }
     }
@@ -213,7 +305,7 @@ class AppState(
     /** Snapshot-observable so the mini bar and player route recompose on open/close. */
     var session: PlaybackSession? by mutableStateOf(null)
         private set
-    var playingCatalog: CatalogItem? = null
+    var playingCatalog: CatalogItem? by mutableStateOf(null)
         private set
     /** Catalog snapshot that opened this session; null allows unscoped search/history suggestions. */
     var playingRecommendations: List<CatalogItem>? by mutableStateOf(null)
@@ -232,6 +324,70 @@ class AppState(
         private set
     var hotType = "tv"
         private set
+
+    private data class TabKey(val channel: String, val type: String = "", val country: String = "all", val filters: BrowseFilters? = null)
+    private val tabPages = mutableMapOf<TabKey, MutableStateFlow<CatalogState>>()
+    private val tabJobs = mutableMapOf<TabKey, Job>()
+
+    /** Loads a neighboring page without changing selections, pagination or retry prompts. */
+    private fun preview(
+        key: TabKey, fetch: suspend ((suspend (CatalogPage) -> Unit)?) -> CatalogPage,
+    ): StateFlow<CatalogState> {
+        val target = tabPages.getOrPut(key) { MutableStateFlow(CatalogState(loading = true)) }
+        if (target.value.page?.stale != false && tabJobs[key]?.isActive != true && target.value.error == null) {
+            tabJobs[key] = serviceScope.launch {
+                try {
+                    publishCatalog(target, target.value, fetch(cachedPublisher(target, true)), false)
+                    warmPosters(target.value.items.map { it.cover })
+                    inspectCatalog(target)
+                } catch (error: CancellationException) { throw error }
+                catch (_: Exception) {
+                    target.value = target.value.copy(loading = false, error = "加载失败，请检查网络后重试")
+                }
+            }
+        }
+        return target.asStateFlow()
+    }
+
+    /** Returns Discover's independent neighbor snapshot, including the selected region. */
+    internal fun discoverPage(type: String, country: String): StateFlow<CatalogState> =
+        if (type == kind && country == discoverCountry) discover
+        else preview(TabKey("discover", type, country)) { cached -> api.list(type, 0, country, onCached = cached) }
+
+    /** Returns a Browse neighbor without changing any of the other filter dimensions. */
+    internal fun browsePage(selected: BrowseFilters): StateFlow<CatalogState> =
+        if (selected == filters) browse
+        else preview(TabKey("browse", filters = selected)) { cached -> api.browse(selected, 0, onCached = cached) }
+
+    /** Returns a Hot neighbor using the same source and heading as the selected page. */
+    internal fun hotPage(type: String): StateFlow<CatalogState> =
+        if (type == hotType) hot
+        else preview(TabKey("hot", type)) { cached ->
+            val label = HotTypeOptions.first { it.first == type }.second.removePrefix("热播").removePrefix("热门")
+            val publish: (suspend (CatalogPage) -> Unit)? = cached?.let { callback ->
+                { page -> callback(page.copy(label = "最近热播 · $label")) }
+            }
+            val page = if (type == "xiaopin") api.sketches(0, false, onCached = publish)
+                else api.browse(BrowseFilters(type = type, sort = "hot"), 0, onCached = publish)
+            page.copy(label = "最近热播 · $label")
+        }
+
+    private fun retainTab(key: TabKey, state: CatalogState) {
+        if (state.page != null) {
+            tabJobs.remove(key)?.cancel()
+            tabPages.getOrPut(key) { MutableStateFlow(state) }.value =
+                state.copy(loading = false, loadingMore = false, refreshing = false)
+        }
+    }
+
+    private fun adoptTab(key: TabKey, target: MutableStateFlow<CatalogState>): Boolean {
+        val cached = tabPages[key]?.value ?: return false
+        if (cached.page?.stale != false || cached.error != null) return false
+        tabJobs.remove(key)?.cancel()
+        target.value = cached.copy(loading = false, loadingMore = false, refreshing = false)
+        // Cancelled preview checks resume under the active channel's cancellation lifetime.
+        return true
+    }
 
     init {
         loadDiscover()
@@ -260,15 +416,28 @@ class AppState(
     fun loadDiscover(selected: String = kind, more: Boolean = false, country: String = discoverCountry, refresh: Boolean = false) {
         val active = api
         if (more && (discoverMutable.value.loading || discoverMutable.value.page?.hasMore != true)) return
+        // Re-entering the same category must keep the visible page and its decoded posters.
+        // Only a user refresh, a failed/stale page or a different selection needs the network.
+        if (!more && !refresh && selected == kind && country == discoverCountry &&
+            discoverMutable.value.page != null && discoverMutable.value.page?.stale != true &&
+            discoverMutable.value.error == null
+        ) return
         discoverJob?.cancel()
         retryPrompts.clear("discover")
+        val switching = selected != kind || country != discoverCountry
+        if (switching) retainTab(TabKey("discover", kind, discoverCountry), discoverMutable.value)
         val previous = if (selected == kind && country == discoverCountry) discoverMutable.value else CatalogState()
         kind = selected
         discoverCountry = country
+        if (switching && !more && !refresh && adoptTab(TabKey("discover", selected, country), discoverMutable)) {
+            discoverJob = serviceScope.launch { inspectCatalog(discoverMutable) }
+            return
+        }
         discoverMutable.value = previous.copy(loading = true, loadingMore = more, refreshing = refresh && !more, error = null)
         discoverJob = serviceScope.launch {
             try {
-                val page = active.list(selected, if (more) previous.page?.nextStart() ?: 0 else 0, country)
+                val page = active.list(selected, if (more) previous.page?.nextStart() ?: 0 else 0, country, refresh = refresh,
+                    onCached = cachedPublisher(discoverMutable, !more && !refresh))
                 ensureActive()
                 publishCatalog(discoverMutable, previous, page, more)
                 warmPosters(page.items.map { it.cover })
@@ -277,10 +446,10 @@ class AppState(
                 }
                 inspectCatalog(discoverMutable)
             } catch (error: CancellationException) { throw error }
-            catch (_: Exception) {
-                discoverMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false,
+            catch (error: Exception) {
+                discoverMutable.value = discoverMutable.value.copy(loading = false, loadingMore = false, refreshing = false,
                     error = "加载失败，请检查网络后重试")
-                retryPrompts.offer("discover", "加载失败", "请检查网络连接后重试", "discover") {
+                retryPrompts.offer("discover", "加载失败", failureDetails(error), "discover") {
                     loadDiscover(selected, more, country, refresh)
                 }
             }
@@ -289,23 +458,35 @@ class AppState(
     fun loadBrowse(selected: BrowseFilters = filters, more: Boolean = false, refresh: Boolean = false) {
         val active = api
         if (more && (browseMutable.value.loading || browseMutable.value.page?.hasMore != true)) return
+        // Same rule as Discover: an unchanged filter result stays on screen until the user
+        // explicitly refreshes or picks a different filter.
+        if (!more && !refresh && selected == filters && browseMutable.value.page != null &&
+            browseMutable.value.page?.stale != true && browseMutable.value.error == null
+        ) return
         browseJob?.cancel()
         retryPrompts.clear("browse")
+        val switching = selected != filters
+        if (switching) retainTab(TabKey("browse", filters = filters), browseMutable.value)
         val previous = if (selected == filters) browseMutable.value else CatalogState()
         filters = selected
+        if (switching && !more && !refresh && adoptTab(TabKey("browse", filters = selected), browseMutable)) {
+            browseJob = serviceScope.launch { inspectCatalog(browseMutable) }
+            return
+        }
         browseMutable.value = previous.copy(loading = true, loadingMore = more, refreshing = refresh && !more, error = null)
         browseJob = serviceScope.launch {
             try {
-                val page = active.browse(selected, if (more) previous.page?.nextStart() ?: 0 else 0)
+                val page = active.browse(selected, if (more) previous.page?.nextStart() ?: 0 else 0, refresh = refresh,
+                    onCached = cachedPublisher(browseMutable, !more && !refresh))
                 ensureActive()
                 publishCatalog(browseMutable, previous, page, more)
                 warmPosters(page.items.map { it.cover })
                 inspectCatalog(browseMutable)
             } catch (error: CancellationException) { throw error }
-            catch (_: Exception) {
-                browseMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false,
+            catch (error: Exception) {
+                browseMutable.value = browseMutable.value.copy(loading = false, loadingMore = false, refreshing = false,
                     error = "加载失败，请检查网络后重试")
-                retryPrompts.offer("browse", "加载失败", "请检查网络连接后重试", "browse") {
+                retryPrompts.offer("browse", "加载失败", failureDetails(error), "browse") {
                     loadBrowse(selected, more, refresh)
                 }
             }
@@ -313,6 +494,7 @@ class AppState(
     }
     fun search(query: String, type: String) {
         searchJob?.cancel()
+        actors.clear()
         retryPrompts.clear("search")
         if (youth.enabled.value) {
             searchMutable.value = SearchState(error = "青少年模式下已关闭自由搜索，请由家长选择影片")
@@ -321,6 +503,7 @@ class AppState(
         val active = api
         if (query.isBlank()) { searchMutable.value = SearchState(error = "请输入影视名称"); return }
         searchHistory.add(query)
+        actors.search(query)
         searchJob = serviceScope.launch {
             searchMutable.value = SearchState(loading = true)
             try {
@@ -328,45 +511,88 @@ class AppState(
                 ensureActive()
                 searchMutable.value = SearchState(result)
                 warmPosters(result.results.map { it.thumbnailUrl })
+                // Optional ratings arrive after usable results. This shares searchJob's
+                // cancellation lifetime so an old query cannot overwrite the next search.
+                val rated = try { active.searchRatings(result, query) }
+                catch (error: CancellationException) { throw error }
+                catch (_: Exception) { result }
+                ensureActive()
+                searchMutable.value = SearchState(rated)
             } catch (error: CancellationException) { throw error }
-            catch (_: Exception) {
+            catch (error: Exception) {
                 searchMutable.value = SearchState(error = "搜索失败，请检查网络后重试")
-                retryPrompts.offer("search", "搜索失败", "请检查网络连接后重试", "search") { search(query, type) }
+                retryPrompts.offer("search", "搜索失败", failureDetails(error), "search") { search(query, type) }
             }
         }
     }
-    fun clearSearch() { searchJob?.cancel(); retryPrompts.clear("search"); searchMutable.value = SearchState() }
+    fun clearSearch() { searchJob?.cancel(); actors.clear(); retryPrompts.clear("search"); searchMutable.value = SearchState() }
     fun loadHot(type: String = hotType, more: Boolean = false, refresh: Boolean = false) {
         val option = HotTypeOptions.firstOrNull { it.first == type } ?: return
         if (more && (hotMutable.value.loading || hotMutable.value.page?.hasMore != true)) return
+        // Tapping the active hot type again is a no-op instead of a full list reload.
+        if (!more && !refresh && type == hotType && hotMutable.value.page != null &&
+            hotMutable.value.page?.stale != true && hotMutable.value.error == null
+        ) return
         hotJob?.cancel()
         retryPrompts.clear("hot")
+        val switching = type != hotType
+        if (switching) retainTab(TabKey("hot", hotType), hotMutable.value)
         val previous = if (type == hotType) hotMutable.value else CatalogState()
         hotType = type
+        if (switching && !more && !refresh && adoptTab(TabKey("hot", type), hotMutable)) {
+            hotJob = serviceScope.launch { inspectCatalog(hotMutable) }
+            return
+        }
         hotMutable.value = previous.copy(loading = true, loadingMore = more, refreshing = refresh && !more, error = null)
         hotJob = serviceScope.launch {
             try {
-                val page = api.browse(BrowseFilters(type = type, sort = "hot"), if (more) previous.page?.nextStart() ?: 0 else 0)
+                val start = if (more) previous.page?.nextStart() ?: 0 else 0
+                val label = "最近热播 · ${option.second.removePrefix("热播").removePrefix("热门")}"
+                val cached = cachedPublisher(hotMutable, !more && !refresh) { it.copy(label = label) }
+                val page = if (type == "xiaopin") api.sketches(start, refresh, onCached = cached)
+                    else api.browse(BrowseFilters(type = type, sort = "hot"), start, refresh = refresh, onCached = cached)
                 ensureActive()
                 publishCatalog(hotMutable, previous,
-                    page.copy(label = "最近热播 · ${option.second.removePrefix("热播").removePrefix("热门")}"), more)
+                    page.copy(label = label), more)
                 warmPosters(page.items.map { it.cover })
                 inspectCatalog(hotMutable)
             } catch (error: CancellationException) { throw error }
-            catch (_: Exception) {
-                hotMutable.value = previous.copy(loading = false, loadingMore = false, refreshing = false,
+            catch (error: Exception) {
+                hotMutable.value = hotMutable.value.copy(loading = false, loadingMore = false, refreshing = false,
                     error = "加载失败，请检查网络后重试")
-                retryPrompts.offer("hot", "加载失败", "请检查网络连接后重试", "hot") { loadHot(type, more, refresh) }
+                retryPrompts.offer("hot", "加载失败", failureDetails(error), "hot") { loadHot(type, more, refresh) }
             }
         }
     }
+    /** Ends initial loading from disk while the same cancellable job revalidates upstream. */
+    private fun cachedPublisher(
+        target: MutableStateFlow<CatalogState>, enabled: Boolean,
+        transform: (CatalogPage) -> CatalogPage = { it },
+    ): (suspend (CatalogPage) -> Unit)? = if (!enabled) null else { page ->
+        // Never replace an accumulated list with a cached first page while entering a tab.
+        if (target.value.items.isEmpty()) {
+            publishCatalog(target, target.value, transform(page), false)
+            warmPosters(target.value.items.map { it.cover })
+        } else {
+            currentCoroutineContext().ensureActive()
+            target.value = target.value.copy(loading = false, loadingMore = false, refreshing = false)
+        }
+    }
+
     private suspend fun publishCatalog(
         target: MutableStateFlow<CatalogState>, previous: CatalogState, page: CatalogPage, more: Boolean,
     ) {
         val visible = api.visibleCatalog(page)
         currentCoroutineContext().ensureActive()
+        // An explicit refresh can return exactly the same rows. Reuse the existing list so the
+        // grid keeps its item identity and never rebuilds cards whose posters are already shown.
         target.value = CatalogState(
-            if (more) appendCatalog(previous.items, visible.items) else visible.items, visible,
+            when {
+                more -> appendCatalog(previous.items, visible.items)
+                previous.items == visible.items -> previous.items
+                else -> visible.items
+            },
+            visible,
         )
     }
 
@@ -393,6 +619,8 @@ class AppState(
             catch (_: Exception) { /* Optional prefetch must never interrupt visible content. */ }
         }
     }
+    private var sketchOpenJob: Job? = null
+
     /**
      * Opens a catalog title and retains the originating filter result for related selections.
      *
@@ -401,7 +629,50 @@ class AppState(
      * @param play Navigation callback invoked immediately while source matching proceeds.
      */
     fun match(item: CatalogItem, recommendations: List<CatalogItem>? = playingRecommendations, play: () -> Unit) {
+        sketchOpenJob?.cancel()
+        sketchOpenJob = null
+        retryPrompts.clear("sketch")
         if (!youth.canPlay()) { emitMessage("今日观看已满 40 分钟，请休息"); return }
+        if (item.kind == "xiaopin") {
+            // Browser playback cannot report watch time to the app's parental duration guard.
+            if (youth.enabled.value) {
+                emitMessage("青少年模式下暂不支持原站播放")
+                return
+            }
+            // These providers embed browser players. Do not search a similarly named movie
+            // or pass an HTML document to the native controller as though it were media.
+            if (!dev.pandavideo.data.repository.SketchSource.owns(item.url)) {
+                emitMessage("无效的小品播放页面")
+                return
+            }
+            fun openBrowser() {
+                session?.controller?.pause()
+                try { platform.openLink(item.url) }
+                catch (_: Exception) { emitMessage("无法打开原站播放页面") }
+            }
+            if (io.ktor.http.Url(item.url).host == "www.xiaopin.tv") {
+                openBrowser()
+                return
+            }
+            sketchOpenJob = serviceScope.launch {
+                try {
+                    val native = withContext(resolveDispatcher) { api.sketchHasNative(item.url) }
+                    ensureActive()
+                    sketchOpenJob = null
+                    if (native) {
+                        startPlayer(PlayerRequest(page = item.url, title = item.title), catalog = item)
+                        playingRecommendations = recommendations?.toList()
+                        play()
+                    } else openBrowser()
+                } catch (error: CancellationException) { throw error }
+                catch (error: Exception) {
+                    retryPrompts.offer("sketch", "小品加载失败", failureDetails(error), "hot") {
+                        match(item, recommendations, play)
+                    }
+                }
+            }
+            return
+        }
         val active = api
         releasePlayer()
         playingCatalog = item
@@ -409,16 +680,23 @@ class AppState(
         playingCover = poster(item)
         session = PlaybackSession({ request ->
             val resolved = if (request.page == null) {
-                val match = active.resolve(item)
-                if (!match.playable || match.pageUrl.isBlank()) throw ApiError("未找到明确匹配的播放资源")
+                val match = active.playbackMatch(item)
                 request.copy(page = match.pageUrl)
             } else request
-            downloads.offline(resolved) ?: active.player(resolved)
+            resolveRememberedEpisode(resolved) { downloads.offline(it) ?: active.player(it) }
         }, platform.player(), serviceScope, settings.settings.value.defaultRate,
-            ::checkpoint, ::resumePosition, ::playbackArtwork).also {
-            it.load(PlayerRequest(title = item.title))
+            ::checkpoint, ::resumePosition, ::playbackArtwork,
+            onPauseAtEnd = ::finishSleepAfterCurrent, resolveDispatcher = resolveDispatcher,
+            skipDurations = { seriesSkipping.get(it.pageUrl,
+                dev.pandavideo.core.player.SkipDurations.defaultSecondsFor(it.region)) }).also {
+            it.setPauseAtEnd(sleepAfterCurrentMutable.value)
+            it.load(PlayerRequest(
+                page = dev.pandavideo.data.repository.ContentParsers.playbackPageOrNull(item.url),
+                title = item.title,
+            ))
         }
         watchPlayerErrors(session!!)
+        loadArtwork(item, item.title, item.year)
         play()
     }
     fun startPlayer(
@@ -431,13 +709,70 @@ class AppState(
         playingCatalog = catalog
         playingSearch = search
         playingCover = catalog?.let(::poster) ?: search?.let(::poster) ?: cover?.takeIf(::isWebUrl)
-        session = PlaybackSession({
-            downloads.offline(it) ?: if (offlineOnly) throw ApiError("缓存文件无法播放，请重新缓存")
-                else active.player(it)
+        session = PlaybackSession({ value ->
+            suspend fun resolve(value: PlayerRequest) =
+                downloads.offline(value) ?: if (offlineOnly) throw ApiError("缓存文件无法播放，请重新缓存")
+                    else active.player(value)
+            resolveRememberedEpisode(value, ::resolve)
         }, platform.player(), serviceScope,
             settings.settings.value.defaultRate, ::checkpoint, ::resumePosition,
-            ::playbackArtwork).also { it.load(request) }
+            ::playbackArtwork, onPauseAtEnd = ::finishSleepAfterCurrent,
+            resolveDispatcher = resolveDispatcher,
+            skipDurations = { seriesSkipping.get(it.pageUrl,
+                dev.pandavideo.core.player.SkipDurations.defaultSecondsFor(it.region)) }).also {
+            it.setPauseAtEnd(sleepAfterCurrentMutable.value)
+            it.load(request)
+        }
         watchPlayerErrors(session!!)
+        // History and favorites reopen with only a play page, so recover the stored year to
+        // keep a same-name remake from supplying the wrong synopsis and cast.
+        val savedYear = user.history.value.firstOrNull { it.pageUrl == request.page }?.year.orEmpty()
+            .ifBlank { user.favorites.value.firstOrNull { it.pageUrl == request.page }?.year.orEmpty() }
+        loadArtwork(catalog, catalog?.title ?: search?.title ?: request.title.orEmpty(),
+            catalog?.year ?: search?.year ?: savedYear)
+    }
+
+    private suspend fun resolveRememberedEpisode(
+        value: PlayerRequest, resolve: suspend (PlayerRequest) -> PlaybackInfo,
+    ): PlaybackInfo {
+        val info = resolve(value)
+        // Default title entries restore history before resumePosition records the new selection.
+        // Resolve legacy ordering here as well; explicit episode taps keep their requested episode.
+        val target = if (value.resumeHistory || value.episode == null)
+            user.continueEpisode(info.pageUrl, info.episodes) else null
+        return if (target != null && target != info.selected && info.episodes.any { it.path == target })
+            resolve(value.copy(page = info.pageUrl, episode = target, resumeHistory = false))
+        else info
+    }
+
+    /**
+     * Fills the player details from catalog metadata once playback info has arrived.
+     * The request is best-effort, never blocks playback, and is discarded with its session.
+     */
+    private fun loadArtwork(item: CatalogItem?, title: String, year: String) {
+        artworkJob?.cancel()
+        artworkJob = null
+        if (title.isBlank()) return
+        val active = session ?: return
+        artworkJob = serviceScope.launch {
+            // Source resolution owns startup bandwidth; metadata only needs to exist by the
+            // time the details panel has an episode list to render.
+            val info = withTimeoutOrNull(15_000) { active.state.first { it.info != null }.info }
+                ?: return@launch
+            if (session !== active) return@launch
+            // Sketch identities come from the embedded video, not Douban film suggestions.
+            if (dev.pandavideo.data.repository.SketchSource.owns(info.pageUrl)) return@launch
+            val details = try { api.artworkDetail(item, title.ifBlank { item?.title.orEmpty() }, year) }
+            catch (error: CancellationException) { throw error }
+            catch (_: Exception) { null } ?: return@launch
+            if (session !== active) return@launch
+            playingCatalog = details
+            // Persist resolved artwork so a later reopen can match this exact subject.
+            val currentInfo = active.state.value.info ?: return@launch
+            rememberPlayed(details.title, currentInfo.pageUrl, details.cover, details.year,
+                currentInfo.episodes.find { it.path == currentInfo.selected }?.label.orEmpty(), currentInfo.selected,
+                rating = details.rating)
+        }
     }
     private fun watchPlayerErrors(active: PlaybackSession) {
         playerErrorJob = serviceScope.launch {
@@ -451,7 +786,7 @@ class AppState(
                     val refresh = state.info != null && player.mediaId == state.mediaId &&
                         player.phase in setOf(PlayerPhase.Ready, PlayerPhase.Playing, PlayerPhase.Paused, PlayerPhase.Buffering)
                     retryPrompts.offer("player", if (refresh) "播放信息刷新失败" else "播放失败",
-                        "请检查网络连接，或稍后重试", "player",
+                        failureDetails(IllegalStateException(state.error)), "player",
                         available = { session === active && active.state.value.error != null }) {
                         if (refresh) active.refresh() else active.retry()
                     }
@@ -469,10 +804,12 @@ class AppState(
     private fun resumePosition(info: PlaybackInfo): Long? {
         rememberPlayed(info.title, info.pageUrl,
             playingCatalog?.cover ?: playingSearch?.thumbnailUrl ?: playingCover,
-            playingCatalog?.year.orEmpty(),
-            info.episodes.find { it.path == info.selected }?.label.orEmpty(), info.selected)
+            playingCatalog?.year ?: playingSearch?.year.orEmpty(),
+            info.episodes.find { it.path == info.selected }?.label.orEmpty(), info.selected,
+            rating = playingCatalog?.rating)
+        user.rememberEpisodes(info.pageUrl, info.episodes)
         return progressFor(info.pageUrl, info.selected)?.takeIf {
-            !it.finished && it.position >= 5_000 && it.position < it.duration - 5_000
+            !it.finished && it.position > 0 && it.position < it.duration
         }?.position
     }
     fun poster(item: CatalogItem) = item.cover.takeIf(::isWebUrl)
@@ -481,6 +818,28 @@ class AppState(
     /** In-memory pool of every catalog row currently held by the home/browse/hot rails. */
     private val catalogPool: List<CatalogItem>
         get() = (discover.value.items + browse.value.items + hot.value.items).distinctBy { it.url }
+
+    /** Builds the resume card from its durable snapshot and unambiguous loaded catalog metadata. */
+    internal fun historyPoster(record: HistoryTitle, items: List<CatalogItem>): CatalogItem =
+        dev.pandavideo.ui.catalog.historyCatalogPoster(record, (items + catalogPool).distinctBy { it.url })
+
+    /** Repairs legacy metadata without blocking catalog rendering or changing the saved episode. */
+    internal suspend fun fillHistoryMetadata(record: HistoryTitle, items: List<CatalogItem>) {
+        if (record.year.isNotBlank() && record.rating != null) return
+        val match = dev.pandavideo.ui.catalog.historyCatalogMatch(record,
+            (items + catalogPool).distinctBy { it.url })
+        if (match != null) user.fillHistoryMetadata(record.pageUrl, match.year, match.rating, match.cover)
+        val current = user.history.value.find { it.pageUrl == record.pageUrl && it.title == record.title } ?: return
+        if (current.year.isNotBlank() && current.rating != null) return
+        val details = try { api.artworkDetail(match, current.title, current.year) }
+        catch (error: CancellationException) { throw error }
+        catch (_: Exception) { null } ?: return
+        // Metadata may complete after deletion or a source refresh. Only repair the existing
+        // title and a compatible edition; never insert/promote a history row from this request.
+        if (user.history.value.none { it.pageUrl == record.pageUrl && it.title == record.title }) return
+        if (dev.pandavideo.ui.catalog.historyCatalogMatch(current, listOf(details)) == null) return
+        user.fillHistoryMetadata(record.pageUrl, details.year, details.rating, details.cover)
+    }
 
     /**
      * Resolves a display cover for titles opened outside catalog lists (history, favorites and
@@ -500,11 +859,15 @@ class AppState(
     fun rememberPlayed(
         title: String, pageUrl: String, cover: String?, year: String,
         episode: String = "", episodePath: String = "",
+        rating: Double? = null,
     ) {
-        user.recordHistory(title, pageUrl, cover.orEmpty(), year, episode, episodePath)
+        val known = dev.pandavideo.ui.catalog.historyCatalogMatch(
+            HistoryTitle(title, pageUrl, year = year), (listOfNotNull(playingCatalog) + catalogPool).distinctBy { it.url })
+        user.recordHistory(title, pageUrl, cover.orEmpty(), year.ifBlank { known?.year.orEmpty() },
+            episode, episodePath, rating = rating ?: known?.rating)
     }
 
-    /** Throttled playback-position persistence; returns when the media is long enough to track. */
+    /** Persists an explicit playback checkpoint when the media is long enough to track. */
     fun saveProgress(pageUrl: String, episodePath: String, episodeLabel: String, position: Long, duration: Long) {
         user.saveProgress(pageUrl, episodePath, episodeLabel, position, duration)
     }
@@ -531,11 +894,20 @@ class AppState(
         return saved
     }
 
-    /** Reopens a saved/history title, resuming the unfinished episode when one is recorded. */
+    /** Opens the home card's recorded episode, retaining its saved position and artwork. */
+    internal fun resumeHomeHistory(record: HistoryTitle) {
+        // This explicit home entry opens the episode shown by the saved record, including a
+        // completed episode. Generic library continuation may choose its successor instead.
+        startPlayer(PlayerRequest(page = record.pageUrl, title = record.title,
+            episode = record.episodePath.takeIf { it.isNotBlank() }),
+            cover = coverFor(record.title, record.cover))
+    }
+
+    /** Reopens a saved title at its unfinished episode or the next episode after completion. */
     fun reopenSaved(pageUrl: String, title: String, cover: String? = null) {
-        val latest = user.latestProgress(pageUrl)
-        val episode = latest?.episodePath?.takeIf { it.isNotBlank() && !latest.finished }
-        startPlayer(PlayerRequest(page = pageUrl, title = title, episode = episode), cover = cover)
+        releasePlayer()
+        val episode = user.continueEpisode(pageUrl)
+        startPlayer(PlayerRequest(page = pageUrl, title = title, episode = episode, resumeHistory = true), cover = cover)
     }
     /**
      * Retains the session for reopening. Audio mode continues; video pauses without visible PiP.
@@ -543,6 +915,8 @@ class AppState(
      * @param playerSession Session leaving the screen; may differ from a newly opened one.
      */
     fun minimizePlayer(playerSession: PlaybackSession? = session) {
+        if (platform.pictureInPictureActive.value || playerSession?.state?.value?.audioOnly == true)
+            playerSession?.saveOnExit()
         playerSession?.setPlaybackVisible(platform.pictureInPictureActive.value)
         rememberPlayerLevels()
         playerLevelsActive = false
@@ -559,10 +933,14 @@ class AppState(
     // Opening/replacing a title releases its old session without cancelling an
     // app-wide sleep timer that the user may have already armed in Settings.
     private fun releasePlayer() {
+        sketchOpenJob?.cancel(); sketchOpenJob = null
+        retryPrompts.clear("sketch")
         playerErrorJob?.cancel()
+        artworkJob?.cancel(); artworkJob = null
         retryPrompts.clear("player")
         if (session != null) rememberPlayerLevels()
         session?.close(); session = null; playingCatalog = null; playingSearch = null; playingCover = null
+        resolvedCastActors.clear()
         playingRecommendations = null
         platform.resetBrightness()
         platform.fullscreen(false)

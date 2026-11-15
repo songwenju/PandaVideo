@@ -50,7 +50,9 @@ internal fun BrowseFilterPanel(current: BrowseFilters, update: (BrowseFilters) -
         ChoiceRow(BrowseGenreOptions, current.genre) { update(current.copy(genre = it)) }
         ChoiceRow(BrowseCountryOptions, current.country) { update(current.copy(country = it)) }
         ChoiceRow(browseYearOptions(year), current.year) { update(current.copy(year = it)) }
-        ChoiceRow(BrowseSortOptions, current.sort) { update(current.copy(sort = it)) }
+        ChoiceRow(BrowseSortOptions, current.sort) {
+            update(current.copy(sort = it))
+        }
         Spacer(Modifier.height(6.dp))
     }
 }

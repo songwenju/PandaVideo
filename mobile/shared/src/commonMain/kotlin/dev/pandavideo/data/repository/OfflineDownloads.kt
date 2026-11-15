@@ -1,6 +1,7 @@
 package dev.pandavideo.data.repository
 
 import dev.pandavideo.core.model.PlaybackInfo
+import dev.pandavideo.core.model.Episode
 import dev.pandavideo.core.model.PlayerRequest
 import dev.pandavideo.core.platform.KeyValueStorage
 import kotlinx.coroutines.*
@@ -139,6 +140,51 @@ class OfflineDownloads(
         publish(listOf(OfflineDownload(id, info.copy(url = ""), cover)) + tasks.value)
         pump()
         return id
+    }
+
+    /**
+     * Queues selected episodes in source order, resolving each stream only when its turn starts.
+     * Validates the complete selection before adding any work; duplicate paths are ignored.
+     *
+     * @param info Detail-page snapshot owning the selectable episodes.
+     * @param paths Episode paths from that snapshot; may contain more than one source line.
+     * @param cover Optional poster URL for every queued task.
+     * @return Stable identifiers for the selected episodes, including existing tasks.
+     */
+    fun enqueueEpisodes(info: PlaybackInfo, paths: Collection<String>, cover: String = ""): List<String> {
+        val selected = paths.toSet()
+        require(selected.isNotEmpty()) { "请先选择要缓存的集数" }
+        val episodes = info.episodes.ifEmpty { listOf(Episode(info.selected, "正片", 1)) }
+            .distinctBy { it.path }.filter { it.path in selected }
+        require(episodes.size == selected.size) { "选集信息已变化，请重新选择" }
+        require(engine.supports(info.kind)) { "当前视频格式暂不支持缓存" }
+        check(!closed)
+        require(info.pageUrl.isNotBlank()) { "影片信息不完整，请重试" }
+        val existing = tasks.value.filter { it.info.pageUrl == info.pageUrl }.associateBy { it.info.selected }
+        val additions = mutableListOf<OfflineDownload>()
+        val resumeIds = mutableSetOf<String>()
+        val ids = episodes.map { episode ->
+            existing[episode.path]?.let { entry ->
+                if (entry.status in setOf(DownloadStatus.Paused, DownloadStatus.Failed) && entry.id !in deleting)
+                    resumeIds += entry.id
+                entry.id
+            } ?: run {
+                val id = "cache-${Random.nextLong().toULong().toString(16)}"
+                // This episode's transport URL is resolved when its turn starts.
+                additions += OfflineDownload(id, info.copy(selected = episode.path, url = ""), cover)
+                id
+            }
+        }
+        if (additions.isNotEmpty() || resumeIds.isNotEmpty()) {
+            // Store a whole selection once. Persisting a growing index after every episode
+            // makes selecting a long series increasingly expensive on the UI thread.
+            // Newest-first storage means reversing additions preserves source-order work.
+            publish(additions.asReversed() + tasks.value.map {
+                if (it.id in resumeIds) it.copy(status = DownloadStatus.Queued, error = "") else it
+            })
+        }
+        pump()
+        return ids
     }
 
     /** Pauses queued or active work; Android can reuse previously cached media ranges. */

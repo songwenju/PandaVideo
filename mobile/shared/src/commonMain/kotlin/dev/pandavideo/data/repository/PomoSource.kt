@@ -62,7 +62,8 @@ internal object PomoSource {
                 SearchItem(title, "Pomo · $site", "$site:${row.text("id")}",
                     "play_url" !in row || row.text("play_url").isNotBlank(),
                     page, row.text("cover").takeIf(::isWebUrl).orEmpty(), row.text("year"),
-                    row.text("area"), genre, row.text("actor"), remark)
+                    row.text("area"), genre, row.text("actor"), remark,
+                    rating = SearchPresentation.rating(row.text("douban_score").toDoubleOrNull()))
             }
         }.distinctBy { it.detailUrl }.take(80)
         return SearchResult(items, sources.map { (site, _) ->

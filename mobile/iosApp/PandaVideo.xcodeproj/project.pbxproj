@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		A00000000000000000000015 /* PandaVideoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000013 /* PandaVideoApp.swift */; };
 		A00000000000000000000021 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000020 /* Assets.xcassets */; };
+		A00000000000000000000023 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000022 /* LaunchScreen.storyboard */; };
 		B00000000000000000000001 /* PandaVideoUITests/FullscreenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000002 /* PandaVideoUITests/FullscreenTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -27,6 +28,7 @@
 		A00000000000000000000013 /* PandaVideoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PandaVideoApp.swift; sourceTree = "<group>"; };
 		A00000000000000000000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A00000000000000000000020 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A00000000000000000000022 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		B00000000000000000000002 /* PandaVideoUITests/FullscreenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PandaVideoUITests/FullscreenTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000003 /* PandaVideoUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = PandaVideoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -73,6 +75,7 @@
 				A00000000000000000000013 /* PandaVideoApp.swift */,
 				A00000000000000000000014 /* Info.plist */,
 				A00000000000000000000020 /* Assets.xcassets */,
+				A00000000000000000000022 /* LaunchScreen.storyboard */,
 			);
 			path = PandaVideo;
 			sourceTree = "<group>";
@@ -149,6 +152,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000021 /* Assets.xcassets in Resources */,
+				A00000000000000000000023 /* LaunchScreen.storyboard in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -294,6 +298,8 @@
 					"$(inherited)",
 					"-framework",
 					SuiXinKanShared,
+					"-framework",
+					WebKit,
 					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.pandavideo;
@@ -321,6 +327,8 @@
 					"$(inherited)",
 					"-framework",
 					SuiXinKanShared,
+					"-framework",
+					WebKit,
 					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.pandavideo;

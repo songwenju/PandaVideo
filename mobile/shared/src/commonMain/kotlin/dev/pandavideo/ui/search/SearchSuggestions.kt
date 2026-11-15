@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import dev.pandavideo.app.AppState
 import dev.pandavideo.ui.common.NavigationIcons
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SearchSuggestions(model: AppState, query: String, modifier: Modifier, submit: (String) -> Unit) {
     val history by model.searchHistory.history.collectAsState()
@@ -45,17 +46,27 @@ internal fun SearchSuggestions(model: AppState, query: String, modifier: Modifie
                 Text("暂无搜索历史，输入片名开始搜索", color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp, modifier = Modifier.padding(vertical = 12.dp))
             }
-            items(history, key = { "history:$it" }) { title ->
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    verticalAlignment = Alignment.CenterVertically,
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(title, Modifier.weight(1f).clickable(role = Role.Button) { submit(title) }
-                        .padding(start = 12.dp, end = 8.dp, top = 14.dp, bottom = 14.dp),
-                        fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    IconButton({ model.searchHistory.remove(title) }, Modifier.size(48.dp)) {
-                        Icon(NavigationIcons.Close, contentDescription = "删除历史：$title", modifier = Modifier.size(14.dp))
+                    history.forEach { title ->
+                        Row(
+                            Modifier.clip(RoundedCornerShape(50))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(title, Modifier.clickable(role = Role.Button) { submit(title) }
+                                .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                                fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            IconButton({ model.searchHistory.remove(title) }, Modifier.size(26.dp)) {
+                                Icon(NavigationIcons.Close, contentDescription = "删除历史：$title",
+                                    modifier = Modifier.size(12.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Spacer(Modifier.width(4.dp))
+                        }
                     }
                 }
             }
@@ -63,6 +74,10 @@ internal fun SearchSuggestions(model: AppState, query: String, modifier: Modifie
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Text("搜索联想", fontSize = 18.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(vertical = 12.dp))
+            }
+            if (suggestions.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
+                Text("暂无搜索联想", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp, modifier = Modifier.padding(vertical = 12.dp))
             }
             items(suggestions, key = { it }, span = { GridItemSpan(maxLineSpan) }) { title ->
                 Row(
@@ -74,11 +89,6 @@ internal fun SearchSuggestions(model: AppState, query: String, modifier: Modifie
                     Icon(NavigationIcons.Search, contentDescription = null, modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
-                }
-            }
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                TextButton({ submit(query) }) {
-                    Text("搜索“${query.trim().take(100)}”", maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
         }

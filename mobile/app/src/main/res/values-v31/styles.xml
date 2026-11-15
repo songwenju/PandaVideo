@@ -6,6 +6,7 @@
         <item name="android:colorAccent">#FF6740</item>
         <item name="android:windowBackground">@drawable/startup_background</item>
         <item name="android:windowSplashScreenBackground">@color/startup_background</item>
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_startup_logo</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_system_startup_logo</item>
+        <item name="android:windowSplashScreenBrandingImage">@drawable/launch_slogan</item>
     </style>
 </resources>

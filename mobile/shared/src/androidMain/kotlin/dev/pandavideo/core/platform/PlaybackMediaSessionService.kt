@@ -2,10 +2,12 @@ package dev.pandavideo.core.platform
 
 import android.content.Intent
 import android.os.Bundle
+import dev.pandavideo.core.player.SkipDurations
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -24,15 +26,12 @@ import com.google.common.util.concurrent.ListenableFuture
 @UnstableApi
 class PlaybackMediaSessionService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
+    private lateinit var preloader: AndroidPlaybackPreloader
 
     override fun onCreate() {
         super.onCreate()
-        val player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(OfflineMediaSourceFactory(this))
-            // Notification gets ±10s seek buttons; matches the in-player double-tap step.
-            .setSeekBackIncrementMs(SEEK_STEP_MS)
-            .setSeekForwardIncrementMs(SEEK_STEP_MS)
-            .build().apply {
+        preloader = AndroidPlaybackPreloader(this)
+        val player = preloader.player.apply {
                 setAudioAttributes(
                     AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
                         .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),
@@ -59,7 +58,7 @@ class PlaybackMediaSessionService : MediaSessionService() {
     override fun onDestroy() {
         activeSession = null
         mediaSession?.run {
-            player.release()
+            preloader.release()
             release()
         }
         mediaSession = null
@@ -67,10 +66,42 @@ class PlaybackMediaSessionService : MediaSessionService() {
     }
 
     private inner class SessionCallback : MediaSession.Callback {
+        override fun onConnect(
+            session: MediaSession, controller: MediaSession.ControllerInfo,
+        ): MediaSession.ConnectionResult {
+            val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+                .add(SessionCommand(ACTION_NEXT_EPISODE, Bundle.EMPTY))
+                .add(SessionCommand(ACTION_REPLAY, Bundle.EMPTY))
+            // URLs travel only through the app's own controller; external transports retain
+            // the ordinary MediaSession command set and cannot request speculative downloads.
+            if (controller.packageName == packageName) {
+                commands.add(SessionCommand(ACTION_LOAD, Bundle.EMPTY))
+                commands.add(SessionCommand(ACTION_PRELOAD, Bundle.EMPTY))
+                commands.add(SessionCommand(ACTION_PRELOAD_STATUS, Bundle.EMPTY))
+            }
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(commands.build()).build()
+        }
+
         override fun onCustomCommand(
             session: MediaSession, controller: MediaSession.ControllerInfo,
             customCommand: SessionCommand, args: Bundle,
         ): ListenableFuture<SessionResult> {
+            if (controller.packageName == packageName && customCommand.customAction == ACTION_LOAD) {
+                val item = mediaItem(args) ?: return Futures.immediateFuture(
+                    SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE))
+                val hit = preloader.load(item, args.getLong("position").coerceAtLeast(0),
+                    args.getBoolean("autoplay"), SkipDurations(args.getInt("introSeconds"), args.getInt("outroSeconds")))
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS,
+                    Bundle().apply { putBoolean("preloadHit", hit) }))
+            }
+            if (controller.packageName == packageName && customCommand.customAction == ACTION_PRELOAD) {
+                preloader.preload(mediaItem(args))
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            if (controller.packageName == packageName && customCommand.customAction == ACTION_PRELOAD_STATUS)
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS,
+                    Bundle().apply { putBoolean("ready", preloader.isReady) }))
             val handled = when (customCommand.customAction) {
                 ACTION_NEXT_EPISODE -> { nextEpisodeHandler?.invoke(); true }
                 ACTION_REPLAY -> { replayHandler?.invoke(); true }
@@ -85,7 +116,18 @@ class PlaybackMediaSessionService : MediaSessionService() {
     companion object {
         const val ACTION_NEXT_EPISODE = "dev.pandavideo.action.NEXT_EPISODE"
         const val ACTION_REPLAY = "dev.pandavideo.action.REPLAY"
-        private const val SEEK_STEP_MS = 10_000L
+        internal const val ACTION_LOAD = "dev.pandavideo.action.LOAD_PREPARED"
+        internal const val ACTION_PRELOAD = "dev.pandavideo.action.PRELOAD"
+        internal const val ACTION_PRELOAD_STATUS = "dev.pandavideo.action.PRELOAD_STATUS"
+
+        private fun mediaItem(args: Bundle): MediaItem? {
+            val url = args.getString("url") ?: return null
+            return MediaItem.Builder().setUri(url).setMediaId(args.getLong("id").toString())
+                .setMimeType(args.getString("mime"))
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(args.getString("title"))
+                    .setSubtitle(args.getString("episode")).setArtist(args.getString("episode")).build())
+                .build()
+        }
 
         @Volatile
         private var activeSession: MediaSession? = null

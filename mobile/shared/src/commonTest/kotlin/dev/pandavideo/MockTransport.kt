@@ -21,6 +21,13 @@ fun TestScope.mockEngine(
                 request.url.host.startsWith("pv2026.") ||
                 request.url.host in setOf("jdomain.oss-accelerate.aliyuncs.com", "dns.alidns.com", "doh.pub", "1.1.1.1")))
                 respond("", HttpStatusCode.ServiceUnavailable)
+            // Pomo parser fixtures resolve to this dedicated synthetic HLS endpoint.
+            // Model its byte-range probe separately from the provider JSON handler.
+            else if (request.url.host == "media" && request.url.encodedPath == "/stream.m3u8" &&
+                request.headers["Range"] != null)
+                respond("#EXTM3U\n#EXTINF:10,\nsegment.ts\n#EXT-X-ENDLIST\n")
+            else if (request.url.host == "media" && request.headers["Range"] != null)
+                respond("", HttpStatusCode.ServiceUnavailable)
             else handler(request)
         }
     })

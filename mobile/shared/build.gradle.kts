@@ -65,6 +65,7 @@ kotlin {
         }
         iosMain.dependencies { implementation(libs.ktor.darwin) }
         jvmMain.dependencies {
+            implementation("org.jetbrains.compose.ui:ui-backhandler:1.10.3")
             implementation(libs.ktor.okhttp)
             // JavaFX Media uses AVFoundation on macOS, covering both HLS and MP4.
             // Classifier artifacts bundle the native dylibs and run from the classpath.

@@ -118,6 +118,25 @@ class UserStoreBehaviorTest {
         assertEquals("2020", history.first().year)
         assertEquals("A-更新", history.first().title)
     }
+    @Test fun metadataRepairPreservesOrderProgressAndDeletedHistory() {
+        val page = "https://huolot.com/voddetail/1.html"
+        store.recordHistory("A", page, "", "", episodePath = "episode-1")
+        store.saveProgress(page, "episode-1", "第一集", 120_000, 600_000)
+        store.recordHistory("B", "https://huolot.com/voddetail/2.html", "", "2021")
+        val before = store.history.value.last()
+        store.fillHistoryMetadata(page, "2020", 9.1, "https://img.example/a.jpg")
+        val repaired = store.history.value.last()
+        assertEquals(listOf("B", "A"), store.history.value.map { it.title })
+        assertEquals(before.copy(year = "2020", rating = 9.1, cover = "https://img.example/a.jpg"), repaired)
+        store.recordHistory("A", page, "", "")
+        assertEquals(9.1, store.history.value.first().rating)
+        store.fillHistoryMetadata(page, "1980", 8.1)
+        assertEquals("2020", store.history.value.first().year)
+        assertEquals(9.1, store.history.value.first().rating)
+        store.removeHistory(page)
+        store.fillHistoryMetadata(page, "2020", 9.1)
+        assertTrue(store.history.value.none { it.pageUrl == page })
+    }
 
     @Test fun historyIsCappedAtTheLimit() {
         repeat(UserStore.HISTORY_LIMIT + 5) { index ->

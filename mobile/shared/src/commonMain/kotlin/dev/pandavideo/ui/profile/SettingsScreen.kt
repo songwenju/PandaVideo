@@ -42,6 +42,7 @@ internal fun SettingsScreen(model: AppState, back: () -> Unit) {
     val settings by model.settings.settings.collectAsState()
     val remaining by model.sleepRemaining.collectAsState()
     val sleepMinutes by model.sleepTimerMinutes.collectAsState()
+    val afterCurrent by model.sleepAfterCurrent.collectAsState()
     var editingSleepTimer by rememberSaveable { mutableStateOf(false) }
     var customSleepInput by rememberSaveable { mutableStateOf("") }
     val checkingUpdate by model.checkingUpdate.collectAsState()
@@ -124,9 +125,9 @@ internal fun SettingsScreen(model: AppState, back: () -> Unit) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.weight(1f)) {
                             SettingsHeading(NavigationIcons.Moon, "睡眠定时",
-                                if (remaining > 0) "剩余 ${remaining / 60} 分 ${remaining % 60} 秒" else "到时自动暂停播放")
+                                if (afterCurrent) "播完当前后暂停" else if (remaining > 0) "剩余 ${remaining / 60} 分 ${remaining % 60} 秒" else "到时自动暂停播放")
                         }
-                        if (remaining > 0) TextButton(
+                        if (remaining > 0 || afterCurrent) TextButton(
                             { model.setSleepTimer(0) }, contentPadding = PaddingValues(horizontal = 8.dp),
                         ) { Text("取消", color = Accent, fontSize = 12.sp) }
                         else Text("未开启", fontSize = 11.sp, color = colors.onSurfaceVariant,

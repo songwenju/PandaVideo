@@ -13,9 +13,17 @@ class VideoZoomTest {
     }
 
     @Test
-    fun boundsPreventOverZoomAndShrinkingBelowViewport() {
+    fun pinchCanShrinkBelowOriginalAndReturnToOriginalSize() {
+        val reduced = videoZoom(1f, 0.75f)
+        assertEquals(0.75f, reduced)
+        assertEquals(1f, videoZoom(reduced, 1f / 0.75f))
+    }
+
+    @Test
+    fun boundsPreventOverZoomAndExcessiveShrinking() {
         assertEquals(4f, videoZoom(3f, 2f))
-        assertEquals(1f, videoZoom(2f, 0.1f))
+        assertEquals(0.5f, videoZoom(2f, 0.1f))
+        assertEquals(0.5f, videoZoom(0.5f, 0.5f))
         assertEquals(2f, videoZoom(4f, 0.5f))
     }
 

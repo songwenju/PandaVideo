@@ -9,6 +9,7 @@ import re
 import sqlite3
 import subprocess
 import time
+import tempfile
 import urllib.parse
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +43,13 @@ def top_page(start):
         attrs = dict(re.findall(r'(\w+)="([^"]*)"', image.group()))
         info = re.search(r'<p[^>]*>(.*?)</p>', block, re.S)
         year = re.search(r'\b(?:19|20)\d{2}\b', info.group(1)) if info else None
+        metadata = html.unescape(re.sub(r"<[^>]+>", " ", info.group(1))) if info else ""
+        metadata_year = re.search(r"\b(?:19|20)\d{2}", metadata)
+        fields = re.split(r"\s*/\s*", metadata[metadata_year.start():]) if metadata_year else []
+        while fields and re.match(r"(?:19|20)\d{2}", fields[0]):
+            fields.pop(0)
+        countries = fields[0].split() if fields else []
+        genres = fields[1].split() if len(fields) >= 2 else []
         items.append({
             "title": html.unescape(attrs["alt"]),
             "url": subject.group(1),
@@ -49,10 +57,42 @@ def top_page(start):
             "rating": float(rating.group(1)),
             "cover": html.unescape(attrs["src"]),
             "casts": [],
+            "genres": genres,
+            "countries": countries,
+            "kind": "animation" if "动画" in genres else "documentary" if "纪录片" in genres else "movie",
         })
     if len(items) != 25:
         raise ValueError(f"Top 250 page {start}: expected 25, got {len(items)}")
     return items
+
+
+def export_top250_categories():
+    """Enrich the bundled identities from the public ranking, without replacing their artwork."""
+    captured = {}
+    for start in range(0, 250, 25):
+        for item in top_page(start):
+            if not item["genres"] or not item["countries"]:
+                raise ValueError(f"Missing ranking metadata: {item['url']}")
+            captured[item["url"]] = item
+        print(f"Top 250 metadata: {start + 25}/250", flush=True)
+    pages = []
+    with sqlite3.connect(ASSETS / "catalog-seed.db") as db:
+        for start in range(0, 250, 25):
+            key = f"top250:{start}"
+            page = json.loads(db.execute("SELECT metadata FROM catalog_pages WHERE key=?", (key,)).fetchone()[0])
+            page["items"] = []
+            for (payload,) in db.execute("SELECT item FROM catalog_items WHERE page_key=? ORDER BY position", (key,)):
+                item = json.loads(payload)
+                source = captured.get(item["url"])
+                if source is None:
+                    raise ValueError(f"Bundled identity no longer in ranking: {item['url']}")
+                for field in ("genres", "countries", "kind"):
+                    item[field] = source[field]
+                page["items"].append(item)
+            pages.append(page)
+    (ASSETS / "top250-categories.json").write_text(
+        json.dumps(pages, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print("Saved verified metadata for all 250 bundled identities", flush=True)
 
 
 def tv_page(start):
@@ -77,7 +117,7 @@ def tv_page(start):
 
 def main(resume=False):
     pages = []
-    staging = ROOT / "build/catalog-import-pages"
+    staging = Path(tempfile.gettempdir()) / "pandavideo-catalog-import-pages"
     staging.mkdir(exist_ok=True)
     for kind, size, count in [("top250", 25, 250), ("tv", 20, 300)]:
         for start in range(0, count, size):
@@ -149,4 +189,9 @@ def main(resume=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", action="store_true", help="Resume an interrupted capture from local page checkpoints.")
-    main(resume=parser.parse_args().resume)
+    parser.add_argument("--top250-categories", action="store_true", help="Enrich bundled Top 250 genre and country metadata only.")
+    options = parser.parse_args()
+    if options.top250_categories:
+        export_top250_categories()
+    else:
+        main(resume=options.resume)

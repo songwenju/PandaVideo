@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,11 +32,14 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,7 +67,7 @@ import dev.pandavideo.ui.common.ActionButtonPadding
 import dev.pandavideo.ui.common.NavigationIcons
 import dev.pandavideo.ui.common.Poster
 import dev.pandavideo.ui.common.LocalDarkTheme
-import dev.pandavideo.ui.common.topTabSwipe
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun ProfileScreen(
@@ -79,7 +84,7 @@ internal fun ProfileScreen(
     val settings by model.settings.settings.collectAsState()
     var selected by rememberSaveable { mutableStateOf(ProfileLibrary.History) }
     var managing by rememberSaveable { mutableStateOf(false) }
-    val titles = if (selected == ProfileLibrary.History) history.map { record ->
+    val historyTitles = history.map { record ->
         ProfileTitle(
             record.pageUrl, record.title,
             model.coverFor(record.title, record.cover),
@@ -88,197 +93,152 @@ internal fun ProfileScreen(
                 dev.pandavideo.data.user.progressFraction(record.positionMs, record.durationMs)
             else null,
         )
-    } else if (selected == ProfileLibrary.Favorites) favorites.map {
+    }
+    val favoriteTitles = favorites.map {
         ProfileTitle(it.pageUrl, it.title, model.coverFor(it.title, it.cover), it.year, null)
-    } else emptyList()
-    val entryCount = if (selected == ProfileLibrary.Downloads) downloads.size else titles.size
+    }
+    val entryCount = when (selected) {
+        ProfileLibrary.History -> historyTitles.size
+        ProfileLibrary.Favorites -> favoriteTitles.size
+        ProfileLibrary.Downloads -> downloads.size
+    }
+    val pager = rememberPagerState(initialPage = selected.ordinal) { ProfileLibrary.entries.size }
+    val scope = rememberCoroutineScope()
+    // A drag updates the pager first; mirror its page back into the tab row and management state.
+    LaunchedEffect(pager) {
+        snapshotFlow { pager.currentPage }.collect { page ->
+            val library = ProfileLibrary.entries[page]
+            if (selected != library) {
+                selected = library
+                managing = false
+            }
+        }
+    }
     val colors = MaterialTheme.colorScheme
     val dark = LocalDarkTheme.current
 
-    Box(Modifier.fillMaxSize().background(colors.background)) {
-    LazyColumn(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
-            .topTabSwipe(selected.ordinal, ProfileLibrary.entries.size) { index ->
-                selected = ProfileLibrary.entries[index]
-                managing = false
-            },
-        // Reserve the initial safe area inside the list so scrolling has no hard viewport edge.
-        contentPadding = PaddingValues(top = topInset, bottom = 100.dp),
-    ) {
-        item {
-            Column(
-                Modifier.fillMaxWidth()
-                    .background(Brush.horizontalGradient(
-                        listOf(
-                            if (dark) Color(0xFF472B22) else Color(0xFFFFD9BB),
-                            colors.surface,
-                            if (dark) Color(0xFF103B38) else Color(0xFFA9EDE3),
-                        ),
-                    ))
-                    // Blend the decorative header into the page above and below.
-                    .background(Brush.verticalGradient(
-                        0f to colors.background,
-                        0.3f to Color.Transparent,
-                        0.65f to Color.Transparent,
-                        1f to colors.background,
-                    ))
-                    .padding(horizontal = 16.dp)
-                    .padding(top = 4.dp, bottom = 20.dp),
-            ) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Spacer(Modifier.weight(1f))
-                    ProfileToolbarButton(NavigationIcons.Moon, "深色模式") { choosingTheme = true }
-                    ProfileToolbarButton(NavigationIcons.Menu, "播放设置", openSettings)
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(60.dp).clip(CircleShape)
-                            .background(colors.surface.copy(alpha = 0.8f))
-                            .clickable(role = Role.Button) { editing = true },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        ProfileAvatar(model.platform, profile.avatar, Modifier.fillMaxSize())
-                    }
-                    Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f).clickable(role = Role.Button) { editing = true }) {
-                        Text(
-                            profile.nickname, fontSize = 20.sp, fontWeight = FontWeight.Bold,
-                            color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.height(5.dp))
-                        Text(
-                            profile.bio, fontSize = 12.sp,
-                            color = colors.onSurfaceVariant,
-                            maxLines = 2, overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "${favorites.size} 收藏    ${history.size} 观看",
-                            fontSize = 12.sp, color = colors.onSurface,
-                        )
-                    }
-                    ProfileToolbarButton(NavigationIcons.Edit, "编辑资料") { editing = true }
-                }
-            }
-        }
-        item {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                ProfileLibrary.entries.forEach { tab ->
-                    Column(
-                        Modifier.clip(RoundedCornerShape(8.dp))
-                            .selectable(selected = selected == tab, role = Role.Tab) {
-                            selected = tab; managing = false
-                        }
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(
-                            tab.label, fontSize = 18.sp, lineHeight = 24.sp,
-                            fontWeight = if (selected == tab) FontWeight.Bold else FontWeight.Normal,
-                            color = if (selected == tab) colors.onSurface else colors.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(9.dp))
-                        Box(Modifier.width(18.dp).height(3.dp).clip(CircleShape)
-                            .background(if (selected == tab) Accent else Color.Transparent))
-                    }
-                }
+    Column(Modifier.fillMaxSize().background(colors.background)) {
+        // The decorative header and tab row stay fixed; only the library pages slide.
+        Column(
+            Modifier.fillMaxWidth()
+                .background(Brush.horizontalGradient(
+                    listOf(
+                        if (dark) Color(0xFF472B22) else Color(0xFFFFD9BB),
+                        colors.surface,
+                        if (dark) Color(0xFF103B38) else Color(0xFFA9EDE3),
+                    ),
+                ))
+                // Blend the decorative header into the page above and below.
+                .background(Brush.verticalGradient(
+                    0f to colors.background,
+                    0.3f to Color.Transparent,
+                    0.65f to Color.Transparent,
+                    1f to colors.background,
+                ))
+                .padding(horizontal = 16.dp)
+                .padding(top = topInset + 4.dp, bottom = 20.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
-                TextButton({ managing = !managing }, enabled = entryCount > 0 || managing,
-                    contentPadding = ActionButtonPadding) {
-                    Text(if (managing) "完成" else "管理", color = colors.onSurfaceVariant,
-                        fontSize = 12.sp, maxLines = 1)
+                ProfileToolbarButton(NavigationIcons.Moon, "深色模式") { choosingTheme = true }
+                ProfileToolbarButton(NavigationIcons.Menu, "播放设置", openSettings)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(60.dp).clip(CircleShape)
+                        .background(colors.surface.copy(alpha = 0.8f))
+                        .clickable(role = Role.Button) { editing = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    ProfileAvatar(model.platform, profile.avatar, Modifier.fillMaxSize())
                 }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f).clickable(role = Role.Button) { editing = true }) {
+                    Text(
+                        profile.nickname, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                        color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        profile.bio, fontSize = 12.sp,
+                        color = colors.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "${favorites.size} 收藏    ${history.size} 观看",
+                        fontSize = 12.sp, color = colors.onSurface,
+                    )
+                }
+                ProfileToolbarButton(NavigationIcons.Edit, "编辑资料") { editing = true }
             }
         }
-        item {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 12.dp, bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                Text(if (selected == ProfileLibrary.Downloads) "$entryCount 集缓存" else "$entryCount 部影片",
-                    color = colors.onSurfaceVariant, fontSize = 12.sp,
-                    modifier = Modifier.weight(1f))
-                if (managing) TextButton({
-                    confirmClear = when (selected) {
-                        ProfileLibrary.History -> ClearTarget.History
-                        ProfileLibrary.Favorites -> ClearTarget.Favorites
-                        ProfileLibrary.Downloads -> ClearTarget.Downloads
-                    }
-                }, enabled = entryCount > 0) {
-                    Text("清空全部", color = Accent, fontSize = 12.sp)
-                }
-            }
-        }
-        if (selected == ProfileLibrary.Downloads) {
-            if (downloads.isEmpty()) item {
-                EmptyLibraryHint("还没有离线缓存", NavigationIcons.Download,
-                    if (model.downloads.supports("hls")) "在播放详情页缓存影片，随时离线观看"
-                    else "当前设备暂不支持离线缓存")
-            } else items(downloads.chunked(3), key = { "downloads:${it.first().id}" }) { row ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    row.forEach { entry ->
-                        Box(Modifier.weight(1f)) {
-                            DownloadPosterCard(
-                                entry, model.coverFor(entry.info.title, entry.cover), managing,
-                                onAction = {
-                                    when (entry.status) {
-                                        DownloadStatus.Completed -> { model.playDownload(entry); openPlayer() }
-                                        DownloadStatus.Queued, DownloadStatus.Downloading -> model.downloads.pause(entry.id)
-                                        DownloadStatus.Paused, DownloadStatus.Failed -> model.downloads.resume(entry.id)
-                                    }
-                                },
-                                onRemove = { deletingDownload = entry.id },
-                            )
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ProfileLibrary.entries.forEach { tab ->
+                Column(
+                    Modifier.clip(RoundedCornerShape(8.dp))
+                        .selectable(selected = selected == tab, role = Role.Tab) {
+                            selected = tab
+                            managing = false
+                            scope.launch { pager.animateScrollToPage(tab.ordinal) }
                         }
-                    }
-                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        tab.label, fontSize = 18.sp, lineHeight = 24.sp,
+                        fontWeight = if (selected == tab) FontWeight.Bold else FontWeight.Normal,
+                        color = if (selected == tab) colors.onSurface else colors.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(9.dp))
+                    Box(Modifier.width(18.dp).height(3.dp).clip(CircleShape)
+                        .background(if (selected == tab) Accent else Color.Transparent))
                 }
             }
-        } else if (titles.isEmpty()) {
-            item {
-                EmptyLibraryHint(
-                    if (selected == ProfileLibrary.History) "还没有播放记录" else "还没有收藏的影片",
-                    if (selected == ProfileLibrary.History) NavigationIcons.History else NavigationIcons.Heart,
-                    if (selected == ProfileLibrary.History) "看过的影片会出现在这里" else "在影片详情页点击爱心，即可加入收藏",
+            Spacer(Modifier.weight(1f))
+            TextButton({ managing = !managing }, enabled = entryCount > 0 || managing,
+                contentPadding = ActionButtonPadding) {
+                Text(if (managing) "完成" else "管理", color = colors.onSurfaceVariant,
+                    fontSize = 12.sp, maxLines = 1)
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 12.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text(if (selected == ProfileLibrary.Downloads) "$entryCount 集缓存" else "$entryCount 部影片",
+                color = colors.onSurfaceVariant, fontSize = 12.sp,
+                modifier = Modifier.weight(1f))
+            if (managing) TextButton({
+                confirmClear = when (selected) {
+                    ProfileLibrary.History -> ClearTarget.History
+                    ProfileLibrary.Favorites -> ClearTarget.Favorites
+                    ProfileLibrary.Downloads -> ClearTarget.Downloads
+                }
+            }, enabled = entryCount > 0) {
+                Text("清空全部", color = Accent, fontSize = 12.sp)
+            }
+        }
+        HorizontalPager(state = pager, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
+            when (ProfileLibrary.entries[page]) {
+                ProfileLibrary.Downloads -> DownloadLibraryPage(
+                    model, downloads, managing, openPlayer, requestDelete = { deletingDownload = it },
+                )
+                ProfileLibrary.History -> SavedLibraryPage(
+                    ProfileLibrary.History, historyTitles, managing,
+                    onRemove = { model.user.removeHistory(it.pageUrl) },
+                    onOpen = { model.reopenSaved(it.pageUrl, it.title, it.cover); openPlayer() },
+                )
+                ProfileLibrary.Favorites -> SavedLibraryPage(
+                    ProfileLibrary.Favorites, favoriteTitles, managing,
+                    onRemove = { model.user.removeFavorite(it.pageUrl) },
+                    onOpen = { model.reopenSaved(it.pageUrl, it.title, it.cover); openPlayer() },
                 )
             }
-        } else {
-            items(titles.chunked(3), key = { "${selected.name}:${it.first().pageUrl}" }) { row ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    row.forEach { title ->
-                        Box(Modifier.weight(1f)) {
-                            SavedPosterCard(
-                                title.title, title.cover, title.subtitle,
-                                badge = if (selected == ProfileLibrary.History) "继续观看" else null,
-                                progress = title.progress,
-                                onRemove = if (managing) { {
-                                    if (selected == ProfileLibrary.History) model.user.removeHistory(title.pageUrl)
-                                    else model.user.removeFavorite(title.pageUrl)
-                                } } else null,
-                            ) { model.reopenSaved(title.pageUrl, title.title, title.cover); openPlayer() }
-                        }
-                    }
-                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
-                }
-            }
         }
-    }
-    if (topInset > 0.dp) {
-        val protectionHeight = topInset + 24.dp
-        // Protect status icons and fade the scrolling content out below the safe area.
-        Box(Modifier.fillMaxWidth().height(protectionHeight).background(
-            Brush.verticalGradient(
-                0f to colors.background,
-                (topInset.value / protectionHeight.value) to colors.background,
-                1f to colors.background.copy(alpha = 0f),
-            ),
-        ))
-    }
     }
     if (editing) {
         EditProfileDialog(
@@ -336,6 +296,76 @@ internal fun ProfileScreen(
             }) { Text("删除", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton({ deletingDownload = null }) { Text("取消") } },
         )
+    }
+}
+
+/** One swipeable library page; the empty hint and the poster grid share the same page slot. */
+@Composable
+private fun SavedLibraryPage(
+    library: ProfileLibrary, titles: List<ProfileTitle>, managing: Boolean,
+    onRemove: (ProfileTitle) -> Unit, onOpen: (ProfileTitle) -> Unit,
+) {
+    if (titles.isEmpty()) {
+        EmptyLibraryHint(
+            if (library == ProfileLibrary.History) "还没有播放记录" else "还没有收藏的影片",
+            if (library == ProfileLibrary.History) NavigationIcons.History else NavigationIcons.Heart,
+            if (library == ProfileLibrary.History) "看过的影片会出现在这里" else "在影片详情页点击爱心，即可加入收藏",
+        )
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 100.dp)) {
+        items(titles.chunked(3), key = { "${library.name}:${it.first().pageUrl}" }) { row ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                row.forEach { title ->
+                    Box(Modifier.weight(1f)) {
+                        SavedPosterCard(
+                            title.title, title.cover, title.subtitle,
+                            badge = if (library == ProfileLibrary.History) "继续观看" else null,
+                            progress = title.progress,
+                            onRemove = if (managing) { { onRemove(title) } } else null,
+                        ) { onOpen(title) }
+                    }
+                }
+                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DownloadLibraryPage(
+    model: AppState, downloads: List<OfflineDownload>, managing: Boolean,
+    openPlayer: () -> Unit, requestDelete: (String) -> Unit,
+) {
+    if (downloads.isEmpty()) {
+        EmptyLibraryHint("还没有离线缓存", NavigationIcons.Download,
+            if (model.downloads.supports("hls")) "在播放详情页缓存影片，随时离线观看"
+            else "当前设备暂不支持离线缓存")
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 100.dp)) {
+        items(downloads.chunked(3), key = { "downloads:${it.first().id}" }) { row ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                row.forEach { entry ->
+                    Box(Modifier.weight(1f)) {
+                        DownloadPosterCard(
+                            entry, model.coverFor(entry.info.title, entry.cover), managing,
+                            onAction = {
+                                when (entry.status) {
+                                    DownloadStatus.Completed -> { model.playDownload(entry); openPlayer() }
+                                    DownloadStatus.Queued, DownloadStatus.Downloading -> model.downloads.pause(entry.id)
+                                    DownloadStatus.Paused, DownloadStatus.Failed -> model.downloads.resume(entry.id)
+                                }
+                            },
+                            onRemove = { requestDelete(entry.id) },
+                        )
+                    }
+                }
+                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
     }
 }
 

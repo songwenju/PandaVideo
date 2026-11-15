@@ -41,6 +41,9 @@ internal class AndroidSeekPreview(context: Context) {
     /** Returns the nearest keyframe as a small PNG, or null when the source was replaced. */
     suspend fun frame(mediaId: Long, position: Long): PreviewFrame? = withContext(Dispatchers.Main.immediate) {
         val loaded = source?.takeIf { it.id == mediaId } ?: return@withContext null
+        // FrameExtractor 1.9.3 exposes no DataSource/header configuration. Keep time-only
+        // scrubbing for this transport instead of firing CDN requests known to return 403.
+        if (dev.pandavideo.core.player.BilibiliMedia.owns(loaded.url)) return@withContext null
         val target = position.coerceAtLeast(0)
         // Media3 1.9.3 serializes extraction internally. Cancelling a running getFrame future
         // does not interrupt its decoder. Keep that one request and await it before submitting

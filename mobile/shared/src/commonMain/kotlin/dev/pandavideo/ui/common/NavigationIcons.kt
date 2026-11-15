@@ -11,6 +11,11 @@ import androidx.compose.ui.unit.dp
 
 /** Shared 24 dp navigation artwork, tinted by the navigation item's selected state. */
 internal object NavigationIcons {
+    val More = outline("More") {
+        circle(5f, 12f, 1f)
+        circle(12f, 12f, 1f)
+        circle(19f, 12f, 1f)
+    }
     val Refresh = outline("Refresh") {
         moveTo(20f, 10f)
         curveTo(19f, 5f, 14f, 2.5f, 9.5f, 4.2f)
@@ -84,6 +89,12 @@ internal object NavigationIcons {
         moveTo(15f, 4f); lineTo(20f, 4f); lineTo(20f, 9f)
         moveTo(4f, 15f); lineTo(4f, 20f); lineTo(9f, 20f)
         moveTo(20f, 15f); lineTo(20f, 20f); lineTo(15f, 20f)
+    }
+    val FullscreenExit = outline("FullscreenExit") {
+        moveTo(9f, 4f); lineTo(9f, 9f); lineTo(4f, 9f)
+        moveTo(15f, 4f); lineTo(15f, 9f); lineTo(20f, 9f)
+        moveTo(4f, 15f); lineTo(9f, 15f); lineTo(9f, 20f)
+        moveTo(20f, 15f); lineTo(15f, 15f); lineTo(15f, 20f)
     }
     val Pip = outline("Pip") {
         moveTo(4f, 7f); lineTo(20f, 7f); lineTo(20f, 17f); lineTo(4f, 17f); close()

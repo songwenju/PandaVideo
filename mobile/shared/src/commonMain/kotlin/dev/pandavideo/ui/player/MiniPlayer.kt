@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,6 +21,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,6 +46,7 @@ internal fun MiniPlayerBar(model: AppState, onOpen: () -> Unit) {
     val session = model.session ?: return
     val player by session.controller.state.collectAsState()
     val playback by session.state.collectAsState()
+    var sleepTimerRequested by remember(session) { mutableStateOf(false) }
     val info = playback.info
     val cover = model.playingCatalog?.let(model::poster)
         ?: model.playingSearch?.let(model::poster)
@@ -77,15 +82,13 @@ internal fun MiniPlayerBar(model: AppState, onOpen: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 if (!episode.isNullOrBlank() || playback.audioOnly) Text(
-                    if (playback.ended) "${playback.countdownSeconds} 秒后下一集"
-                    else if (playback.audioOnly) listOfNotNull("音频模式", episode?.takeIf { it.isNotBlank() }).joinToString(" · ")
+                    if (playback.audioOnly) listOfNotNull("音频模式", episode?.takeIf { it.isNotBlank() }).joinToString(" · ")
                     else episode.orEmpty(),
                     fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
-            if (playback.ended) TextButton({ session.dismissEnded() }) { Text("取消") }
             IconButton(
                 onClick = {
                     model.platform.haptics.tick()
@@ -94,7 +97,7 @@ internal fun MiniPlayerBar(model: AppState, onOpen: () -> Unit) {
                             onOpen()
                             session.setPlaybackVisible(true)
                         }
-                        session.controller.play()
+                        if (playback.finished) session.retry() else session.controller.play()
                     }
                 },
                 modifier = Modifier.size(44.dp),
@@ -106,6 +109,11 @@ internal fun MiniPlayerBar(model: AppState, onOpen: () -> Unit) {
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
+            if (!playback.audioOnly && session.controller.capabilities.audioOnly && info != null) PlayerAudioButton(
+                session = session,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                onOpen = { model.platform.haptics.tick() },
+            )
             IconButton(
                 onClick = {
                     model.platform.haptics.tick()
@@ -119,5 +127,20 @@ internal fun MiniPlayerBar(model: AppState, onOpen: () -> Unit) {
                 )
             }
         }
+        if (playback.audioOnly) FlowRow(
+            Modifier.fillMaxWidth().padding(start = 60.dp, end = 12.dp, bottom = 8.dp),
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
+        ) {
+            AudioReturnButton(dark = false) {
+                model.platform.haptics.tick()
+                returnToVideo(session, onOpen)
+            }
+            PlayerSleepTimerButton(model, onClick = {
+                model.platform.haptics.tick()
+                sleepTimerRequested = true
+            }, dark = false)
+        }
     }
+    if (sleepTimerRequested) PlayerSleepTimerSheet(model) { sleepTimerRequested = false }
 }

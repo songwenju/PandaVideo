@@ -78,6 +78,7 @@ class NavigationConfigTest {
             listOf(
                 "tv" to "热播剧集", "movie" to "热门电影", "variety" to "热门综艺",
                 "animation" to "热门动漫", "documentary" to "纪录片",
+                "xiaopin" to "小品",
             ),
             HotTypeOptions,
         )

@@ -14,6 +14,7 @@ import dev.pandavideo.ui.player.TapZone
 import dev.pandavideo.ui.player.adjustedLevel
 import dev.pandavideo.ui.player.dragSeekPosition
 import dev.pandavideo.ui.player.quickSeekPosition
+import dev.pandavideo.ui.player.returnToVideo
 import dev.pandavideo.ui.player.tapZone
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,7 +34,7 @@ class PlaybackTest {
         val seeks = mutableListOf<Long>()
         val audioModes = mutableListOf<Boolean>()
         override fun setAudioOnly(enabled: Boolean) { audioModes += enabled }
-        override fun load(source: MediaSource) { loads += source; state.value = PlayerState(source.id, if (source.autoplay) PlayerPhase.Playing else PlayerPhase.Paused, wantsPlay = source.autoplay) }
+        override fun load(source: MediaSource) { loads += source; state.value = PlayerState(source.id, if (source.autoplay) PlayerPhase.Playing else PlayerPhase.Paused, wantsPlay = source.autoplay, firstFrameRendered = true) }
         override fun play() { state.value = state.value.copy(wantsPlay = true) }
         override fun pause() { state.value = state.value.copy(wantsPlay = false) }
         override fun seekTo(position: Long) { seeks += position }
@@ -46,22 +47,133 @@ class PlaybackTest {
         assertNull(nextEpisode(info("a2")))
         assertNull(nextEpisode(info("missing")))
     }
-    @Test fun audioTogglePreservesTimelineRateAndPausedIntentWithoutReload() = runTest {
+    @Test fun lineSelectionImmediatelyLoadsSameEpisodeAndPreservesPausedPosition() = runTest {
         val player = FakePlayer()
-        val session = PlaybackSession({ info() }, player, backgroundScope, 1.5f)
-        session.load(PlayerRequest(page = "https://page")); runCurrent()
-        player.state.value = player.state.value.copy(position = 42_000, duration = 120_000, rate = 1.5f)
+        val session = PlaybackSession({
+            info(it.episode ?: "a2").copy(url = "https://media/${it.episode ?: "a2"}.mp4")
+        }, player, backgroundScope)
+        session.load(PlayerRequest(page = "https://page", episode = "a2")); runCurrent()
+        player.state.value = player.state.value.copy(position = 35_000, duration = 120_000)
         player.pause(); runCurrent()
-        session.setAudioOnly(true)
-        session.setAudioOnly(false)
+        session.selectLine(2)
+        assertTrue(session.state.value.loading)
         runCurrent()
-        assertEquals(listOf(true, false), player.audioModes)
-        assertEquals(1, player.loads.size)
-        assertEquals(42_000L, player.state.value.position)
-        assertEquals(1.5f, player.state.value.rate)
-        assertFalse(player.state.value.wantsPlay)
-        assertTrue(player.seeks.isEmpty())
+        assertEquals("b2", session.state.value.info?.selected)
+        assertEquals("https://media/b2.mp4", player.loads.last().url)
+        assertFalse(player.loads.last().autoplay)
+        player.state.value = player.state.value.copy(duration = 120_000); runCurrent()
+        assertEquals(35_000L, player.seeks.last())
+        session.selectLine(2); session.selectLine(99); runCurrent()
+        assertEquals(2, player.loads.size)
         session.close()
+    }
+    @Test fun lineSelectionMatchesLabelBeforePositionInReorderedSources() = runTest {
+        val reordered = listOf(episodes[0], episodes[2], episodes[3], episodes[1])
+        val player = FakePlayer()
+        val session = PlaybackSession({
+            info(it.episode ?: "a2").copy(episodes = reordered)
+        }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a2")); runCurrent()
+        session.selectLine(2); runCurrent()
+        assertEquals("b2", session.state.value.info?.selected)
+        session.close()
+    }
+    @Test fun lineSelectionFallsBackToOrdinalForLanguageLabelsAndFirstForShortLines() = runTest {
+        val variants = listOf(Episode("a1", "国语", 1), Episode("a2", "粤语", 1),
+            Episode("b1", "高清国语", 2), Episode("b2", "高清粤语", 2), Episode("c1", "正片", 3))
+        val player = FakePlayer()
+        val session = PlaybackSession({
+            info(it.episode ?: "a2").copy(episodes = variants)
+        }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a2")); runCurrent()
+        player.state.value = player.state.value.copy(position = 35_000, duration = 120_000); runCurrent()
+        session.selectLine(2); runCurrent()
+        assertEquals("b2", session.state.value.info?.selected)
+        player.state.value = player.state.value.copy(duration = 120_000); runCurrent()
+        assertEquals(35_000L, player.seeks.last())
+        val seekCount = player.seeks.size
+        session.selectLine(3); runCurrent()
+        assertEquals("c1", session.state.value.info?.selected)
+        player.state.value = player.state.value.copy(duration = 120_000); runCurrent()
+        assertEquals(seekCount, player.seeks.size)
+        session.close()
+    }
+    @Test fun repeatedPendingLineSelectionDoesNotRestartResolution() = runTest {
+        val player = FakePlayer()
+        var attempts = 0
+        val session = PlaybackSession({
+            if (it.episode == "b2") { attempts++; delay(1_000) }
+            info(it.episode ?: "a2")
+        }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a2")); runCurrent()
+        session.selectLine(2)
+        val pendingId = session.state.value.mediaId
+        repeat(5) { session.selectLine(2) }
+        runCurrent()
+        advanceTimeBy(500); runCurrent()
+        repeat(5) { session.selectLine(2); runCurrent() }
+        assertEquals(pendingId, session.state.value.mediaId)
+        assertEquals(1, attempts)
+        advanceTimeBy(500); runCurrent()
+        assertFalse(session.state.value.loading)
+        assertEquals("b2", session.state.value.info?.selected)
+        assertEquals(2, player.loads.size)
+        session.close()
+    }
+    @Test fun failedLineSelectionCanBeRetriedWithSameLine() = runTest {
+        val player = FakePlayer()
+        var attempts = 0
+        val session = PlaybackSession({
+            if (it.episode == "b2" && ++attempts == 1) error("offline")
+            info(it.episode ?: "a2")
+        }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a2")); runCurrent()
+        session.selectLine(2); runCurrent()
+        assertNotNull(session.state.value.error)
+        assertFalse(session.state.value.loading)
+        session.selectLine(2); runCurrent()
+        assertEquals(2, attempts)
+        assertNull(session.state.value.error)
+        assertEquals("b2", session.state.value.info?.selected)
+        session.close()
+    }
+    @Test fun rapidLineSelectionCancelsEarlierSourceResolution() = runTest {
+        val variants = episodes + Episode("c2", "2", 3)
+        val player = FakePlayer()
+        val session = PlaybackSession({
+            if (it.episode == "b2") delay(1_000)
+            info(it.episode ?: "a2").copy(episodes = variants)
+        }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a2")); runCurrent()
+        session.selectLine(2); runCurrent()
+        session.selectLine(3); runCurrent()
+        advanceTimeBy(1_500); runCurrent()
+        assertEquals("c2", session.state.value.info?.selected)
+        assertEquals(2, player.loads.size)
+        session.close()
+    }
+    @Test fun audioTogglePreservesTimelineRateAndPausedIntentWithoutReload() = runTest {
+        // Audio entry now stays in either the visible inline player or the hidden mini bar.
+        // Exercise both permission states so mode switching cannot resume a paused session.
+        for (visible in listOf(true, false)) {
+            val player = FakePlayer()
+            val session = PlaybackSession({ info() }, player, backgroundScope, 1.5f)
+            session.load(PlayerRequest(page = "https://page")); runCurrent()
+            player.state.value = player.state.value.copy(position = 42_000, duration = 120_000, rate = 1.5f)
+            player.pause(); runCurrent()
+            session.setPlaybackVisible(visible)
+            session.setAudioOnly(true)
+            assertTrue(session.state.value.audioOnly)
+            session.setAudioOnly(false)
+            runCurrent()
+            assertEquals(listOf(true, false), player.audioModes)
+            assertEquals(1, player.loads.size)
+            assertEquals(42_000L, player.state.value.position)
+            assertEquals(1.5f, player.state.value.rate)
+            assertFalse(player.state.value.wantsPlay)
+            assertTrue(player.seeks.isEmpty())
+            session.close()
+        }
     }
     @Test fun audioModeAllowsPendingLoadAndNextEpisodeWhileHidden() = runTest {
         val player = FakePlayer()
@@ -74,13 +186,37 @@ class PlaybackTest {
         assertTrue(session.state.value.audioOnly)
         player.state.value = player.state.value.copy(phase = PlayerPhase.Ended, wantsPlay = false)
         runCurrent()
-        assertTrue(session.state.value.ended)
-        session.advanceToNext()
+        assertTrue(session.state.value.loading)
         advanceTimeBy(1000); runCurrent()
         assertEquals("a2", session.state.value.info?.selected)
         assertTrue(session.state.value.audioOnly)
         assertTrue(player.loads.last().autoplay)
         session.close()
+    }
+    @Test fun returningFromMinimizedAudioOpensVideoBeforeRevokingAudioPermission() = runTest {
+        for (paused in listOf(false, true)) {
+            val player = FakePlayer()
+            val session = PlaybackSession({ info() }, player, backgroundScope)
+            session.load(PlayerRequest(page = "https://page")); runCurrent()
+            player.state.value = player.state.value.copy(position = 42_000, duration = 120_000, rate = 1.5f)
+            if (paused) player.pause()
+            session.setAudioOnly(true)
+            session.setPlaybackVisible(false); runCurrent()
+            var opened = false
+            returnToVideo(session) {
+                assertTrue(session.state.value.audioOnly, "Navigation must precede removal of audio permission")
+                opened = true
+            }
+            runCurrent()
+            assertTrue(opened)
+            assertFalse(session.state.value.audioOnly)
+            assertEquals(!paused, player.state.value.wantsPlay)
+            assertEquals(42_000L, player.state.value.position)
+            assertEquals(1.5f, player.state.value.rate)
+            assertEquals(1, player.loads.size)
+            assertTrue(player.seeks.isEmpty())
+            session.close()
+        }
     }
     @Test fun switchingBackToVideoWhileHiddenPausesAndRejectsRemotePlay() = runTest {
         val player = FakePlayer()
@@ -138,6 +274,7 @@ class PlaybackTest {
         val recovery = requests.single { it.rejectedMedia.isNotEmpty() }
         assertEquals("a1", recovery.episode)
         assertEquals(setOf(info().url), recovery.rejectedMedia)
+        assertEquals(setOf("a1"), recovery.rejectedEpisodes)
         assertFalse(player.loads.last().autoplay)
         player.state.value = player.state.value.copy(duration = 120_000)
         runCurrent()
@@ -160,6 +297,7 @@ class PlaybackTest {
         assertNotNull(session.state.value.error)
         session.retry(); runCurrent()
         assertTrue(requests.last().rejectedMedia.isEmpty())
+        assertTrue(requests.last().rejectedEpisodes.isEmpty())
         assertEquals(4, player.loads.size)
         session.close()
     }
@@ -224,20 +362,23 @@ class PlaybackTest {
         assertFalse(player.state.value.wantsPlay)
         session.close()
     }
-    @Test fun hidingCancelsCountdownAndRejectsHiddenRemotePlay() = runTest {
+    @Test fun hidingAfterImmediateAdvanceRejectsHiddenRemotePlay() = runTest {
         val player = FakePlayer()
-        val session = PlaybackSession({ info() }, player, backgroundScope)
+        val session = PlaybackSession({ info(it.episode ?: "a1") }, player, backgroundScope)
         session.load(PlayerRequest(page = "https://page"))
         runCurrent()
         player.state.value = player.state.value.copy(phase = PlayerPhase.Ended, wantsPlay = false)
         runCurrent()
-        assertTrue(session.state.value.ended)
+        assertEquals("a2", session.state.value.info?.selected)
         session.setPlaybackVisible(false)
+        // Navigation and a later remote command are separate dispatcher turns. Let the
+        // collector observe the pause before toggling back, rather than conflating both.
+        runCurrent()
         player.play()
         runCurrent()
         assertFalse(player.state.value.wantsPlay)
         advanceTimeBy(6000); runCurrent()
-        assertEquals(1, player.loads.size)
+        assertEquals(2, player.loads.size)
         assertFalse(session.state.value.ended)
         session.close()
     }
@@ -277,33 +418,99 @@ class PlaybackTest {
         player.state.value = player.state.value.copy(duration = 120_000, position = 15_000)
         runCurrent()
         assertEquals(listOf(12_000L), player.seeks)
-        advanceTimeBy(5_000); runCurrent()
-        assertEquals("a1" to 15_000L, saves.last())
+        advanceTimeBy(30_000); runCurrent()
+        assertTrue(saves.isEmpty(), "Playback must not checkpoint on a timer")
         session.select(episodes[2])
         runCurrent()
-        assertEquals(2, saves.size)
+        assertEquals(listOf("a1" to 15_000L), saves)
         assertTrue(saves.all { it.first == "a1" })
+        player.state.value = player.state.value.copy(duration = 120_000, position = 42_000)
+        runCurrent()
+        session.close()
+        assertEquals("a2" to 42_000L, saves.last())
+    }
+    @Test fun automaticResumeLoadsWithoutWaitingAndSurvivesLateReadiness() = runTest {
+        val player = FakePlayer()
+        val session = PlaybackSession({ info("a2") }, player, backgroundScope,
+            resumePosition = { 12_000 })
+        session.load(PlayerRequest())
+        runCurrent()
+        assertFalse(session.state.value.loading)
+        assertEquals(12_000L, player.loads.single().startPosition)
+        player.state.value = player.state.value.copy(duration = 120_000)
+        runCurrent()
+        assertEquals(listOf(12_000L), player.seeks)
+        session.retry()
+        runCurrent()
+        assertEquals(12_000L, player.loads.last().startPosition)
         session.close()
     }
-    @Test fun countdownAdvancesWithoutUiAndCanBeCancelled() = runTest {
+    @Test fun closingBeforeResolutionFinishesNeverLoadsNativeMedia() = runTest {
+        val player = FakePlayer()
+        val resolved = CompletableDeferred<PlaybackInfo>()
+        val session = PlaybackSession({ resolved.await() }, player, backgroundScope,
+            resumePosition = { 12_000 })
+        session.load(PlayerRequest())
+        runCurrent()
+        session.close()
+        resolved.complete(info("a2"))
+        runCurrent()
+        assertTrue(player.loads.isEmpty())
+    }
+    @Test fun firstSuccessfulLoadAfterResolverRetryAutomaticallyResumesSavedPosition() = runTest {
+        val player = FakePlayer()
+        var attempts = 0
+        val session = PlaybackSession({
+            if (++attempts == 1) error("Temporary source failure")
+            info("a2")
+        }, player, backgroundScope, resumePosition = { 12_000 })
+        session.load(PlayerRequest())
+        runCurrent()
+        assertNotNull(session.state.value.error)
+        session.retry()
+        runCurrent()
+        assertEquals(12_000L, player.loads.single().startPosition)
+        session.close()
+    }
+    @Test fun pageExitCheckpointsWithoutStoppingAudioPlayback() = runTest {
+        val player = FakePlayer()
+        val saves = mutableListOf<Long>()
+        val session = PlaybackSession({ info("a2") }, player, backgroundScope,
+            checkpoint = { _, state -> saves += state.position })
+        session.load(PlayerRequest())
+        runCurrent()
+        session.setAudioOnly(true)
+        player.state.value = player.state.value.copy(duration = 120_000, position = 27_000)
+        runCurrent()
+        advanceTimeBy(30_000); runCurrent()
+        assertTrue(saves.isEmpty())
+        session.saveOnExit()
+        session.setPlaybackVisible(false)
+        assertEquals(listOf(27_000L), saves)
+        assertTrue(player.state.value.wantsPlay)
+        session.close()
+    }
+    @Test fun completionImmediatelyAdvancesWithoutUiAndIgnoresStaleEnd() = runTest {
         val player = FakePlayer()
         val session = PlaybackSession({ info(it.episode ?: "a1") }, player, backgroundScope)
         session.load(PlayerRequest())
         runCurrent()
-        player.state.value = player.state.value.copy(phase = PlayerPhase.Ended)
+        val first = player.state.value.copy(phase = PlayerPhase.Ended, duration = 120_000)
+        player.state.value = first
         runCurrent()
-        assertEquals(5, session.state.value.countdownSeconds)
-        advanceTimeBy(2_000); runCurrent()
-        assertEquals(3, session.state.value.countdownSeconds)
-        session.dismissEnded()
-        advanceTimeBy(5_000); runCurrent()
-        assertEquals(1, player.loads.size)
-        session.retry(); runCurrent()
-        player.state.value = player.state.value.copy(phase = PlayerPhase.Ended)
-        runCurrent()
-        advanceTimeBy(5_000); runCurrent()
         assertEquals("a2", session.state.value.info?.selected)
-        assertEquals(3, player.loads.size)
+        assertEquals(2, player.loads.size)
+        assertTrue(player.loads.last().autoplay)
+        assertFalse(session.state.value.ended)
+        val second = player.state.value
+        player.state.value = first
+        runCurrent()
+        assertEquals(2, player.loads.size, "Old native completion must not advance twice")
+        player.state.value = second
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Ended)
+        runCurrent()
+        assertEquals("a2", session.state.value.info?.selected)
+        assertEquals(2, player.loads.size, "The last episode must not wrap to the first")
         session.close()
     }
     @Test fun verticalDragLevelsClampToRange() {
@@ -329,11 +536,13 @@ class PlaybackTest {
         assertEquals(TapZone.Right, tapZone(600f, 900))
         assertEquals(TapZone.Right, tapZone(899f, 900))
     }
-    @Test fun fullscreenDoubleTapTogglesPlaybackAtEveryHorizontalPosition() {
-        for (width in listOf(0, 390, 844, 1024)) {
-            for (fraction in listOf(0f, 0.2f, 0.5f, 0.8f, 1f)) {
-                assertEquals(TapZone.Center, tapZone(width * fraction, width, fullscreen = true))
-            }
+    @Test fun fullscreenDoubleTapKeepsEdgeSeekAndCenterPlaybackAtEveryFrameSize() {
+        for (width in listOf(390, 844, 1024, 1920)) {
+            assertEquals(TapZone.Left, tapZone(0f, width))
+            assertEquals(TapZone.Left, tapZone(width * 0.2f, width))
+            assertEquals(TapZone.Center, tapZone(width * 0.5f, width))
+            assertEquals(TapZone.Right, tapZone(width * 0.8f, width))
+            assertEquals(TapZone.Right, tapZone(width.toFloat(), width))
         }
     }
     @Test fun quickSeekMovesTenSecondsAndClamps() {
@@ -341,6 +550,12 @@ class PlaybackTest {
         assertEquals(10_000L, quickSeekPosition(20_000L, 120_000L, forward = false))
         assertEquals(0L, quickSeekPosition(5_000L, 120_000L, forward = false))
         assertEquals(120_000L, quickSeekPosition(115_000L, 120_000L, forward = true))
+    }
+    @Test fun fiveSecondSeekClampsToMediaBounds() {
+        assertEquals(25_000L, quickSeekPosition(20_000L, 120_000L, forward = true, distanceMs = 5_000L))
+        assertEquals(15_000L, quickSeekPosition(20_000L, 120_000L, forward = false, distanceMs = 5_000L))
+        assertEquals(0L, quickSeekPosition(2_000L, 120_000L, forward = false, distanceMs = 5_000L))
+        assertEquals(120_000L, quickSeekPosition(118_000L, 120_000L, forward = true, distanceMs = 5_000L))
     }
     @Test fun horizontalDragSeekScalesWithFrameWidthAndClamps() {
         val duration = 100_000L
@@ -362,6 +577,78 @@ class PlaybackTest {
         // A degenerate frame width must not divide by zero.
         assertEquals(100_000f, dragSeekPosition(0L, null, duration, 1f, 0), eps)
     }
+    @Test fun sleepAfterCurrentPausesHiddenAudioBeforeAutoAdvanceAndIsOneShot() = runTest {
+        val player = FakePlayer()
+        var completed = 0
+        val session = PlaybackSession({ info(it.episode ?: "a1") }, player, backgroundScope,
+            onPauseAtEnd = { completed++ })
+        session.load(PlayerRequest(page = "https://page")); runCurrent()
+        session.setAudioOnly(true)
+        session.setPlaybackVisible(false)
+        session.setPauseAtEnd(true)
+        val first = player.loads.single().id
+        player.state.value = PlayerState(first, PlayerPhase.Ended, duration = 120_000, position = 120_000)
+        runCurrent()
+        advanceTimeBy(6_000); runCurrent()
+        assertEquals(1, player.loads.size)
+        assertEquals(1, completed)
+        assertFalse(session.state.value.ended)
+        assertFalse(player.state.value.wantsPlay)
+        player.state.value = player.state.value.copy(position = 119_999)
+        runCurrent()
+        assertEquals(1, completed, "Repeated native end events must not complete the timer twice")
+        session.select(episodes[2]); runCurrent()
+        assertTrue(player.loads.last().autoplay, "The consumed timer must not block explicit playback")
+        session.close()
+    }
+
+    @Test fun sleepAfterCurrentArmedAfterAdvancePausesTheNewCurrentEpisode() = runTest {
+        val player = FakePlayer()
+        var completed = 0
+        val session = PlaybackSession({ info(it.episode ?: "a1") }, player, backgroundScope,
+            onPauseAtEnd = { completed++ })
+        session.load(PlayerRequest(page = "https://page")); runCurrent()
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Ended)
+        runCurrent()
+        assertEquals("a2", session.state.value.info?.selected)
+        session.setPauseAtEnd(true)
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Ended)
+        runCurrent()
+        advanceTimeBy(6_000); runCurrent()
+        assertEquals(1, completed)
+        assertEquals(2, player.loads.size)
+        assertFalse(session.state.value.ended)
+        session.close()
+    }
+
+    @Test fun staleEndCannotConsumeSleepActionAfterAnEpisodeSwitch() = runTest {
+        val player = FakePlayer()
+        var completed = 0
+        val session = PlaybackSession({ info(it.episode ?: "a1") }, player, backgroundScope,
+            onPauseAtEnd = { completed++ })
+        session.load(PlayerRequest(page = "https://page")); runCurrent()
+        val oldId = player.loads.single().id
+        session.setPauseAtEnd(true)
+        session.select(episodes[2]); runCurrent()
+        val currentId = player.loads.last().id
+        player.state.value = PlayerState(oldId, PlayerPhase.Ended); runCurrent()
+        assertEquals(0, completed)
+        player.state.value = PlayerState(currentId, PlayerPhase.Ended); runCurrent()
+        assertEquals(1, completed, "The final episode must also consume the timer")
+        session.close()
+    }
+
+    @Test fun sleepTimerExpiryDuringResolutionPreventsLateAutoplay() = runTest {
+        val player = FakePlayer()
+        val session = PlaybackSession({ delay(2_000); info() }, player, backgroundScope)
+        session.load(PlayerRequest(page = "https://page")); runCurrent()
+        session.pauseForSleepTimer()
+        advanceTimeBy(2_000); runCurrent()
+        assertFalse(player.loads.single().autoplay)
+        assertFalse(player.state.value.wantsPlay)
+        session.close()
+    }
+
     @Test fun duplicateAndStaleEndEventsDoNotSkipEpisodes() = runTest {
         val player = FakePlayer()
         val requests = mutableListOf<PlayerRequest>()

@@ -2,9 +2,9 @@ package dev.pandavideo.ui.player
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,8 +17,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.pandavideo.core.platform.PlatformServices
 import dev.pandavideo.core.player.*
+import dev.pandavideo.ui.common.Accent
 import dev.pandavideo.ui.common.NavigationIcons
-import dev.pandavideo.ui.common.CompactActionButtonPadding
 import dev.pandavideo.ui.common.playbackTime
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -260,104 +260,124 @@ internal class DlnaCasting(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DlnaDevicePicker(casting: DlnaCasting, source: MediaSource?, platform: PlatformServices) {
     if (!casting.picker) return
     var ip by remember { mutableStateOf("") }
     var manual by remember { mutableStateOf(false) }
+    var help by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
-    AlertDialog(
+
+    // LAN devices are the first content, so opening the sheet already answers what can be
+    // cast to. Setup instructions and the manual IP fallback stay collapsed behind one link.
+    ModalBottomSheet(
         onDismissRequest = casting::dismissPicker,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         containerColor = colors.surface,
-        titleContentColor = colors.onSurface,
-        textContentColor = colors.onSurfaceVariant,
-        title = {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(casting::dismissPicker, enabled = !casting.busy) {
-                    Icon(NavigationIcons.Back, "返回")
+    ) {
+        Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("投屏到电视", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        when {
+                            casting.busy -> "正在连接电视…"
+                            casting.searching -> "正在搜索同一 Wi-Fi 下的设备…"
+                            casting.devices.isEmpty() -> "暂未发现可投屏设备"
+                            else -> "点选电视即可在电视上播放"
+                        },
+                        fontSize = 13.sp, color = colors.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                 }
-                Text(if (casting.searching) "正在搜索投屏设备…" else "选择投屏设备",
-                    Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 IconButton({ casting.search() }, enabled = !casting.busy && !casting.searching) {
-                    Icon(NavigationIcons.Refresh, "重新搜索", tint = colors.primary)
+                    if (casting.searching) CircularProgressIndicator(
+                        Modifier.size(20.dp), color = Accent, strokeWidth = 2.dp)
+                    else Icon(NavigationIcons.Refresh, "重新搜索", tint = Accent)
                 }
             }
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("没有找到想投的设备？", Modifier.align(Alignment.CenterHorizontally),
-                    color = colors.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                Text("1. 检查电视 / 盒子是否已开机", fontSize = 13.sp)
-                Text("2. 请确认电视或盒子与手机连接同一 Wi-Fi", fontSize = 13.sp)
-                if (platform.nativeCastingSupported) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("3. iOS 用户请开启", fontSize = 13.sp)
-                        TextButton(platform::openAppSettings, enabled = !casting.busy,
-                            contentPadding = CompactActionButtonPadding) {
-                            Text("本地网络权限", fontSize = 13.sp, color = colors.primary)
-                            Spacer(Modifier.width(6.dp))
-                            Icon(NavigationIcons.Chevron, null, Modifier.size(14.dp), tint = colors.primary)
+            Column(Modifier.padding(top = 14.dp).heightIn(max = 320.dp)
+                .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                casting.devices.forEach { device ->
+                    Surface(shape = RoundedCornerShape(14.dp), color = colors.surfaceVariant) {
+                        Row(Modifier.fillMaxWidth()
+                            .clickable(enabled = !casting.busy && source != null) {
+                                source?.let { casting.connect(device, it) }
+                            }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Icon(NavigationIcons.Cast, null, Modifier.size(22.dp), tint = Accent)
+                            Text(device.name, Modifier.padding(start = 12.dp).weight(1f),
+                                color = colors.onSurface, maxLines = 2, fontSize = 15.sp,
+                                overflow = TextOverflow.Ellipsis)
+                            Icon(NavigationIcons.Chevron, null, Modifier.size(16.dp),
+                                tint = colors.onSurfaceVariant)
                         }
                     }
-                } else {
-                    Text("3. 请开启电视或盒子的投屏功能", fontSize = 13.sp)
-                }
-                if (casting.searching) Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(Modifier.size(18.dp), color = colors.primary, strokeWidth = 2.dp)
-                    Text("正在搜索投屏设备…", Modifier.padding(start = 8.dp), fontSize = 13.sp)
                 }
                 if (platform.nativeCastingSupported && !casting.busy) {
-                    Surface(shape = RoundedCornerShape(12.dp), color = colors.surfaceVariant) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    Surface(shape = RoundedCornerShape(14.dp), color = colors.surfaceVariant) {
+                        Row(Modifier.fillMaxWidth()
+                            .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
                             verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("AirPlay 投屏", color = colors.onSurface, fontSize = 14.sp)
-                                Text("点击右侧图标搜索 AirPlay 设备", fontSize = 11.sp)
+                                Text("AirPlay 投屏", color = colors.onSurface, fontSize = 15.sp)
+                                Text("点击右侧图标打开系统面板", fontSize = 12.sp,
+                                    color = colors.onSurfaceVariant)
                             }
-                            platform.CastingButton(Modifier.size(44.dp), colors.primary)
+                            platform.CastingButton(Modifier.size(44.dp), Accent)
                         }
                     }
                 }
-                Text("DLNA 投屏", color = colors.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                Text("请在电视或盒子上开启 DLNA 投屏；AirPlay 和 Chromecast 设备不显示在此列表中。",
-                    fontSize = 11.sp)
-                Surface(shape = RoundedCornerShape(12.dp), color = colors.surfaceVariant) {
-                    Column(Modifier.fillMaxWidth()) {
-                        LazyColumn(Modifier.heightIn(max = 220.dp)) {
-                            items(casting.devices, key = { it.id }) { device ->
-                                Row(Modifier.fillMaxWidth()
-                                    .clickable(enabled = !casting.busy && source != null) {
-                                        source?.let { casting.connect(device, it) }
-                                    }
-                                    .padding(horizontal = 12.dp, vertical = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(NavigationIcons.Cast, null, Modifier.size(22.dp), tint = colors.primary)
-                                    Text(device.name, Modifier.padding(start = 10.dp).weight(1f),
-                                        color = colors.onSurface, maxLines = 2, fontSize = 14.sp)
-                                    Icon(NavigationIcons.Chevron, null, Modifier.size(16.dp),
-                                        tint = colors.onSurfaceVariant)
-                                }
-                            }
-                        }
-                        if (!casting.searching && casting.devices.isEmpty()) {
-                            Text("暂未发现支持 DLNA 的设备，可开启电视投屏后重试，或按电视 IP 搜索。",
-                                Modifier.padding(12.dp), fontSize = 13.sp)
-                        }
-                    }
-                }
-                if (casting.busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = colors.primary)
-                casting.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
-                TextButton({ manual = !manual }, enabled = !casting.busy) { Text("按电视 IP 搜索") }
-                if (manual) {
-                    OutlinedTextField(ip, { ip = it }, singleLine = true, label = { Text("电视 IP 地址") },
-                        supportingText = { Text("可在电视「网络设置」中查看") }, modifier = Modifier.fillMaxWidth())
-                    TextButton({ casting.search(ip.trim()) }, enabled = !casting.busy && !casting.searching) { Text("搜索此电视") }
-                }
-                Text("电视需支持当前视频格式；部分线路可能因电视解码或站点访问限制无法播放。", fontSize = 11.sp)
             }
-        },
-        confirmButton = {},
-    )
+            if (casting.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 12.dp),
+                color = Accent)
+            casting.error?.let {
+                Text(it, color = colors.error, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
+            }
+            TextButton(onClick = { help = !help },
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)) {
+                Text(if (help) "收起帮助" else "没有找到设备？", fontSize = 13.sp, color = colors.primary)
+            }
+            if (help) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("· 确认电视或盒子已开机，并与手机连接同一 Wi-Fi",
+                        fontSize = 12.sp, color = colors.onSurfaceVariant)
+                    Text("· 在电视或盒子上开启 DLNA 投屏后，点击右上角刷新",
+                        fontSize = 12.sp, color = colors.onSurfaceVariant)
+                    if (platform.nativeCastingSupported) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("· AirPlay 需要", fontSize = 12.sp, color = colors.onSurfaceVariant)
+                            TextButton(platform::openAppSettings,
+                                contentPadding = PaddingValues(horizontal = 2.dp)) {
+                                Text("本地网络权限", fontSize = 12.sp, color = Accent)
+                            }
+                        }
+                    }
+                    Text("· 电视需支持当前视频格式，部分线路可能因解码受限",
+                        fontSize = 12.sp, color = colors.onSurfaceVariant)
+                    TextButton({ manual = !manual },
+                        contentPadding = PaddingValues(horizontal = 2.dp)) {
+                        Text(if (manual) "取消输入 IP" else "按电视 IP 搜索", fontSize = 12.sp, color = Accent)
+                    }
+                    if (manual) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(ip, { ip = it }, singleLine = true,
+                                placeholder = { Text("电视 IP，例如 192.168.1.100", fontSize = 13.sp) },
+                                modifier = Modifier.weight(1f))
+                            TextButton({ casting.search(ip.trim()) },
+                                enabled = !casting.busy && !casting.searching) {
+                                Text("搜索", fontSize = 13.sp, color = Accent)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

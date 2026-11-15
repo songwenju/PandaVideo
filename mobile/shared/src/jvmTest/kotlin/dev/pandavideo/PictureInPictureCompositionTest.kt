@@ -26,6 +26,63 @@ class PictureInPictureCompositionTest {
         override fun onClear() = Unit
     }
 
+    @Test fun audioVideoRoundTripsRetainTheHostAndRemoveTheAudioBackdrop() = runTest {
+        val clock = BroadcastFrameClock()
+        val recomposer = Recomposer(coroutineContext + clock)
+        val composition = Composition(EmptyApplier(), recomposer)
+        val job = launch(clock) { recomposer.runRecomposeAndApplyChanges() }
+        val audio = mutableStateOf(false)
+        var hosts = 0
+        var releases = 0
+        var backdrops = 0
+        var removedBackdrops = 0
+        try {
+            composition.setContent {
+                PersistentVideoContent(
+                    pipMode = false,
+                    surface = {
+                        DisposableEffect(Unit) {
+                            hosts++
+                            onDispose { releases++ }
+                        }
+                    },
+                    overlays = {},
+                    audioOnly = audio.value,
+                    audioBackdrop = {
+                        DisposableEffect(Unit) {
+                            backdrops++
+                            onDispose { removedBackdrops++ }
+                        }
+                    },
+                )
+            }
+            repeat(3) { cycle ->
+                audio.value = true
+                Snapshot.sendApplyNotifications()
+                runCurrent()
+                clock.sendFrame(cycle * 2L)
+                runCurrent()
+                assertEquals(cycle + 1, backdrops)
+                assertEquals(1, hosts)
+                assertEquals(0, releases, "Audio mode must detach output without releasing the host")
+                audio.value = false
+                Snapshot.sendApplyNotifications()
+                runCurrent()
+                clock.sendFrame(cycle * 2L + 1)
+                runCurrent()
+                assertEquals(cycle + 1, removedBackdrops, "Returning to video removes audio artwork")
+                assertEquals(1, hosts, "Video mode reuses the original native view")
+                assertEquals(0, releases)
+            }
+            composition.dispose()
+            assertEquals(1, releases)
+        } finally {
+            composition.dispose()
+            recomposer.cancel()
+            job.cancel()
+        }
+    }
+
     @Test fun pipEntryAndExitKeepTheNativeSurfaceAlive() = runTest {
         val clock = BroadcastFrameClock()
         val recomposer = Recomposer(coroutineContext + clock)

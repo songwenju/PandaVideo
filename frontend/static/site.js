@@ -23,7 +23,7 @@
       <svg class="site-icon" viewBox="0 0 64 64" fill="none" aria-hidden="true">
         <defs><linearGradient id="brandGradient" x1="10" y1="3" x2="54" y2="62" gradientUnits="userSpaceOnUse"><stop stop-color="#FF7B3E"/><stop offset="1" stop-color="#4ECDC4"/></linearGradient></defs>
         <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#brandGradient)"/>
-        <g transform="translate(6.4 6.4) scale(0.8)">
+        <g transform="translate(3.84 3.84) scale(0.88)">
         <path d="M23 18A8 8 0 1 1 7 18A8 8 0 1 1 23 18ZM57 18A8 8 0 1 1 41 18A8 8 0 1 1 57 18Z" fill="#242A33"/>
         <path d="M19 18A4 4 0 1 1 11 18A4 4 0 1 1 19 18ZM53 18A4 4 0 1 1 45 18A4 4 0 1 1 53 18Z" fill="#56606A"/>
         <path d="M32 15C18 15 10 25 10 37C10 50 20 55 32 55C44 55 54 50 54 37C54 25 46 15 32 15Z" fill="#FFFCF5"/>

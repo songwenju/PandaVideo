@@ -40,6 +40,7 @@ import dev.pandavideo.ui.common.NavigationIcons
 internal fun EditProfileDialog(
     profile: UserProfile, platform: PlatformServices,
     onDismiss: () -> Unit, onSave: (String, String, String) -> Unit,
+    accountNickname: String? = null,
 ) {
     var nickname by remember { mutableStateOf(profile.nickname) }
     var bio by remember { mutableStateOf(profile.bio) }
@@ -66,6 +67,7 @@ internal fun EditProfileDialog(
         ProfileEditorCard(
             profile = profile.copy(nickname = nickname, bio = bio, avatar = avatar),
             platform = platform, picking = picking, error = error,
+            accountNickname = accountNickname,
             onNickname = { nickname = it.take(12) }, onBio = { bio = it.take(40) },
             onPick = { picking = true; error = false; pick() },
             onDismiss = onDismiss,
@@ -84,6 +86,7 @@ internal fun ProfileEditorCard(
     profile: UserProfile, platform: PlatformServices, picking: Boolean, error: Boolean,
     onNickname: (String) -> Unit, onBio: (String) -> Unit,
     onPick: () -> Unit, onDismiss: () -> Unit, onSave: () -> Unit,
+    accountNickname: String? = null,
 ) {
     val nickname = profile.nickname
     val bio = profile.bio
@@ -153,9 +156,11 @@ internal fun ProfileEditorCard(
                         if (error) Text("图片读取失败，请重新选择", fontSize = 12.sp,
                             color = colors.error, modifier = Modifier.padding(top = 8.dp))
                         Spacer(Modifier.height(20.dp))
-                        ProfileFieldHeading("昵称", nickname.length, 12)
+                        if (accountNickname == null) ProfileFieldHeading("昵称", nickname.length, 12)
+                        else Text("豆瓣昵称", fontWeight = FontWeight.SemiBold)
                         TextField(
-                            value = nickname, onValueChange = onNickname,
+                            value = accountNickname ?: nickname, onValueChange = onNickname,
+                            readOnly = accountNickname != null,
                             placeholder = { Text("输入你的昵称", fontSize = 14.sp) },
                             singleLine = true, enabled = !picking,
                             modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
@@ -165,6 +170,9 @@ internal fun ProfileEditorCard(
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                             keyboardActions = KeyboardActions(onNext = { focus.moveFocus(FocusDirection.Down) }),
                         )
+                        if (accountNickname != null) Text("昵称来自豆瓣账号",
+                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 6.dp))
                         Spacer(Modifier.height(18.dp))
                         ProfileFieldHeading("个人简介", bio.length, 40)
                         TextField(

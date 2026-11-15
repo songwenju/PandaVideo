@@ -10,6 +10,24 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 
 class PomoSourceTest {
+    @Test fun searchMergesJourneyToWestMirrorsAndSortsByRating() = runTest {
+        val body = """{"code":200,"data":{
+            "西瓜":[
+                {"id":1,"name":"西游记1986","year":"1986","area":"大陆","douban_score":"9.8"},
+                {"id":2,"name":"西游记2010","year":"2010","area":"大陆","douban_score":"6.0"},
+                {"id":3,"name":"西游记续集","year":"2000","area":"大陆","douban_score":"9.1"}],
+            "暴风":[
+                {"id":4,"name":"西游记86版","year":"1986","area":"中国大陆","douban_score":"9.8"},
+                {"id":5,"name":"西游记2010","year":"2010","area":"大陆","douban_score":"6.0"}]}}"""
+        val repo = ContentRepository(HttpClient(mockEngine { respond(body) }))
+        try {
+            val result = repo.search("西游记", "all")
+            assertEquals(listOf("西游记1986", "西游记续集", "西游记2010"), result.results.map { it.title })
+            assertEquals(pomoPage, result.results.first().detailUrl)
+            assertEquals(3, result.sources.sumOf { it.count })
+        } finally { repo.close() }
+    }
+
     @Test fun sparseSearchMetadataDoesNotMarkAnUnresolvedResourceUnavailable() {
         val body = """{"code":200,"data":{"西瓜":[{"id":86058,"name":"欢迎来龙餐馆",
             "year":"2026","remarks":"HD中字","cover":"https://image.test/poster.jpg"}]}}"""
@@ -36,8 +54,26 @@ class PomoSourceTest {
             respond(if (request.url.parameters["type"] == "auto_search") search else pomoDetailFixture)
         }))
         try {
-            assertEquals(2, repo.search("测试电影", "movie").results.size)
+            assertEquals(1, repo.search("测试电影", "movie").results.size)
             assertEquals(pomoPage, repo.resolve(CatalogItem("测试电影", "", "2020")).pageUrl)
+        } finally { repo.close() }
+    }
+
+    @Test fun searchDedupDoesNotRemoveCatalogMatchingFallbackMirrors() = runTest {
+        val body = pomoSearch(pomoRow("测试电影"))
+            .replace("\"data\":{", "\"data\":{\"暴风\":[${pomoRow("测试电影", 2)}],")
+        val repo = ContentRepository(HttpClient(mockEngine { request ->
+            respond(when (request.url.parameters["type"]) {
+                "auto_search" -> body
+                else -> if (request.url.parameters["site"] == "西瓜") """{"code":200,"data":{"name":"测试电影","routes":[]}}"""
+                    else pomoDetailFixture
+            })
+        }))
+        try {
+            assertEquals(1, repo.search("测试电影", "movie").results.size)
+            val match = repo.resolve(CatalogItem("测试电影", "", "2020"))
+            assertTrue(match.playable)
+            assertEquals("暴风", io.ktor.http.Url(match.pageUrl).parameters["site"])
         } finally { repo.close() }
     }
 
@@ -84,5 +120,67 @@ class PomoSourceTest {
         restored.importBackup(backup)
         assertEquals(store.progress.value, restored.progress.value)
         assertFails { UserStore(FakeStorage()).importBackup(backup.replace("#1-1", "#0-1")) }
+    }
+
+    @Test fun failedMovieLineIsSkippedEvenWhenParserRotatesItsUrl() = runTest {
+        val detail = """{"code":200,"data":{"name":"测试电影","routes":[
+            {"name":"线路1","episodes":[{"name":"国语","url":"https://media/primary.m3u8"}]},
+            {"name":"线路2","episodes":[{"name":"HD","url":"https://media/backup.m3u8"}]}]}}"""
+        val parsed = mutableListOf<String>()
+        val repo = ContentRepository(HttpClient(mockEngine { request ->
+            if (request.url.parameters["type"] == "auto_detail") respond(detail) else {
+                parsed += request.url.parameters["url"].orEmpty()
+                respond(pomoMedia("new-token"))
+            }
+        }))
+        try {
+            val result = repo.player(PlayerRequest(page = pomoPage, episode = "$pomoPage#1-0",
+                rejectedMedia = setOf("https://media/stream.m3u8?signature=old-token"),
+                rejectedEpisodes = setOf("$pomoPage#1-0")))
+            assertEquals("$pomoPage#2-0", result.selected)
+            assertEquals(listOf("https://media/backup.m3u8"), parsed)
+        } finally { repo.close() }
+    }
+
+    @Test fun failedSeriesEpisodeNeverFallsIntoAnUnrelatedSingletonLine() = runTest {
+        val parsed = mutableListOf<String>()
+        val repo = ContentRepository(HttpClient(mockEngine { request ->
+            when (request.url.parameters["type"]) {
+                "auto_detail" -> respond(pomoDetailFixture)
+                "parse" -> {
+                    parsed += request.url.parameters["url"].orEmpty()
+                    respond(pomoMedia())
+                }
+                else -> respond("""{"code":200,"data":[]}""")
+            }
+        }))
+        try {
+            assertFailsWith<ApiError> {
+                repo.player(PlayerRequest(page = pomoPage, episode = "$pomoPage#1-1",
+                    rejectedEpisodes = setOf("$pomoPage#1-1")))
+            }
+            assertTrue(parsed.isEmpty())
+        } finally { repo.close() }
+    }
+
+    @Test fun singletonEpisodeRoutesStillRequireTheSameEpisode() = runTest {
+        val detail = """{"code":200,"data":{"name":"测试剧","routes":[
+            {"name":"线路1","episodes":[{"name":"第 2 集","url":"https://media/2.m3u8"}]},
+            {"name":"线路2","episodes":[{"name":"第 3 集","url":"https://media/3.m3u8"}]}]}}"""
+        var parses = 0
+        val repo = ContentRepository(HttpClient(mockEngine { request ->
+            when (request.url.parameters["type"]) {
+                "auto_detail" -> respond(detail)
+                "parse" -> { parses++; respond(pomoMedia()) }
+                else -> respond("""{"code":200,"data":[]}""")
+            }
+        }))
+        try {
+            assertFailsWith<ApiError> {
+                repo.player(PlayerRequest(page = pomoPage, episode = "$pomoPage#1-0",
+                    rejectedEpisodes = setOf("$pomoPage#1-0")))
+            }
+            assertEquals(0, parses)
+        } finally { repo.close() }
     }
 }

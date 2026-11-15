@@ -1,6 +1,7 @@
 package dev.pandavideo.data.user
 
 import dev.pandavideo.core.platform.KeyValueStorage
+import dev.pandavideo.core.model.Episode
 import dev.pandavideo.core.platform.currentEpochMillis
 import dev.pandavideo.data.repository.ContentParsers
 import dev.pandavideo.data.repository.isWebUrl
@@ -42,6 +43,8 @@ data class HistoryTitle(
     @SerialName("position_ms") val positionMs: Long = 0,
     @SerialName("duration_ms") val durationMs: Long = 0,
     @SerialName("updated_at") val updatedAt: Long = 0,
+    /** Catalog score retained independently of the currently loaded homepage category. */
+    val rating: Double? = null,
 )
 
 /**
@@ -62,8 +65,9 @@ data class EpisodeProgress(
 fun progressFraction(position: Long, duration: Long): Float =
     if (duration <= 0L) 0f else (position.toFloat() / duration).coerceIn(0f, 1f)
 
-/** Owns the local profile, favorites and playback history with JSON persistence. */
-class UserStore(private val storage: KeyValueStorage) {
+/** Owns profile and favorites in preferences, with durable SQLite playback data on mobile hosts. */
+class UserStore(private val storage: KeyValueStorage, databasePath: String? = null) {
+    private val playbackStorage: KeyValueStorage = databasePath?.let { PlaybackDatabase(it, storage) } ?: storage
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     private val profileMutable = MutableStateFlow(loadProfile())
@@ -75,6 +79,36 @@ class UserStore(private val storage: KeyValueStorage) {
     private val progressMutable = MutableStateFlow(loadProgress())
     /** Per-title episode progress, each list newest-first; keyed by playable page url. */
     val progress = progressMutable.asStateFlow()
+    private var episodeLists: Map<String, List<Episode>> = try {
+        playbackStorage.getString(KEY_EPISODES)?.let {
+            json.decodeFromString<Map<String, List<Episode>>>(it)
+        }.orEmpty()
+    } catch (_: Exception) { emptyMap() }
+
+    /** Remembers ordered source-line episodes without persisting expiring media URLs. */
+    fun rememberEpisodes(pageUrl: String, episodes: List<Episode>) {
+        if (pageUrl.isBlank() || episodes.isEmpty() || episodeLists[pageUrl] == episodes) return
+        val known = (historyMutable.value.map { it.pageUrl } + pageUrl).toSet()
+        episodeLists = (episodeLists + (pageUrl to episodes)).filterKeys { it in known }
+        playbackStorage.putString(KEY_EPISODES, json.encodeToString(episodeLists))
+    }
+
+    /**
+     * Chooses the last unfinished episode, or the successor of a completed episode in its line.
+     * The final episode remains replayable; an absent/reordered source list never guesses by name.
+     */
+    fun continueEpisode(pageUrl: String, episodes: List<Episode> = episodeLists[pageUrl].orEmpty()): String? {
+        // Selecting an episode is persisted immediately, before the five-second checkpoint.
+        // Reopening during that interval must not fall back to an older episode's progress.
+        val historyPath = historyMutable.value.firstOrNull { it.pageUrl == pageUrl }
+            ?.episodePath?.takeIf { it.isNotBlank() }
+        val latest = if (historyPath != null) progressFor(pageUrl, historyPath) ?: return historyPath
+            else latestProgress(pageUrl) ?: return null
+        if (!latest.finished) return latest.episodePath
+        val selected = episodes.firstOrNull { it.path == latest.episodePath } ?: return latest.episodePath
+        val line = episodes.filter { it.line == selected.line }
+        return line.getOrNull(line.indexOf(selected) + 1)?.path ?: latest.episodePath
+    }
 
     /** Exports local profile, favorites and resume data without parental credentials or media URLs. */
     fun exportBackup(): String = json.encodeToString(UserBackup(
@@ -128,7 +162,7 @@ class UserStore(private val storage: KeyValueStorage) {
         historyMutable.value = history
         progressMutable.value = progress
         storage.putString(KEY_PROFILE, json.encodeToString(backup.profile))
-        persistFavorites(); persistHistory(); persistProgress()
+        persistFavorites(); persistPlayback()
     }
 
     /**
@@ -188,9 +222,12 @@ class UserStore(private val storage: KeyValueStorage) {
     fun recordHistory(
         title: String, pageUrl: String, cover: String, year: String, episode: String = "",
         episodePath: String = "", positionMs: Long? = null, durationMs: Long? = null,
+        rating: Double? = null,
     ) {
         if (pageUrl.isBlank()) return
         val previous = historyMutable.value.find { it.pageUrl == pageUrl }
+        val changedEpisode = episodePath.isNotBlank() && episodePath != previous?.episodePath
+        val selectedProgress = if (changedEpisode) progressFor(pageUrl, episodePath) else null
         val merged = HistoryTitle(
             title = title.ifBlank { previous?.title.orEmpty() },
             pageUrl = pageUrl,
@@ -198,9 +235,10 @@ class UserStore(private val storage: KeyValueStorage) {
             year = year.ifBlank { previous?.year.orEmpty() },
             episode = episode.ifBlank { previous?.episode.orEmpty() },
             episodePath = episodePath.ifBlank { previous?.episodePath.orEmpty() },
-            positionMs = positionMs ?: previous?.positionMs ?: 0,
-            durationMs = durationMs ?: previous?.durationMs ?: 0,
+            positionMs = positionMs ?: if (changedEpisode) selectedProgress?.position ?: 0 else previous?.positionMs ?: 0,
+            durationMs = durationMs ?: if (changedEpisode) selectedProgress?.duration ?: 0 else previous?.durationMs ?: 0,
             updatedAt = currentEpochMillis(),
+            rating = rating ?: previous?.rating,
         )
         historyMutable.value = (listOf(merged) + historyMutable.value.filter { it.pageUrl != pageUrl })
             .take(HISTORY_LIMIT)
@@ -219,7 +257,24 @@ class UserStore(private val storage: KeyValueStorage) {
     }
 
     /**
-     * Persists a throttled playback position. Episodes watched past [FINISH_THRESHOLD] are
+     * Fills missing display metadata without changing history order, timestamps or progress.
+     * Deleted records stay deleted, and known years/scores are retained across source refreshes.
+     */
+    fun fillHistoryMetadata(pageUrl: String, year: String, rating: Double?, cover: String = "") {
+        val previous = historyMutable.value.find { it.pageUrl == pageUrl } ?: return
+        if (previous.year.isNotBlank() && year.isNotBlank() && previous.year != year) return
+        val updated = previous.copy(
+            year = previous.year.ifBlank { year },
+            rating = previous.rating ?: rating?.takeIf { it.isFinite() && it in 0.0..10.0 },
+            cover = previous.cover.ifBlank { cover.takeIf(::isWebUrl).orEmpty() },
+        )
+        if (updated == previous) return
+        historyMutable.value = historyMutable.value.map { if (it.pageUrl == pageUrl) updated else it }
+        persistHistory()
+    }
+
+    /**
+     * Persists an explicit playback checkpoint. Episodes watched past [FINISH_THRESHOLD] are
      * marked finished and reset to zero. The matching history entry is refreshed and moved to
      * the front so "continue watching" stays ordered by recency. Returns the stored record.
      */
@@ -247,8 +302,8 @@ class UserStore(private val storage: KeyValueStorage) {
             historyMutable.value.any { it.pageUrl == key } || favoritesMutable.value.any { it.pageUrl == key }
         }
         progressMutable.value = titles.filterKeys { it in known }.takeKeysByRecency(PROGRESS_TITLE_LIMIT)
-        persistProgress()
         touchHistory(pageUrl, record)
+        persistPlayback()
         return record
     }
 
@@ -271,23 +326,24 @@ class UserStore(private val storage: KeyValueStorage) {
             updatedAt = currentEpochMillis(),
         )
         historyMutable.value = (listOf(merged) + current.filter { it.pageUrl != pageUrl }).take(HISTORY_LIMIT)
-        persistHistory()
     }
 
     fun removeHistory(pageUrl: String) {
         historyMutable.value = historyMutable.value.filterNot { it.pageUrl == pageUrl }
-        persistHistory()
-        if (progressMutable.value.containsKey(pageUrl)) {
-            progressMutable.value = progressMutable.value - pageUrl
-            persistProgress()
-        }
+        progressMutable.value = progressMutable.value - pageUrl
+        episodeLists = episodeLists - pageUrl
+        persistPlayback(includeEpisodes = true)
     }
 
     fun clearHistory() {
         historyMutable.value = emptyList()
-        storage.remove(KEY_HISTORY)
         progressMutable.value = emptyMap()
-        storage.remove(KEY_PROGRESS)
+        episodeLists = emptyMap()
+        if (playbackStorage is PlaybackDatabase) persistPlayback(includeEpisodes = true) else {
+            playbackStorage.remove(KEY_HISTORY)
+            playbackStorage.remove(KEY_PROGRESS)
+            playbackStorage.remove(KEY_EPISODES)
+        }
     }
 
     private fun persistFavorites() {
@@ -295,11 +351,17 @@ class UserStore(private val storage: KeyValueStorage) {
     }
 
     private fun persistHistory() {
-        storage.putString(KEY_HISTORY, json.encodeToString(historyMutable.value))
+        playbackStorage.putString(KEY_HISTORY, json.encodeToString(historyMutable.value))
     }
 
-    private fun persistProgress() {
-        storage.putString(KEY_PROGRESS, json.encodeToString(progressMutable.value))
+    private fun persistPlayback(includeEpisodes: Boolean = false) {
+        val values = buildMap {
+            put(KEY_HISTORY, json.encodeToString(historyMutable.value))
+            put(KEY_PROGRESS, json.encodeToString(progressMutable.value))
+            if (includeEpisodes) put(KEY_EPISODES, json.encodeToString(episodeLists))
+        }
+        if (playbackStorage is PlaybackDatabase) playbackStorage.writeSnapshot(values)
+        else values.forEach { (key, value) -> playbackStorage.putString(key, value) }
     }
 
     private fun loadProfile(): UserProfile = try {
@@ -317,7 +379,7 @@ class UserStore(private val storage: KeyValueStorage) {
     }
 
     private fun loadHistory(): List<HistoryTitle> = try {
-        storage.getString(KEY_HISTORY)?.let { json.decodeFromString<List<HistoryTitle>>(it) }.orEmpty()
+        playbackStorage.getString(KEY_HISTORY)?.let { json.decodeFromString<List<HistoryTitle>>(it) }.orEmpty()
             .map { it.copy(pageUrl = titlePage(it.pageUrl)) }.sortedByDescending { it.updatedAt }
             .distinctBy { it.pageUrl }.take(HISTORY_LIMIT)
     } catch (_: Exception) {
@@ -325,7 +387,7 @@ class UserStore(private val storage: KeyValueStorage) {
     }
 
     private fun loadProgress(): Map<String, List<EpisodeProgress>> = try {
-        storage.getString(KEY_PROGRESS)?.let {
+        playbackStorage.getString(KEY_PROGRESS)?.let {
             json.decodeFromString<Map<String, List<EpisodeProgress>>>(it)
         }.orEmpty().canonicalProgress().takeKeysByRecency(PROGRESS_TITLE_LIMIT)
     } catch (_: Exception) {
@@ -346,14 +408,18 @@ class UserStore(private val storage: KeyValueStorage) {
         private const val KEY_FAVORITES = "favorites"
         private const val KEY_HISTORY = "history"
         private const val KEY_PROGRESS = "progress"
+        private const val KEY_EPISODES = "episodes"
     }
 }
 
 /** Migrates old episode-page title keys to one stable detail-page key. */
-private fun titlePage(value: String): String = try {
-    val page = ContentParsers.pageUrl(value)
-    if (page.startsWith("https://pomo.mom/") || page.startsWith("https://japi.zxfmj.com/"))
-        page.substringBefore('#') else {
+internal fun titlePage(value: String): String = try {
+    // Synthetic episode fragments identify one detail response on these providers. Strip
+    // them before strict request validation so old/imported keys share the same identity.
+    if (value.startsWith("https://pomo.mom/") || value.startsWith("https://japi.zxfmj.com/"))
+        value.substringBefore('#')
+    else {
+        val page = ContentParsers.pageUrl(value)
         val id = Regex("/vod(?:detail|play)/(\\d+)").find(page)!!.groupValues[1]
         "https://huolot.com/voddetail/$id.html"
     }

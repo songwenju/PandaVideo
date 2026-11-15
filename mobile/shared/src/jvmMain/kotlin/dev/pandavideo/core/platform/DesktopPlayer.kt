@@ -227,7 +227,7 @@ class DesktopPlayer(initialVolume: Float = 1f) : PlayerController {
 }
 
 @Composable
-actual fun PlayerSurface(controller: PlayerController, modifier: Modifier, zoom: Float) {
+actual fun PlayerSurface(controller: PlayerController, modifier: Modifier, zoom: Float, audioOnly: Boolean, fillViewport: Boolean) {
     val player = controller as DesktopPlayer
     SwingPanel(
         factory = { player.swingPanel() },

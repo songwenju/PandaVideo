@@ -7,9 +7,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 
-/** Rejects degenerate pointer distances and keeps the picture between its original size and 4x. */
+/** Rejects degenerate pointer distances and keeps the picture between half its original size and 4x. */
 internal fun videoZoom(current: Float, multiplier: Float): Float =
-    if (multiplier.isFinite() && multiplier > 0f) (current * multiplier).coerceIn(1f, 4f)
+    if (multiplier.isFinite() && multiplier > 0f) (current * multiplier).coerceIn(0.5f, 4f)
     else current
 
 /**

@@ -1,5 +1,6 @@
 package dev.pandavideo.ui.common
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -7,9 +8,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -18,8 +21,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import coil3.compose.AsyncImage
+import coil3.compose.asPainter
 import coil3.ImageLoader
 import coil3.disk.DiskCache
+import coil3.memory.MemoryCache
 import coil3.request.CachePolicy
 import androidx.compose.runtime.staticCompositionLocalOf
 import okio.Path.Companion.toPath
@@ -92,7 +97,10 @@ internal fun defaultPosterRequest(
 }
 
 @Composable
-internal fun Poster(url: String?, title: String, modifier: Modifier) {
+internal fun Poster(
+    url: String?, title: String, modifier: Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+) {
     val context = LocalPlatformContext.current
     val imageLoader = LocalPosterImageLoader.current ?: coil3.SingletonImageLoader.get(context)
     val defaultRequest = remember(context) { defaultPosterRequest(context) }
@@ -103,18 +111,47 @@ internal fun Poster(url: String?, title: String, modifier: Modifier) {
     val request = remember(url, data, context) {
         posterRequest(context, url, data)
     }
+    // Coil resolves every request asynchronously, even a memory-cache hit. Draw artwork that is
+    // already decoded in this process on the first frame so returning to a list keeps the
+    // posters the user has seen instead of flashing a placeholder over unchanged content.
+    val cached = remember(url, imageLoader) {
+        url?.takeIf { it.isNotBlank() }?.let { key ->
+            imageLoader.memoryCache?.get(MemoryCache.Key(key))?.image
+        }
+    }
+    val cachedPainter = cached?.let { image -> remember(image, context) { image.asPainter(context) } }
+    var failed by remember(url) { mutableStateOf(false) }
     Box(modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
-        // Keep bundled brand artwork underneath the remote image so missing URLs,
-        // loading requests and failed downloads all retain a visible offline cover.
+        if (cachedPainter != null) {
+            Image(
+                painter = cachedPainter,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = contentScale,
+            )
+        }
+        // Brand artwork is an offline cover, not a loading indicator: show it only when the row
+        // has no poster at all or the request failed.
+        if (url.isNullOrBlank() || failed) {
+            AsyncImage(
+                model = defaultRequest,
+                imageLoader = imageLoader,
+                contentDescription = "$title 默认海报",
+                modifier = Modifier.align(Alignment.Center).size(48.dp).alpha(0.24f),
+                contentScale = ContentScale.Fit,
+                error = fallback,
+                fallback = fallback,
+            )
+        }
         AsyncImage(
-            model = defaultRequest,
+            model = request,
             imageLoader = imageLoader,
-            contentDescription = "$title 默认海报",
-            modifier = Modifier.align(Alignment.Center).size(48.dp).alpha(0.24f),
-            contentScale = ContentScale.Fit,
-            error = fallback,
-            fallback = fallback,
+            contentDescription = title,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = contentScale,
+            // The transient null-data frame before the bundled bytes resolve is not a failure.
+            onError = { if (data != null) failed = true },
+            onSuccess = { failed = false },
         )
-        AsyncImage(model = request, imageLoader = imageLoader, contentDescription = title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
     }
 }

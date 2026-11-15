@@ -8,6 +8,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.json.Json
 import dev.pandavideo.resources.Res
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -19,11 +21,84 @@ internal data class StoredCatalog(val page: CatalogPage, val savedAt: Long)
 internal data class StoredResponse(val payload: String, val savedAt: Long)
 internal data class ContentCacheUsage(val bytes: Long = 0, val entries: Long = 0)
 
+/** Verified website exports, shared by new and existing installations. */
+@Serializable
+internal data class BundledCatalogSnapshot(val pages: Map<String, BundledCatalogEntry>)
+@Serializable
+internal data class BundledCatalogEntry(val page: CatalogPage, val savedAt: Long)
+
+/** Subject-ID keyed corrections keep catalog metadata separate from provider identities. */
+@Serializable
+internal data class BundledPlaybackIdentities(val subjects: Map<String, BundledPlaybackIdentity>)
+@Serializable
+internal data class BundledPlaybackIdentity(
+    val year: String,
+    @SerialName("is_series") val isSeries: Boolean,
+    /** Stable Pomo site:id pair, present only after manifest and segment verification. */
+    val pomo: String = "",
+)
+
 /** Persistent catalog pages; each film is stored as an ordered row in a SQLite transaction. */
 @OptIn(ExperimentalResourceApi::class)
 class CatalogDatabase(private val path: String, private val initializeFromBundle: Boolean = false) {
     private val lock = Mutex()
     private val json = Json { ignoreUnknownKeys = true }
+    private var bundledTop250: List<CatalogPage>? = null
+    private var bundledCategories: BundledCatalogSnapshot? = null
+    private var bundledPlaybackIdentities: BundledPlaybackIdentities? = null
+
+    /** Applies shipped identity corrections to cached cards without replacing refreshed pages. */
+    internal suspend fun playbackIdentity(item: CatalogItem): CatalogItem {
+        if (!initializeFromBundle) return item
+        val identities = bundledPlaybackIdentities ?: json.decodeFromString<BundledPlaybackIdentities>(
+            Res.readBytes("files/catalog-playback-identities.json").decodeToString(),
+        ).also { bundledPlaybackIdentities = it }
+        val identity = DoubanArtwork.subjectId(item.url)?.let { identities.subjects[it] }
+        if (identity != null) {
+            val provider = identity.pomo.split(':')
+            val page = if (provider.size == 2) ContentParsers.playbackPageOrNull(
+                PomoSource.address("auto_detail", "site" to provider[0], "id" to provider[1]),
+            ).orEmpty() else ""
+            return item.copy(
+                year = identity.year,
+                isSeries = identity.isSeries,
+                playbackPageUrl = page.ifBlank { item.playbackPageUrl },
+            )
+        }
+        val snapshot = bundledCategories ?: json.decodeFromString<BundledCatalogSnapshot>(
+            Res.readBytes("files/catalog-categories.json").decodeToString(),
+        ).also { bundledCategories = it }
+        val source = snapshot.pages.values.asSequence().flatMap { it.page.items.asSequence() }
+            .firstOrNull { it.url == item.url } ?: return item
+        return item.copy(
+            year = item.year.ifBlank { source.year },
+            playbackPageUrl = source.playbackPageUrl.ifBlank { item.playbackPageUrl },
+            isSeries = item.isSeries ?: source.isSeries,
+        )
+    }
+
+    /** Reads the complete offline ranking and fills metadata omitted by older installations. */
+    internal suspend fun top250Snapshot(): List<CatalogPage> {
+        val bundle = if (initializeFromBundle) bundledTop250
+            ?: json.decodeFromString<List<CatalogPage>>(Res.readBytes("files/top250-categories.json").decodeToString())
+                .also { bundledTop250 = it }
+        else emptyList()
+        val metadata = bundle.flatMap { it.items }.associateBy { it.url }
+        return (0..225 step 25).mapNotNull { start ->
+            val stored = read("top250:$start")?.page
+            val page = stored ?: bundle.find { it.start == start } ?: return@mapNotNull null
+            page.copy(items = page.items.map { item ->
+                val source = metadata[item.url] ?: return@map item
+                // Fill only absent fields. New upstream metadata and rating/artwork remain
+                // authoritative; cached subject identity must match before enrichment.
+                item.copy(
+                    genres = item.genres.ifEmpty { source.genres },
+                    countries = item.countries.ifEmpty { source.countries },
+                    kind = if (item.genres.isEmpty()) source.kind else item.kind,
+                )
+            })
+        }
+    }
 
     private suspend fun <T> access(block: (SQLiteConnection) -> T): T = withContext(Dispatchers.Default) {
         lock.withLock {
@@ -50,7 +125,35 @@ class CatalogDatabase(private val path: String, private val initializeFromBundle
         }
     }
 
-    internal suspend fun read(key: String): StoredCatalog? = access { db ->
+    internal suspend fun read(key: String): StoredCatalog? {
+        val stored = readStored(key)
+        if (stored != null || !initializeFromBundle) return stored
+        // Existing installations already have a database, so seed copying cannot add
+        // newly shipped categories. Fill missing keys from JSON without overwriting
+        // refreshed SQLite pages. Bundle timestamps preserve normal cache expiration.
+        val snapshot = bundledCategories ?: json.decodeFromString<BundledCatalogSnapshot>(
+            Res.readBytes("files/catalog-categories.json").decodeToString(),
+        ).also { bundledCategories = it }
+        return snapshot.pages[key]?.let { StoredCatalog(it.page, it.savedAt) }
+    }
+
+    /** Reads existing catalog ratings once for optional search enrichment, without networking. */
+    internal suspend fun searchCatalogSnapshot(): List<CatalogItem> = access { db ->
+        db.prepare("SELECT i.item, p.key FROM catalog_items i JOIN catalog_pages p ON p.key = i.page_key ORDER BY p.saved_at DESC, i.position").use { statement ->
+            buildList {
+                while (statement.step()) {
+                    runCatching { json.decodeFromString<CatalogItem>(statement.getText(0)) }
+                        .getOrNull()?.let {
+                            // Legacy seed TV rows omit kind. Their owning page restores it,
+                            // just as browse() does, including for optional detail requests.
+                            add(if (statement.getText(1).startsWith("tv:")) it.copy(kind = "tv") else it)
+                        }
+                }
+            }.distinctBy { it.url }
+        }
+    }
+
+    private suspend fun readStored(key: String): StoredCatalog? = access { db ->
         val metadata = db.prepare("SELECT metadata, saved_at FROM catalog_pages WHERE key = ?").use { statement ->
             statement.bindText(1, key)
             if (!statement.step()) null else statement.getText(0) to statement.getLong(1)

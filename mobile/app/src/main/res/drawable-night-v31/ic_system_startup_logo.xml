@@ -1,0 +1,8 @@
+<!-- Match the light splash's 88dp artwork inside Android 12+'s 288dp canvas.
+     The transparent margin keeps the mascot inside the system mask. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_startup_logo"
+    android:insetLeft="34.72%"
+    android:insetTop="34.72%"
+    android:insetRight="34.72%"
+    android:insetBottom="34.72%" />

@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
@@ -30,8 +34,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -47,6 +49,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -54,6 +57,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -80,6 +84,7 @@ internal fun SearchPage(
     onQueryChange: (String) -> Unit,
     submit: () -> Unit, searchTitle: (String) -> Unit, reset: () -> Unit,
     back: () -> Unit, play: (SearchItem) -> Unit,
+    openActor: (dev.pandavideo.core.model.ActorRef) -> Unit = {},
 ) {
     val state by model.search.collectAsState()
     val focus = LocalFocusManager.current
@@ -99,49 +104,81 @@ internal fun SearchPage(
     }
     Column(
         Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
-            .navigationBarsPadding().imePadding().nestedScroll(dismissKeyboard),
+            .imePadding().nestedScroll(dismissKeyboard),
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 12.dp),
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 6.dp, top = 6.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = back) {
                 Icon(NavigationIcons.Back, contentDescription = "返回")
             }
-            TextField(
-                value = query, onValueChange = onQueryChange,
+            SearchField(
+                query = query, onQueryChange = onQueryChange,
                 modifier = Modifier.weight(1f).focusRequester(requester),
-                placeholder = { Text("搜索影视名称", fontSize = 14.sp) },
-                singleLine = true, shape = RoundedCornerShape(14.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                ),
-                leadingIcon = { Icon(NavigationIcons.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                trailingIcon = {
-                    if (query.isNotEmpty()) IconButton(onClick = {
-                        reset()
-                        requester.requestFocus()
-                    }) { Icon(NavigationIcons.Close, contentDescription = "清除搜索内容", modifier = Modifier.size(18.dp)) }
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { submit() }),
+                onSearch = submit,
+                onClear = { reset(); requester.requestFocus() },
             )
-            TextButton(onClick = submit, enabled = query.isNotBlank()) {
-                Text("搜索", fontSize = 16.sp, fontWeight = FontWeight.Bold,
-                    color = if (query.isNotBlank()) MaterialTheme.colorScheme.onSurface
+            TextButton(
+                onClick = submit, enabled = query.isNotBlank(),
+                contentPadding = PaddingValues(horizontal = 10.dp),
+            ) {
+                Text("搜索", fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                    color = if (query.isNotBlank()) Accent
                         else MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         if (showingResults) {
+            ActorSearchResults(model, openActor)
             SearchResults(state, query, model, Modifier.weight(1f),
                 onBack = { reset(); requester.requestFocus() }, retry = submit, play = play)
         } else {
-            SearchSuggestions(model, query, Modifier.weight(1f), searchTitle)
+            SearchSuggestions(model, query, Modifier.weight(1f).navigationBarsPadding(), searchTitle)
         }
     }
+}
+
+/** Compact pill search field with fixed height and icon slots that hug the content. */
+@Composable
+private fun SearchField(
+    query: String, onQueryChange: (String) -> Unit, modifier: Modifier,
+    onSearch: () -> Unit, onClear: () -> Unit,
+) {
+    BasicTextField(
+        value = query, onValueChange = onQueryChange, modifier = modifier, singleLine = true,
+        textStyle = TextStyle(fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface),
+        cursorBrush = SolidColor(Accent),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+        decorationBox = { innerTextField ->
+            Row(
+                Modifier.height(42.dp).clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(start = 12.dp, end = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    NavigationIcons.Search, contentDescription = null, modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(7.dp))
+                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                    if (query.isEmpty()) Text(
+                        "搜索影视或演员", fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+                    )
+                    innerTextField()
+                }
+                if (query.isNotEmpty()) IconButton(onClear, Modifier.size(28.dp)) {
+                    Icon(
+                        NavigationIcons.Close, contentDescription = "清除搜索内容",
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+    )
 }
 
 @Composable
@@ -149,6 +186,10 @@ internal fun SearchResults(
     state: SearchState, query: String, model: AppState, modifier: Modifier,
     onBack: () -> Unit, retry: () -> Unit, play: (SearchItem) -> Unit,
 ) {
+    // Keep the system inset inside the scrollable content: padding the entire page
+    // clips a partially visible poster/button above an otherwise empty safe area.
+    // Search has no bottom navigation bar, so it needs only the inset and row spacing.
+    val bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 16.dp
     Column(modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
@@ -181,7 +222,7 @@ internal fun SearchResults(
             )
             else -> LazyColumn(
                 Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 100.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = bottomPadding),
             ) {
                 if (result.errors.isNotEmpty()) item {
                     Row(
@@ -221,8 +262,15 @@ private fun SearchRow(item: SearchItem, query: String, model: AppState, play: (S
                     .padding(horizontal = 6.dp, vertical = 2.dp),
             ) { Text(item.remark, color = Color.White, fontSize = 10.sp, maxLines = 1) }
         }
-        Column(Modifier.weight(1f).height(134.dp)) {
+        // Font metrics vary across platforms and accessibility sizes. Reserve the poster
+        // height as a minimum instead of squeezing the final button into a fixed column.
+        Column(Modifier.weight(1f).heightIn(min = 134.dp)) {
             HighlightedTitle(item.title, query, Modifier.fillMaxWidth())
+            item.rating?.let { rating ->
+                Spacer(Modifier.height(6.dp))
+                Text("豆瓣 $rating 分", fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface)
+            }
             val tags = listOfNotNull(
                 item.genre.substringBefore("、").takeIf { it.isNotBlank() },
                 item.region.takeIf { it.isNotBlank() },

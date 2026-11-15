@@ -1,135 +1,136 @@
-# Graph Report - PandaVideo  (2026-11-12)
+# Graph Report - PandaVideo  (2026-11-15)
 
 ## Corpus Check
-- 161 files · ~97,040 words
-- Verdict: corpus is large enough that graph structure adds value.
-- Unclassified: 35 file(s) not represented in the graph (top: .xml 13, (none) 5, .css 4)
+- Large corpus: 257 files · ~623,606 words. Semantic extraction will be expensive (many Claude tokens). Consider running on a subfolder.
 
 ## Summary
-- 2328 nodes · 5237 edges · 150 communities (103 shown, 47 thin omitted)
-- Extraction: 95% EXTRACTED · 5% INFERRED · 0% AMBIGUOUS · INFERRED: 257 edges (avg confidence: 0.85)
+- 3040 nodes · 7662 edges · 161 communities (107 shown, 54 thin omitted)
+- Extraction: 93% EXTRACTED · 7% INFERRED · 0% AMBIGUOUS · INFERRED: 564 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `519f070d`
+- Built from commit: `6dfda3c5`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - Panda Video App Symbols
-- Navigation Config Test Symbols
-- test douban Symbols
-- Fullscreen Tests Symbols
-- Pico Fullscreen Window Symbols
-- Android Seek Preview Symbols
-- test download workflow Symbols
-- Android Fullscreen Device Test Symbols
-- test app Symbols
-- test app Symbols
-- Top Tab Refresh Gesture Test Symbols
-- test catalog Symbols
-- Playback Test Symbols
-- Offline Downloads Symbols
 - Content Repository Test Symbols
-- App State Test Symbols
-- server Symbols
-- Android Dlna Device Test Symbols
-- Desktop Player Symbols
-- Profile Screen Symbols
-- Profile Screen Symbols
-- Player Seek Gesture Test Symbols
-- Modern Player Symbols
-- App State Test Symbols
-- Modern Player Symbols
-- Modern Player Symbols
-- Audio Mode Device Test Symbols
-- Cache Maintenance Test Symbols
+- test douban Symbols
 - Offline Downloads Symbols
+- Fullscreen Tests Symbols
+- Playback Database Symbols
+- Screen Wake Lock Test Symbols
+- test download workflow Symbols
+- Android Offline Engine Symbols
+- Player Symbols
+- Desktop Platform Symbols
+- Ios Avatar Picker Symbols
+- Playback Test Symbols
+- Android Offline Engine Symbols
+- Poster Symbols
+- Data Management Test Symbols
+- Bottom Tab Gesture Test Symbols
+- Offline Downloads Symbols
+- Android Dlna Device Test Symbols
+- Android Seek Preview Symbols
+- test app Symbols
+- Catalog Playback Device Test Symbols
+- App State Test Symbols
+- Ios Haptics Symbols
+- Catalog Availability Symbols
+- test catalog Symbols
+- Profile Screen Symbols
+- Profile Screen Symbols
+- test app Symbols
+- Navigation Inset Transition Test Symbols
+- Douban Connection Symbols
+- Playback Telemetry Symbols
+- Skip Playback Test Symbols
 - app Symbols
 - Platform Symbols
-- Search Screen Symbols
+- Android Platform Symbols
+- User Store Symbols
 - Dlna Casting Test Symbols
 - movie sources Symbols
-- User Store Symbols
-- Platform Symbols
+- Models Symbols
+- test movie sources Symbols
+- Panda Video App Symbols
 - Offline Downloads Test Symbols
-- Modern Player Symbols
-- Playback Media Session Service Symbols
 - App State Test Symbols
 - Ios Platform Symbols
-- Ios Offline Engine Symbols
 - Ios Platform Symbols
-- Catalog Database Test Symbols
+- Catalog Database Symbols
 - test dytt mount Symbols
 - Android Platform Symbols
-- Dlna Symbols
-- Settings Store Symbols
-- Jianpian Source Symbols
-- Android Offline Engine Symbols
-- Catalog Components Symbols
-- test player Symbols
-- app Symbols
-- Picture In Picture Composition Test Symbols
+- Player Symbols
+- Dlna Casting Test Symbols
+- Dlna Test Symbols
+- Playback Media Session Service Symbols
+- Settings Store Test Symbols
+- Navigation Config Test Symbols
+- Jianpian Source Test Symbols
+- Catalog Database Test Symbols
 - Navigation Icons Symbols
-- Cache Maintenance Storage Test Symbols
-- Dlna Casting Symbols
-- test movie sources Symbols
-- Main Symbols
-- Ios Platform Symbols
-- Profile Screen Symbols
-- Offline Media Device Test Symbols
+- Playback Preload Test Symbols
+- Cache Maintenance Test Symbols
+- Actor Source Test Symbols
+- Pico Fullscreen Window Symbols
+- Home History Test Symbols
 - posters Symbols
-- Android Platform Symbols
+- Android Fullscreen Device Test Symbols
 - Seek Preview Test Symbols
-- Modern Player Symbols
-- Android Offline Engine Symbols
-- Android Haptics Symbols
+- Android Playback Preloader Symbols
+- Picture In Picture Composition Test Symbols
+- User Store Behavior Test Symbols
 - test playback library Symbols
-- Desktop Platform Symbols
-- Retry Prompts Symbols
-- Ios Platform Symbols
-- Youth Store Symbols
+- test app Symbols
+- Douban Session Symbols
+- Pending Seek Symbols
 - Dlna Symbols
-- Settings Screen Symbols
-- Data Management Test Symbols
-- test posters Symbols
+- Ios Douban Session Symbols
+- Actor Half Sheet Test Symbols
+- Android Platform Symbols
+- Retry Prompts Symbols
+- Modern Player Symbols
+- Video Zoom Test Symbols
 - xunlei mcp Symbols
 - test media search Symbols
 - Haptics Symbols
 - test list pagination Symbols
-- Ios Haptics Symbols
-- Ios Avatar Picker Symbols
-- Panda Video App Symbols
-- App State Test Symbols
-- Player Symbols
-- Catalog Availability Symbols
-- Ios Offline Engine Symbols
-- Search History Store Symbols
+- Settings Store Symbols
+- Actor Navigation Device Test Symbols
 - Response Cache Test Symbols
-- Video Zoom Test Symbols
-- Android Seek Preview Device Test Symbols
-- Android Platform Symbols
-- Player Symbols
-- Dlna Test Symbols
-- test app Symbols
-- Html Node Symbols
+- Jianpian Source Symbols
+- User Store Symbols
+- Sketch Source Test Symbols
+- Android Haptics Symbols
+- Ios Platform Symbols
+- Main Activity Symbols
+- Search Screen Symbols
+- test posters Symbols
+- Search History Store Symbols
+- Ios Startup Playback Test Symbols
+- App State Test Symbols
+- Ios Offline Engine Symbols
+- Douban Session Test Symbols
 - catalog Symbols
-- Seek Preview Symbols
+- import catalog Symbols
 - site Symbols
 - player Symbols
 - douban Symbols
-- Dlna Casting Symbols
-- Shared Transitions Symbols
-- Android Platform Symbols
-- Top Tab Swipe Symbols
 - Android Avatar Picker Symbols
-- generate app icons Symbols
+- Html Node Symbols
+- export website catalog Symbols
+- Android Platform Symbols
+- Player Audio Controls Symbols
+- Settings Screen Symbols
+- Content Repository Symbols
+- Top Tab Swipe Symbols
 - Dlna Symbols
-- Downloads Screen Symbols
 - app Symbols
 - player edge Symbols
-- Panda Video App Symbols
-- service Symbols
+- Player Overlay Back Handler.android Symbols
 - player stability Symbols
 - web sync Symbols
 - build.gradle Symbols
@@ -141,179 +142,203 @@
 - service Symbols
 - build.gradle Symbols
 - README Symbols
+- Cache Maintenance Storage Test Symbols
+- AGENTS Symbols
+- generate launch slogan Symbols
 - README Symbols
-- test app Symbols
-- Picture In Picture Composition Test Symbols
-- Bundled Posters Symbols
+- Actor Half Sheet Test Symbols
 - real stream Symbols
 - package Symbols
 - autoplay dplayer Symbols
 - player flow Symbols
-- README Symbols
+- External References Symbols
+- External References Symbols
+- External References Symbols
+- External References Symbols
+- External References Symbols
+- External References Symbols
+- External References Symbols
+- External References Symbols
 - External References Symbols
 - External References Symbols
 - External References Symbols
 
 ## God Nodes (most connected - your core abstractions)
-1. `PlaybackSession` - 60 edges
-2. `PlayerRequest` - 59 edges
-3. `TestPlatform` - 56 edges
-4. `mockEngine()` - 54 edges
-5. `PlatformServices` - 48 edges
-6. `CatalogItem` - 46 edges
-7. `AppStateTest` - 43 edges
-8. `PlayerController` - 38 edges
-9. `ContentRepositoryTest` - 36 edges
-10. `FakePlayer` - 35 edges
+1. `PlayerRequest` - 120 edges
+2. `PlaybackSession` - 113 edges
+3. `mockEngine()` - 108 edges
+4. `AppState` - 93 edges
+5. `CatalogItem` - 91 edges
+6. `TestPlatform` - 78 edges
+7. `AppStateTest` - 65 edges
+8. `CatalogDatabase` - 61 edges
+9. `FakeStorage` - 53 edges
+10. `MediaSource` - 51 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `PlaybackSession` --references--> `Graphify query entry`  [INFERRED]
-  mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt → AGENTS.md
-- `OfflineDownloads` --references--> `Graphify query entry`  [INFERRED]
-  mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/OfflineDownloads.kt → AGENTS.md
-- `DlnaCasting` --references--> `Graphify query entry`  [INFERRED]
-  mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/DlnaCasting.kt → AGENTS.md
 - `BrowseFilters` --references--> `Graphify query entry`  [INFERRED]
   mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt → AGENTS.md
+- `DlnaCasting` --references--> `Graphify query entry`  [INFERRED]
+  mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/DlnaCasting.kt → AGENTS.md
+- `OfflineDownloads` --references--> `Graphify query entry`  [INFERRED]
+  mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/OfflineDownloads.kt → AGENTS.md
+- `PlaybackSession` --references--> `Graphify query entry`  [INFERRED]
+  mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt → AGENTS.md
 - `CatalogPlaybackMatchTest` --references--> `Graphify query entry`  [INFERRED]
   mobile/shared/src/commonTest/kotlin/dev/pandavideo/CatalogPlaybackMatchTest.kt → AGENTS.md
 
 ## Import Cycles
 - None detected.
 
-## Communities (150 total, 47 thin omitted)
+## Communities (161 total, 54 thin omitted)
 
 ### Community 0 - "Panda Video App Symbols"
-Cohesion: 0.08
-Nodes (23): AppDelegate, PlayerHostController, SharedView, SuiXinKanApp, Bool, .preferredStatusBarStyle, .prefersHomeIndicatorAutoHidden, .prefersStatusBarHidden (+15 more)
+Cohesion: 0.06
+Nodes (35): AppDelegate, PlayerHostController, SharedView, SuiXinKanApp, DesktopPlayer, PlayerSurface(), Bool, JFXPanel (+27 more)
 
-### Community 1 - "Navigation Config Test Symbols"
-Cohesion: 0.11
-Nodes (18): NavigationConfigTest, browseYearOptions(), annualTvFilters(), BrowseFilterPanel(), FilterChoice(), ChoiceRow(), Modifier, bottomtabs (+10 more)
+### Community 1 - "Content Repository Test Symbols"
+Cohesion: 0.07
+Nodes (4): BrowseFilters, ContentRepositoryTest, PomoSourceTest, mockEngine()
 
 ### Community 10 - "test douban Symbols"
-Cohesion: 0.09
-Nodes (13): DoubanLists, Top250Parser, DoubanTest, list_page_size(), source_rating(), subject_url(), valid_rating(), validate_browse() (+5 more)
+Cohesion: 0.10
+Nodes (12): DoubanLists, Top250Parser, DoubanTest, list_page_size(), source_rating(), subject_url(), valid_rating(), validate_browse() (+4 more)
+
+### Community 100 - "Offline Downloads Symbols"
+Cohesion: 0.13
+Nodes (3): OfflineDownload, UnsupportedOfflineEngine, CatalogAvailabilityTest
 
 ### Community 101 - "Fullscreen Tests Symbols"
-Cohesion: 0.25
-Nodes (3): FullscreenTests, XCTest, XCTestCase
+Cohesion: 0.12
+Nodes (9): FullscreenTests, CGRect, Double, String, UIKit, XCTest, XCTestCase, XCUIApplication (+1 more)
 
-### Community 102 - "Pico Fullscreen Window Symbols"
-Cohesion: 0.27
-Nodes (6): PicoFullscreenWindow, WindowSize, Activity, context, log, method
+### Community 108 - "Android Offline Engine Symbols"
+Cohesion: 0.09
+Nodes (21): AndroidOfflineEngine, BilibiliMedia, CacheDataSource, Downloader, MediaItem, OfflineEngine, SimpleCache, datasourceinputstream (+13 more)
 
-### Community 103 - "Android Seek Preview Symbols"
-Cohesion: 0.19
-Nodes (9): AndroidSeekPreview, Request, FrameExtractor, bitmap, bytearrayoutputstream, contextcompat, mimetypes, presentation (+1 more)
+### Community 113 - "Player Symbols"
+Cohesion: 0.20
+Nodes (10): PlayerPhase, Buffering, Ended, Error, Idle, Paused, Playing, Preparing (+2 more)
 
-### Community 108 - "Android Fullscreen Device Test Symbols"
-Cohesion: 0.32
-Nodes (6): FullscreenTestActivity, Activity, Bundle, asserttrue, systemclock, textview
+### Community 114 - "Desktop Platform Symbols"
+Cohesion: 0.06
+Nodes (19): DesktopWindowController, DesktopPlatform, DesktopWindowController, PreferencesStorage, LiveSourceProbeTest, desktopApplication(), main(), DesktopWindowController (+11 more)
+
+### Community 115 - "Ios Avatar Picker Symbols"
+Cohesion: 0.22
+Nodes (8): NSObject, rememberAvatarPicker(), NSObject, PHPickerViewController, PHPickerViewControllerDelegateProtocol, cgrectmake, cgsizemake, usecontents
 
 ### Community 12 - "Playback Test Symbols"
-Cohesion: 0.09
-Nodes (20): Listener, Episode, PlaybackInfo, PlayerRequest, PlaybackSession, PlaybackState, PlayerCapabilities, PlayerState (+12 more)
+Cohesion: 0.15
+Nodes (5): PlayerRequest, FakePlayer, PlaybackTest, adjustedLevel(), quickSeekPosition()
 
-### Community 120 - "Offline Downloads Symbols"
+### Community 120 - "Android Offline Engine Symbols"
+Cohesion: 0.16
+Nodes (8): OfflineMediaDeviceTest, Listener, OfflineMediaSourceFactory, androidx, Factory, Listener, Context, IntArray
+
+### Community 13 - "Poster Symbols"
+Cohesion: 0.09
+Nodes (28): PosterCacheTest, CatalogPosterCard(), defaultPosterRequest(), Poster(), posterImageLoader(), posterRequest(), prefetchPosters(), posterSharedTransition() (+20 more)
+
+### Community 137 - "Data Management Test Symbols"
+Cohesion: 0.11
+Nodes (6): ParserRules, ParserRulesStore, UpdateStore, YouthPreferences, YouthStore, DataManagementTest
+
+### Community 139 - "Offline Downloads Symbols"
 Cohesion: 0.33
 Nodes (6): DownloadStatus, Completed, Downloading, Failed, Paused, Queued
 
-### Community 13 - "Content Repository Test Symbols"
-Cohesion: 0.07
-Nodes (13): BrowseFilters, CatalogItem, CatalogPlaybackMatchTest, ContentRepositoryTest, JianpianSourceTest, jpDetail(), mockEngine(), pomoMedia() (+5 more)
+### Community 14 - "Android Dlna Device Test Symbols"
+Cohesion: 0.15
+Nodes (14): AndroidDlnaDeviceTest, discoverAndroidDlna(), Context, connectivitymanager, datagrampacket, datagramsocket, inet4address, inetaddress (+6 more)
 
-### Community 14 - "Desktop Player Symbols"
-Cohesion: 0.16
-Nodes (11): DesktopPlayer, PlayerSurface(), JFXPanel, MediaPlayer, MediaView, Modifier, animationtimer, duration (+3 more)
+### Community 142 - "Android Seek Preview Symbols"
+Cohesion: 0.23
+Nodes (5): AndroidSeekPreviewDeviceTest, AndroidSeekPreview, Request, FrameExtractor, Request
 
-### Community 141 - "Profile Screen Symbols"
+### Community 157 - "Ios Haptics Symbols"
+Cohesion: 0.20
+Nodes (5): IosHaptics, uiimpactfeedbackgenerator, uiimpactfeedbackstyle, uinotificationfeedbackgenerator, uinotificationfeedbacktype
+
+### Community 158 - "Catalog Availability Symbols"
+Cohesion: 0.12
+Nodes (17): CacheMaintenanceState, CacheUsage, ResourceStatus, measure(), cached(), key(), visible(), Available (+9 more)
+
+### Community 16 - "Profile Screen Symbols"
+Cohesion: 0.06
+Nodes (66): ProfileLibrary, ProfileTitle, CatalogSkeleton(), rememberSkeletonAlpha(), SkeletonBox(), DownloadLibraryPage(), DownloadPosterCard(), EmptyLibraryHint() (+58 more)
+
+### Community 160 - "Profile Screen Symbols"
 Cohesion: 0.50
 Nodes (4): ClearTarget, Downloads, Favorites, History
 
-### Community 142 - "Profile Screen Symbols"
-Cohesion: 0.50
-Nodes (4): ProfileLibrary, Downloads, Favorites, History
+### Community 169 - "Douban Connection Symbols"
+Cohesion: 0.20
+Nodes (3): DoubanConnectionState, DoubanSession, verify()
 
-### Community 144 - "Modern Player Symbols"
-Cohesion: 0.50
-Nodes (4): TapZone, Center, Left, Right
-
-### Community 148 - "Modern Player Symbols"
-Cohesion: 0.67
-Nodes (3): AdjustKind, Brightness, Volume
-
-### Community 149 - "Modern Player Symbols"
-Cohesion: 0.67
-Nodes (3): TapFeedbackKind, Forward, Rewind
-
-### Community 15 - "Audio Mode Device Test Symbols"
-Cohesion: 0.15
-Nodes (21): AudioModeDeviceTest, CatalogPlaybackDeviceTest, androidjunit4, assertequals, assertis, assertnotnull, assertnull, assertsame (+13 more)
-
-### Community 16 - "Cache Maintenance Test Symbols"
-Cohesion: 0.22
-Nodes (5): ContentCacheUsage, CacheMaintenanceTest, cacheUsage(), completabledeferred, formatcachebytes
-
-### Community 19 - "Offline Downloads Symbols"
+### Community 173 - "Playback Telemetry Symbols"
 Cohesion: 0.13
-Nodes (7): OfflineAsset, OfflineDownload, OfflineDownloads, OfflineEngine, UnsupportedOfflineEngine, Job, StateFlow
+Nodes (11): PlaybackStartupSample, PlaybackTelemetry, StartupOutcome, PlayerState, VideoFrameVisibility, VideoFrameVisibilityTest, AudioOnly, Cancelled (+3 more)
+
+### Community 19 - "Skip Playback Test Symbols"
+Cohesion: 0.17
+Nodes (5): SkipDurations, SkipDurationsStore, Host, SkipPlaybackTest, SkipDurationsDialog()
 
 ### Community 2 - "app Symbols"
-Cohesion: 0.10
-Nodes (45): AppError, Config, DyttDetailParser, EightysgodDetailParser, RequestHandler, ResultRegistry, clean_text(), encode_thunder_uri() (+37 more)
+Cohesion: 0.07
+Nodes (48): AppError, Config, DyttDetailParser, DyttSearchParser, EightysgodDetailParser, EightysgodSearchParser, RequestHandler, ResultRegistry (+40 more)
 
 ### Community 20 - "Platform Symbols"
 Cohesion: 0.08
 Nodes (12): PlatformServices, avatarUri(), PlayerSurface(), rememberAvatarPicker(), rememberAvatarPicker(), Color, dev, Flow (+4 more)
 
-### Community 21 - "Search Screen Symbols"
-Cohesion: 0.12
-Nodes (24): NestedScrollConnection, HighlightedTitle(), SearchPage(), SearchResults(), SearchRow(), SearchStatusMessage(), AppState, ImageVector (+16 more)
+### Community 21 - "Android Platform Symbols"
+Cohesion: 0.14
+Nodes (6): AndroidPlayerConnectionDeviceTest, BufferingVideoDeviceTest, PlaybackPreloadDeviceTest, AndroidPlayer, MediaSource, Player
+
+### Community 22 - "User Store Symbols"
+Cohesion: 0.26
+Nodes (7): EpisodeProgress, SavedTitle, UserBackup, canonicalProgress(), takeKeysByRecency(), titlePage(), decodefromstring
 
 ### Community 23 - "Dlna Casting Test Symbols"
-Cohesion: 0.13
-Nodes (3): DlnaCastingTest, TestPlatform, TestPlayer
+Cohesion: 0.15
+Nodes (4): DlnaCasting, DlnaCastingTest, TestPlayer, Job
 
 ### Community 24 - "movie sources Symbols"
-Cohesion: 0.11
-Nodes (18): SearchLinks, SearchOutcome, SiteRedirects, Source, SourceError, YangguangSearchParser, category_type(), catalog() (+10 more)
+Cohesion: 0.10
+Nodes (21): SearchLinks, SearchOutcome, SiteRedirects, Source, SourceError, YangguangSearchParser, category_type(), catalog() (+13 more)
 
-### Community 25 - "User Store Symbols"
+### Community 25 - "Models Symbols"
+Cohesion: 0.14
+Nodes (8): MatchResult, ModelsTest, appendCatalog(), formatMinutesSeconds(), isTelevisionDrama(), isWebUrl(), channel, serialname
+
+### Community 26 - "test movie sources Symbols"
+Cohesion: 0.20
+Nodes (3): MovieSourceTests, search_page(), source()
+
+### Community 27 - "Panda Video App Symbols"
 Cohesion: 0.08
-Nodes (11): EpisodeProgress, HistoryTitle, SavedTitle, UserBackup, UserProfile, UserStore, UserStoreBehaviorTest, currentEpochMillis() (+3 more)
+Nodes (29): Failed, Ready, StartupState, NavigationDestinationContent(), PandaVideoApp(), PandaVideoContent(), SearchEntry(), StartupFailureScreen() (+21 more)
 
-### Community 26 - "Platform Symbols"
-Cohesion: 0.14
-Nodes (10): KeyValueStorage, UpdateNotice, YouthPreferences, asstateflow, decodefromstring, encodetostring, mutablestateflow, random (+2 more)
+### Community 28 - "Offline Downloads Test Symbols"
+Cohesion: 0.17
+Nodes (7): OfflineDownloads, Engine, OfflineDownloadsTest, OfflineEngine, Job, StateFlow, OfflineEngine
 
-### Community 27 - "Offline Downloads Test Symbols"
-Cohesion: 0.19
-Nodes (4): Engine, OfflineDownloadsTest, OfflineEngine, OfflineEngine
-
-### Community 28 - "Modern Player Symbols"
-Cohesion: 0.09
-Nodes (24): TapFeedback, progressFraction(), DetailChip(), EpisodeGrid(), PlayerDetails(), PlayerRecommendation(), AppState, dev (+16 more)
-
-### Community 29 - "Playback Media Session Service Symbols"
-Cohesion: 0.14
-Nodes (15): PlaybackMediaSessionService, SessionCallback, Callback, Intent, ListenableFuture, MediaSession, MediaSessionService, Bundle (+7 more)
+### Community 3 - "App State Test Symbols"
+Cohesion: 0.11
+Nodes (3): AppState, AppStateTest, TestPlatform
 
 ### Community 30 - "Ios Platform Symbols"
-Cohesion: 0.10
-Nodes (6): IosPlatform, dev, StateFlow, NSSearchPathDirectory, SharedFlow, UISlider
-
-### Community 31 - "Ios Offline Engine Symbols"
-Cohesion: 0.24
-Nodes (11): Delegate, AVAssetDownloadDelegateProtocol, AVAssetDownloadTask, CMTimeRange, CValue, NSError, NSURL, NSURLSession (+3 more)
+Cohesion: 0.09
+Nodes (8): IosPlatform, MainViewController(), dev, StateFlow, UIViewController, NSSearchPathDirectory, SharedFlow, UISlider
 
 ### Community 32 - "Ios Platform Symbols"
-Cohesion: 0.14
-Nodes (5): IosPlayer, AVAssetImageGenerator, AVPlayerItem, Job, MPMediaItemArtwork
+Cohesion: 0.11
+Nodes (10): IosPlayer, Prepared, discoverIosDlna(), AVAssetImageGenerator, AVPlayer, AVPlayerItem, AVPlayerLayer, Job (+2 more)
 
-### Community 33 - "Catalog Database Test Symbols"
-Cohesion: 0.19
-Nodes (6): CatalogDatabase, StoredCatalog, StoredResponse, CatalogDatabaseTest, execute(), T
+### Community 33 - "Catalog Database Symbols"
+Cohesion: 0.14
+Nodes (14): BundledCatalogEntry, BundledCatalogSnapshot, BundledPlaybackIdentities, BundledPlaybackIdentity, StoredResponse, SQLiteConnection, buffer, bundledsqlitedriver (+6 more)
 
 ### Community 34 - "test dytt mount Symbols"
 Cohesion: 0.10
@@ -323,209 +348,221 @@ Nodes (4): CopyLinkTest, DyttTest, MountTest, post_api()
 Cohesion: 0.10
 Nodes (4): AndroidFullscreenDeviceTest, AndroidPlatform, dev, StateFlow
 
-### Community 36 - "Dlna Symbols"
+### Community 37 - "Player Symbols"
+Cohesion: 0.07
+Nodes (22): Episode, PlaybackInfo, PlaybackSession, PlaybackState, PlayerCapabilities, PlayerController, Preload, TapZone (+14 more)
+
+### Community 4 - "Dlna Test Symbols"
+Cohesion: 0.24
+Nodes (3): DlnaXml, DlnaTest, parseDlnaDevice()
+
+### Community 40 - "Playback Media Session Service Symbols"
 Cohesion: 0.12
-Nodes (21): DlnaException, discoverAndroidDlna(), ssdpLocation(), discoverIosDlna(), Context, Exception, async, connectivitymanager (+13 more)
+Nodes (17): PlaybackMediaSessionService, SessionCallback, Callback, Intent, ListenableFuture, MediaSession, MediaSessionService, Bundle (+9 more)
 
-### Community 37 - "Settings Store Symbols"
-Cohesion: 0.20
-Nodes (3): AppSettings, SettingsStore, SettingsStoreTest
+### Community 41 - "Settings Store Test Symbols"
+Cohesion: 0.19
+Nodes (3): SettingsStore, FakeStorage, SettingsStoreTest
 
-### Community 38 - "Jianpian Source Symbols"
-Cohesion: 0.10
-Nodes (17): SearchItem, SearchResult, SourceCount, ApiError, JianpianSource, Server, PomoSource, PomoSourceTest (+9 more)
+### Community 42 - "Navigation Config Test Symbols"
+Cohesion: 0.12
+Nodes (17): NavigationConfigTest, browseYearOptions(), annualTvFilters(), BrowseFilterPanel(), FilterChoice(), ChoiceRow(), Modifier, bottomtabs (+9 more)
 
-### Community 39 - "Android Offline Engine Symbols"
-Cohesion: 0.26
-Nodes (5): AndroidOfflineEngine, CacheDataSource, Downloader, OfflineEngine, SimpleCache
+### Community 43 - "Jianpian Source Test Symbols"
+Cohesion: 0.12
+Nodes (8): CatalogItem, CatalogPlaybackMatchTest, JianpianSourceTest, jpDetail(), pomoMedia(), pomoRow(), pomoSearch(), JsonObject
 
-### Community 4 - "Catalog Components Symbols"
-Cohesion: 0.11
-Nodes (26): CatalogState, CatalogContent(), CatalogSkeleton(), ErrorText(), rememberSkeletonAlpha(), SkeletonBox(), SearchSkeleton(), AppState (+18 more)
+### Community 44 - "Catalog Database Test Symbols"
+Cohesion: 0.17
+Nodes (5): CatalogDatabase, StoredCatalog, CatalogDatabaseTest, execute(), T
 
-### Community 41 - "test player Symbols"
-Cohesion: 0.18
-Nodes (6): EpisodeParser, PlayerTests, media_type(), resolve_online(), play(), HTMLParser
-
-### Community 42 - "app Symbols"
-Cohesion: 0.15
-Nodes (3): DyttSearchParser, EightysgodSearchParser, HTMLParser
-
-### Community 43 - "Picture In Picture Composition Test Symbols"
-Cohesion: 0.20
-Nodes (4): EmptyApplier, PictureInPictureCompositionTest, PersistentVideoContent(), AbstractApplier
-
-### Community 44 - "Navigation Icons Symbols"
-Cohesion: 0.14
-Nodes (12): NavigationIcons, PlayerTransportIcons, load_dotenv(), BottomNavigationTabs(), ImageVector, Path, color, imagevector (+4 more)
-
-### Community 45 - "Cache Maintenance Storage Test Symbols"
+### Community 45 - "Navigation Icons Symbols"
 Cohesion: 0.08
-Nodes (27): CacheMaintenanceStorageTest, PosterCacheTest, defaultPosterRequest(), posterImageLoader(), posterRequest(), prefetchPosters(), coil3, ImageLoader (+19 more)
+Nodes (28): NavigationIcons, PlayerTransportIcons, BottomNavigationTabs(), DownloadAction(), DownloadsScreen(), ActorAvatar(), ActorRail(), ImageVector (+20 more)
 
-### Community 46 - "Dlna Casting Symbols"
-Cohesion: 0.26
-Nodes (4): DlnaCasting, DlnaRemoteFrame(), Job, Modifier
+### Community 48 - "Cache Maintenance Test Symbols"
+Cohesion: 0.24
+Nodes (4): ContentCacheUsage, CacheMaintenanceTest, completabledeferred, formatcachebytes
 
-### Community 47 - "test movie sources Symbols"
-Cohesion: 0.20
-Nodes (3): MovieSourceTests, search_page(), source()
-
-### Community 48 - "Main Symbols"
-Cohesion: 0.15
-Nodes (10): DesktopWindowController, DesktopWindowController, desktopApplication(), main(), DesktopWindowController, application, painterresource, rememberwindowstate (+2 more)
-
-### Community 49 - "Ios Platform Symbols"
-Cohesion: 0.11
-Nodes (14): IosStorage, PlayerSurface(), Color, Modifier, NSObjectProtocol, avroutepickerview, bodyasbytes, catransaction (+6 more)
-
-### Community 5 - "Profile Screen Symbols"
+### Community 49 - "Actor Source Test Symbols"
 Cohesion: 0.08
-Nodes (44): ProfileTitle, Poster(), AudioModeBackdrop(), MiniPlayerBar(), DownloadPosterCard(), EmptyLibraryHint(), ProfileAvatar(), ProfileScreen() (+36 more)
+Nodes (13): ActorSearchState, ActorFilmography, ActorProfileField, ActorRef, ActorSuggestions, ActorWork, ActorSource, ActorSourceTest (+5 more)
 
-### Community 50 - "Offline Media Device Test Symbols"
-Cohesion: 0.10
-Nodes (17): OfflineMediaDeviceTest, Listener, Listener, Context, datasourceinputstream, dataspec, defaulthttpdatasource, defaultmediasourcefactory (+9 more)
+### Community 50 - "Pico Fullscreen Window Symbols"
+Cohesion: 0.27
+Nodes (6): PicoFullscreenWindow, WindowSize, Activity, context, log, method
+
+### Community 52 - "Home History Test Symbols"
+Cohesion: 0.25
+Nodes (8): CatalogState, HistoryTitle, HomeHistoryTest, CatalogContent(), catalogWithoutHistory(), historyCatalogMatch(), historyCatalogPoster(), homeHistoryFor()
 
 ### Community 53 - "posters Symbols"
 Cohesion: 0.22
 Nodes (9): PosterCache, PosterError, PosterRedirects, approved_url(), fetch_image(), image_type(), Exception, HTTPRedirectHandler (+1 more)
 
-### Community 54 - "Android Platform Symbols"
-Cohesion: 0.17
-Nodes (3): AndroidPlayerConnectionDeviceTest, AndroidPlayer, Player
+### Community 54 - "Android Fullscreen Device Test Symbols"
+Cohesion: 0.16
+Nodes (19): FullscreenTestActivity, AudioModeDeviceTest, CatalogPlaybackDeviceTest, Activity, Bundle, androidjunit4, asserttrue, assumetrue (+11 more)
 
 ### Community 55 - "Seek Preview Test Symbols"
-Cohesion: 0.16
+Cohesion: 0.15
 Nodes (3): PreviewFrame, Controller, SeekPreviewTest
 
-### Community 57 - "Modern Player Symbols"
-Cohesion: 0.23
-Nodes (11): Adjustment, FormattingTest, playbackTime(), ControlTextPill(), PlayerGestureZone(), PlayerLevelIndicator(), ScrubFeedback(), SeekHint() (+3 more)
-
-### Community 58 - "Android Offline Engine Symbols"
+### Community 56 - "Android Playback Preloader Symbols"
 Cohesion: 0.18
-Nodes (6): OfflineMediaSourceFactory, MediaSource, androidx, Factory, MediaItem, IntArray
+Nodes (12): AndroidPlaybackPreloader, onCompleted(), onPlaybackStateChanged(), onTimelineChanged(), startupPosition(), ExoPlayer, MediaItem, Timeline (+4 more)
 
-### Community 59 - "Android Haptics Symbols"
-Cohesion: 0.23
-Nodes (7): AndroidHaptics, LongArray, IntArray, VibrationEffect, Vibrator, build, vibratormanager
+### Community 57 - "Picture In Picture Composition Test Symbols"
+Cohesion: 0.21
+Nodes (4): EmptyApplier, PictureInPictureCompositionTest, PersistentVideoContent(), AbstractApplier
 
 ### Community 6 - "test playback library Symbols"
-Cohesion: 0.08
-Nodes (23): PlaybackLibrary, PlayerError, PlaybackLibraryTests, validate_item(), page_url(), fetch(), main(), download() (+15 more)
+Cohesion: 0.07
+Nodes (17): PlaybackLibrary, EpisodeParser, PlayerError, PlaybackLibraryTests, PlayerTests, validate_item(), media_type(), page_url() (+9 more)
 
-### Community 60 - "Desktop Platform Symbols"
-Cohesion: 0.08
-Nodes (10): DesktopPlatform, PreferencesStorage, LiveSourceProbeTest, isWebUrl(), HttpClient, StateFlow, desktop, okhttp (+2 more)
+### Community 60 - "test app Symbols"
+Cohesion: 0.13
+Nodes (3): XunleiDownloadTest, Handler, SimpleHTTPRequestHandler
 
-### Community 61 - "Retry Prompts Symbols"
-Cohesion: 0.23
-Nodes (3): RetryPrompt, RetryPrompts, RetryPromptsTest
+### Community 62 - "Douban Session Symbols"
+Cohesion: 0.13
+Nodes (12): AndroidDoubanSession, UnsupportedDoubanSession, DoubanLoginView(), isDoubanAccountLanding(), isDoubanLoginNavigation(), isDoubanResponseCookie(), isDoubanSessionUrl(), Modifier (+4 more)
 
-### Community 62 - "Ios Platform Symbols"
-Cohesion: 0.23
-Nodes (6): PipDelegate, PlayerContainerView, AVPictureInPictureController, AVPictureInPictureControllerDelegateProtocol, NSError, UIView
+### Community 63 - "Pending Seek Symbols"
+Cohesion: 0.21
+Nodes (3): PendingSeek, Request, PendingSeekTest
 
 ### Community 64 - "Dlna Symbols"
-Cohesion: 0.28
-Nodes (4): DlnaClient, DlnaDevice, DlnaPosition, xmlEscape()
+Cohesion: 0.24
+Nodes (6): DlnaClient, DlnaDevice, DlnaException, DlnaPosition, xmlEscape(), Exception
 
-### Community 65 - "Settings Screen Symbols"
-Cohesion: 0.09
-Nodes (35): ThemeMode, EditProfileDialog(), ProfileEditorCard(), ProfileFieldHeading(), ThemePickerDialog(), CacheUsageRow(), SettingsCaption(), SettingsCard() (+27 more)
+### Community 65 - "Ios Douban Session Symbols"
+Cohesion: 0.17
+Nodes (11): NSObject, IosDoubanSession, DoubanLoginView(), currentEpochMillis(), Modifier, NSObject, NSHTTPCookie, WKNavigationDelegateProtocol (+3 more)
 
-### Community 69 - "Data Management Test Symbols"
-Cohesion: 0.13
-Nodes (6): ParserRules, ParserRulesStore, UpdateStore, DataManagementTest, FakeStorage, contentparsers
+### Community 66 - "Actor Half Sheet Test Symbols"
+Cohesion: 0.10
+Nodes (9): ActorHalfSheetTest, PlatformContext, FixturePlayer, PlayerSleepTimerUiTest, SceneHarness, TopTabRefreshGestureTest, AutoCloseable, PlatformContext (+1 more)
+
+### Community 67 - "Android Platform Symbols"
+Cohesion: 0.11
+Nodes (10): SharedPrefsStorage, KeyValueStorage, UpdateNotice, asstateflow, encodetostring, mutablestateflow, random, serializable (+2 more)
+
+### Community 69 - "Retry Prompts Symbols"
+Cohesion: 0.19
+Nodes (4): RetryPrompt, RetryPrompts, RetryPromptsTest, failureDetails()
+
+### Community 7 - "Modern Player Symbols"
+Cohesion: 0.07
+Nodes (41): AdjustKind, Adjustment, TapFeedback, TapFeedbackKind, FormattingTest, PlayerSeekGestureTest, previewPosition(), progressFraction() (+33 more)
+
+### Community 71 - "Video Zoom Test Symbols"
+Cohesion: 0.20
+Nodes (8): VideoZoomTest, videoPinch(), videoZoom(), Modifier, awaiteachgesture, awaitfirstdown, calculatezoom, pointereventpass
 
 ### Community 72 - "xunlei mcp Symbols"
-Cohesion: 0.24
-Nodes (8): XunleiMcpClient, XunleiMcpError, submit_xunlei_mcp_download(), Any, Exception, Minimal legacy SSE client for Xunlei's MCP download service., queue, typing
+Cohesion: 0.35
+Nodes (5): XunleiMcpClient, XunleiMcpError, submit_xunlei_mcp_download(), Any, Exception
 
 ### Community 74 - "Haptics Symbols"
-Cohesion: 0.14
-Nodes (6): Haptics, SilentHaptics, Flow, assharedflow, mutablesharedflow, stateflow
+Cohesion: 0.12
+Nodes (7): SearchState, Haptics, SilentHaptics, Flow, assharedflow, mutablesharedflow, stateflow
 
 ### Community 75 - "test list pagination Symbols"
 Cohesion: 0.20
 Nodes (6): ListPagination, assert, { ListPagination, PAGE_SIZES }, test, frontend_static_list_pagination_page_sizes, ref_node_test
 
-### Community 77 - "Ios Haptics Symbols"
-Cohesion: 0.20
-Nodes (5): IosHaptics, uiimpactfeedbackgenerator, uiimpactfeedbackstyle, uinotificationfeedbackgenerator, uinotificationfeedbacktype
+### Community 77 - "Settings Store Symbols"
+Cohesion: 0.29
+Nodes (5): AppSettings, ThemeMode, Dark, Light, System
 
-### Community 78 - "Ios Avatar Picker Symbols"
-Cohesion: 0.15
-Nodes (12): NSObject, rememberAvatarPicker(), PHPickerViewController, PHPickerViewControllerDelegateProtocol, cancellablecontinuation, cgrectmake, cgsizemake, readvalue (+4 more)
+### Community 79 - "Response Cache Test Symbols"
+Cohesion: 0.12
+Nodes (5): CatalogPage, Top250Categories, Top250CategoriesTest, CacheMaintenanceStorageTest, ResponseCacheTest
 
-### Community 79 - "Panda Video App Symbols"
-Cohesion: 0.15
-Nodes (14): MainActivity, Failed, Ready, StartupState, PandaVideoApp(), StartupFailureScreen(), MainViewController(), ComponentActivity (+6 more)
+### Community 80 - "Jianpian Source Symbols"
+Cohesion: 0.05
+Nodes (23): SearchItem, SearchResult, SourceCount, ApiError, JianpianSource, Server, PomoSource, SearchPresentation (+15 more)
 
-### Community 80 - "App State Test Symbols"
+### Community 83 - "User Store Symbols"
+Cohesion: 0.14
+Nodes (3): UserStore, PlaybackDatabaseTest, currentEpochMillis()
+
+### Community 84 - "Sketch Source Test Symbols"
+Cohesion: 0.13
+Nodes (9): SketchSource, SketchSourceTest, SketchCatalogCacheTest, descendants(), dieyinSketchFixture(), sketchFixture(), HtmlNode, encodeurlparameter (+1 more)
+
+### Community 86 - "Android Haptics Symbols"
+Cohesion: 0.23
+Nodes (7): AndroidHaptics, LongArray, IntArray, VibrationEffect, Vibrator, build, vibratormanager
+
+### Community 87 - "Ios Platform Symbols"
+Cohesion: 0.10
+Nodes (18): IosStorage, PipDelegate, PlayerContainerView, PlayerSurface(), AVPictureInPictureController, AVPictureInPictureControllerDelegateProtocol, Color, Modifier (+10 more)
+
+### Community 89 - "Main Activity Symbols"
+Cohesion: 0.27
+Nodes (7): MainActivity, ComponentActivity, Configuration, Bundle, enableedgetoedge, setcontent, systembarstyle
+
+### Community 9 - "Search Screen Symbols"
+Cohesion: 0.11
+Nodes (26): NestedScrollConnection, HighlightedTitle(), SearchField(), SearchPage(), SearchResults(), SearchRow(), SearchSkeleton(), SearchStatusMessage() (+18 more)
+
+### Community 96 - "App State Test Symbols"
 Cohesion: 0.17
 Nodes (3): OfflineEngine, dev, OfflineEngine
 
-### Community 83 - "Player Symbols"
-Cohesion: 0.20
-Nodes (10): PlayerPhase, Buffering, Ended, Error, Idle, Paused, Playing, Preparing (+2 more)
-
-### Community 84 - "Catalog Availability Symbols"
+### Community 97 - "Ios Offline Engine Symbols"
 Cohesion: 0.06
-Nodes (31): CatalogPage, MatchResult, CacheMaintenanceState, CacheUsage, ResourceStatus, CatalogAvailabilityTest, ModelsTest, appendCatalog() (+23 more)
-
-### Community 86 - "Ios Offline Engine Symbols"
-Cohesion: 0.42
-Nodes (3): IosOfflineEngine, Pending, OfflineEngine
-
-### Community 97 - "Dlna Test Symbols"
-Cohesion: 0.27
-Nodes (3): DlnaXml, DlnaTest, parseDlnaDevice()
-
-### Community 100 - "Html Node Symbols"
-Cohesion: 0.40
-Nodes (5): attr(), descendants(), hasClass(), text(), HtmlNode
+Nodes (30): WebViewClient, OfflineAsset, OfflineEngine, Delegate, IosOfflineEngine, Pending, DoubanLoginView(), AVAssetDownloadDelegateProtocol (+22 more)
 
 ### Community 104 - "catalog Symbols"
 Cohesion: 0.70
 Nodes (4): load(), renderItem(), resetPage(), syncFilters()
 
-### Community 107 - "Seek Preview Symbols"
-Cohesion: 0.40
-Nodes (4): previewPosition(), currentcoroutinecontext, ensureactive, withtimeoutornull
+### Community 107 - "import catalog Symbols"
+Cohesion: 0.08
+Nodes (28): main(), running_pid(), main(), render(), vector_paths(), export_top250_categories(), fetch(), main() (+20 more)
 
 ### Community 11 - "player Symbols"
 Cohesion: 0.08
 Nodes (36): clearBuffering(), destroyMedia(), exitRotation(), failure(), fullscreenChanged(), isPlayerFullscreen(), loadEpisode(), renderEpisodes() (+28 more)
 
-### Community 22 - "Shared Transitions Symbols"
-Cohesion: 0.10
-Nodes (18): posterSharedTransition(), Modifier, alertdialog, animatedvisibilityscope, button, buttondefaults, composable, compositionlocalof (+10 more)
+### Community 152 - "Android Avatar Picker Symbols"
+Cohesion: 0.07
+Nodes (34): rememberAvatarPicker(), activityresultcontracts, assertis, assertnotnull, assertnull, assertsame, bitmap, bitmapfactory (+26 more)
 
-### Community 40 - "Android Platform Symbols"
-Cohesion: 0.11
-Nodes (18): PlayerSurface(), Modifier, activity, activityinfo, androidview, audiomanager, componentname, mediacontroller (+10 more)
+### Community 170 - "Html Node Symbols"
+Cohesion: 0.67
+Nodes (3): attr(), hasClass(), text()
 
-### Community 56 - "Top Tab Swipe Symbols"
+### Community 18 - "export website catalog Symbols"
 Cohesion: 0.17
-Nodes (14): topTabSwipe(), videoPinch(), Modifier, Modifier, abs, awaiteachgesture, awaitfirstdown, calculatezoom (+6 more)
+Nodes (24): capture(), main(), source_key(), App, Minimal legacy SSE client for Xunlei's MCP download service., Deterministic device QA API; never used by the production app., Preserve available Douban category pages from a local PandaVideo website as…, argparse (+16 more)
 
-### Community 66 - "Android Avatar Picker Symbols"
-Cohesion: 0.15
-Nodes (12): rememberAvatarPicker(), activityresultcontracts, bitmapfactory, exifinterface, localcontext, matrix, max, pickvisualmediarequest (+4 more)
+### Community 29 - "Android Platform Symbols"
+Cohesion: 0.10
+Nodes (20): createAndroidPlayerView(), PlayerSurface(), Context, Modifier, PlayerView, activity, activityinfo, aspectratioframelayout (+12 more)
 
-### Community 67 - "generate app icons Symbols"
-Cohesion: 0.18
-Nodes (10): main(), render(), vector_paths(), Image, Generate native app, launch and web icons from the shared panda SVG. Requires…, Build macOS icons from the shared logo's existing 1024px iOS rendering.…, io, pil (+2 more)
+### Community 36 - "Player Audio Controls Symbols"
+Cohesion: 0.06
+Nodes (58): DesktopVideoFrame(), DlnaRemoteFrame(), EpisodeCacheSheet(), MiniPlayerBar(), AudioActionButton(), AudioReturnButton(), PlayerAudioButton(), PlayerSleepTimerButton() (+50 more)
+
+### Community 39 - "Settings Screen Symbols"
+Cohesion: 0.11
+Nodes (32): PlayerSleepTimerSheet(), SleepTimerOption(), SleepTimerOptionsContent(), EditProfileDialog(), ProfileEditorCard(), ProfileFieldHeading(), CacheUsageRow(), SettingsCaption() (+24 more)
+
+### Community 46 - "Content Repository Symbols"
+Cohesion: 0.11
+Nodes (27): actorCatalogWork(), actorProfile(), actorWorks(), searchActors(), dev, assertfailswith, assertfalse, async (+19 more)
+
+### Community 5 - "Top Tab Swipe Symbols"
+Cohesion: 0.10
+Nodes (23): PlayerOverlayBackHandler(), TopTabPager(), topTabSwipe(), ActorHalfSheet(), Modifier, Modifier, abs, animate (+15 more)
 
 ### Community 68 - "Dlna Symbols"
-Cohesion: 0.10
-Nodes (17): dlnaIpv4(), dlnaTime(), parseDlnaTime(), ssdpRequest(), ssdpRequests(), xmlUnescape(), ByteArray, bodyastext (+9 more)
-
-### Community 7 - "Downloads Screen Symbols"
-Cohesion: 0.14
-Nodes (24): DownloadAction(), DownloadsScreen(), SearchSuggestions(), Dp, AppState, ImageVector, AppState, Modifier (+16 more)
+Cohesion: 0.11
+Nodes (17): dlnaIpv4(), dlnaTime(), parseDlnaTime(), ssdpLocation(), ssdpRequest(), ssdpRequests(), xmlUnescape(), ByteArray (+9 more)
 
 ### Community 8 - "app Symbols"
 Cohesion: 0.08
@@ -534,14 +571,6 @@ Nodes (36): appendBrowserDownload(), copyDownloadLink(), formatSize(), hasPlayba
 ### Community 85 - "player edge Symbols"
 Cohesion: 0.22
 Nodes (5): assert, { chromium }, { fixturePath, outputPath, launchOptions }, fs, results
-
-### Community 9 - "Panda Video App Symbols"
-Cohesion: 0.09
-Nodes (24): PandaVideoContent(), SearchEntry(), HomeCategories(), RetryDialog(), AppState, currentbackstackentryasstate, darkcolors, entertransition (+16 more)
-
-### Community 90 - "service Symbols"
-Cohesion: 0.29
-Nodes (7): main(), running_pid(), Native DSM launcher; no pip dependencies., os, signal, subprocess, sys
 
 ### Community 98 - "player stability Symbols"
 Cohesion: 0.33
@@ -559,21 +588,21 @@ Nodes (3): javaversion, jvmtarget, targetformat
 Cohesion: 0.83
 Nodes (3): gradlew script, die(), warn()
 
+### Community 147 - "Cache Maintenance Storage Test Symbols"
+Cohesion: 0.21
+Nodes (9): cachepolicy, datasource, errorresult, files, headersof, ktornetworkfetcherfactory, mockengine, platformcontext (+1 more)
+
+### Community 15 - "AGENTS Symbols"
+Cohesion: 0.15
+Nodes (10): Capability contract, Graphify query entry, PandaVideo agent guide, Project boundaries, Refresh and verify, PandaVideo mobile, 主要功能, 开始使用 (+2 more)
+
 ### Community 17 - "README Symbols"
 Cohesion: 0.07
 Nodes (25): NAS 原生部署, 局域网域名, 数据及升级, macOS 后台服务, 功能与来源, 在线播放与下载, 测试与相关文档, 熊猫视频 · PandaVideo 网页版 (+17 more)
 
-### Community 18 - "test app Symbols"
-Cohesion: 0.27
-Nodes (16): App, base64, concurrent_futures, contextlib, douban, email_message, http_server, json (+8 more)
-
-### Community 51 - "Picture In Picture Composition Test Symbols"
-Cohesion: 0.13
-Nodes (21): broadcastframeclock, canvas, canvaslayerscomposescene, composescenepointer, composition, disposableeffect, experimentalcomposeuiapi, experimentalcoroutinesapi (+13 more)
-
-### Community 52 - "Bundled Posters Symbols"
-Cohesion: 0.27
-Nodes (8): buffer, experimentalresourceapi, filesystem, mutex, res, sqliteconnection, topath, withlock
+### Community 51 - "Actor Half Sheet Test Symbols"
+Cohesion: 0.11
+Nodes (35): advancetimeby, animatedcontent, assertequals, asskiabitmap, broadcastframeclock, canvas, canvaslayerscomposescene, composescenepointer (+27 more)
 
 ### Community 70 - "real stream Symbols"
 Cohesion: 0.18
@@ -591,32 +620,28 @@ Nodes (8): assert, { chromium }, { fixturePath, outputPath, launchOptions }, med
 Cohesion: 0.22
 Nodes (8): assert, { chromium }, { fixturePath, launchOptions }, assert, { chromium }, { fixturePath, launchOptions }, frontend_tests_browser_test_support_fixturepath, ref_node_assert
 
-### Community 91 - "README Symbols"
-Cohesion: 0.18
-Nodes (8): PandaVideo agent guide, Project boundaries, Refresh and verify, PandaVideo mobile, 主要功能, 开始使用, 支持平台, 熊猫视频 · PandaVideo
-
 ## Knowledge Gaps
-- **155 isolated node(s):** `Request`, `Config`, `UpdateNotice`, `Failed`, `CacheMaintenanceState` (+150 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 758 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **47 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **167 isolated node(s):** `Request`, `CacheMaintenanceState`, `Config`, `Failed`, `BundledCatalogEntry` (+162 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 860 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **54 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `PlatformServices` connect `Platform Symbols` to `Settings Screen Symbols`, `Android Avatar Picker Symbols`, `Android Platform Symbols`, `App State Test Symbols`, `Profile Screen Symbols`, `Downloads Screen Symbols`, `Panda Video App Symbols`, `Haptics Symbols`, `Ios Avatar Picker Symbols`, `Panda Video App Symbols`, `Desktop Platform Symbols`, `Dlna Casting Symbols`, `Catalog Availability Symbols`, `Dlna Casting Test Symbols`, `Modern Player Symbols`, `Platform Symbols`, `Modern Player Symbols`, `Ios Platform Symbols`?**
-  _High betweenness centrality (0.082) - this node is a cross-community bridge._
-- **Why does `CatalogItem` connect `Content Repository Test Symbols` to `Catalog Database Test Symbols`, `App State Test Symbols`, `Catalog Components Symbols`, `Jianpian Source Symbols`, `Haptics Symbols`, `Playback Test Symbols`, `Cache Maintenance Storage Test Symbols`, `Modern Player Symbols`, `Audio Mode Device Test Symbols`, `Catalog Availability Symbols`, `Bundled Posters Symbols`, `Desktop Platform Symbols`?**
-  _High betweenness centrality (0.059) - this node is a cross-community bridge._
-- **Why does `PlayerRequest` connect `Playback Test Symbols` to `App State Test Symbols`, `Jianpian Source Symbols`, `Panda Video App Symbols`, `Content Repository Test Symbols`, `Cache Maintenance Storage Test Symbols`, `Audio Mode Device Test Symbols`, `Offline Downloads Symbols`, `Catalog Availability Symbols`, `Response Cache Test Symbols`, `Offline Downloads Test Symbols`, `Desktop Platform Symbols`?**
+- **Why does `PlatformServices` connect `Platform Symbols` to `Android Platform Symbols`, `Player Audio Controls Symbols`, `App State Test Symbols`, `Dlna Casting Test Symbols`, `Modern Player Symbols`, `Settings Screen Symbols`, `Douban Connection Symbols`, `Haptics Symbols`, `Player Symbols`, `Android Platform Symbols`, `Profile Screen Symbols`, `Desktop Platform Symbols`, `Ios Avatar Picker Symbols`, `Android Avatar Picker Symbols`, `Models Symbols`, `Panda Video App Symbols`, `Ios Platform Symbols`?**
+  _High betweenness centrality (0.093) - this node is a cross-community bridge._
+- **Why does `PlayerRequest` connect `Playback Test Symbols` to `Content Repository Test Symbols`, `App State Test Symbols`, `Skip Playback Test Symbols`, `Android Avatar Picker Symbols`, `Catalog Playback Device Test Symbols`, `Models Symbols`, `Panda Video App Symbols`, `App State Test Symbols`, `Offline Downloads Test Symbols`, `Player Symbols`, `Jianpian Source Test Symbols`, `Content Repository Symbols`, `Playback Preload Test Symbols`, `Actor Source Test Symbols`, `Actor Half Sheet Test Symbols`, `Android Fullscreen Device Test Symbols`, `Actor Half Sheet Test Symbols`, `Android Platform Symbols`, `Haptics Symbols`, `Response Cache Test Symbols`, `Jianpian Source Symbols`, `Offline Downloads Symbols`, `Desktop Platform Symbols`?**
+  _High betweenness centrality (0.070) - this node is a cross-community bridge._
+- **Why does `PlaybackSession` connect `Player Symbols` to `Actor Half Sheet Test Symbols`, `Player Audio Controls Symbols`, `Modern Player Symbols`, `Playback Test Symbols`, `Playback Telemetry Symbols`, `Playback Preload Test Symbols`, `AGENTS Symbols`, `Skip Playback Test Symbols`, `Android Fullscreen Device Test Symbols`, `Catalog Playback Device Test Symbols`, `Models Symbols`?**
   _High betweenness centrality (0.050) - this node is a cross-community bridge._
-- **Are the 2 inferred relationships involving `PlayerRequest` (e.g. with `.completedEpisodeResolvesLocallyWithoutNetworkAndOmitsUncachedNextEpisode()` and `.lostLocalFilesBecomeRetryableInsteadOfReturningFakeOfflineMedia()`) actually correct?**
-  _`PlayerRequest` has 2 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 53 inferred relationships involving `mockEngine()` (e.g. with `.animationAndDocumentaryCatalogsCanPlaySeriesLikeSearch()` and `.yearlessCatalogDoesNotPreferBareTitleOverAnotherRemake()`) actually correct?**
-  _`mockEngine()` has 53 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `Request`, `Config`, `UpdateNotice` to the rest of the system?**
-  _155 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `Panda Video App Symbols` be split into smaller, more focused modules?**
-  _Cohesion score 0.08387096774193549 - nodes in this community are weakly interconnected._
+- **Are the 16 inferred relationships involving `PlayerRequest` (e.g. with `.batchSelectionResolvesEachEpisodeInSourceOrderAndKeepsPlaybackSnapshot()` and `.cachePickerKeepsSingleFilmWithoutAnEpisodeListDownloadable()`) actually correct?**
+  _`PlayerRequest` has 16 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 21 inferred relationships involving `PlaybackSession` (e.g. with `SkipDurations` and `PlaybackTelemetry`) actually correct?**
+  _`PlaybackSession` has 21 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 107 inferred relationships involving `mockEngine()` (e.g. with `.africaDocumentarySeriesDoesNotUseTheTelevisionOnlySearchFilter()` and `.animationAndDocumentaryCatalogsCanPlaySeriesLikeSearch()`) actually correct?**
+  _`mockEngine()` has 107 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 2 inferred relationships involving `CatalogItem` (e.g. with `.truncatedArtworkCacheRefreshesToFullCastWithoutWaitingForExpiry()` and `.verifiedPlaybackPageIsRecheckedWithoutSearchingOrTreatingOfflineAsMissing()`) actually correct?**
+  _`CatalogItem` has 2 INFERRED edges - model-reasoned connections that need verification._
 ## Coverage and Static Analysis Limitations
 
 - Code-only extraction; documentation, images, binaries, and unsupported XML/plist formats are not indexed.
@@ -626,18 +651,21 @@ _Questions this graph is uniquely positioned to answer:_
 - Git commit identity excludes uncommitted edits. Check source SHA-256 hashes in coverage.json for snapshot freshness.
 - graphify-out/ was written into the working tree; portable outputs can be shared, while AST caches and machine-local sidecars are ignored.
 
-Parser warnings: 11 files may be only partially extracted.
+Parser warnings: 14 files may be only partially extracted.
 
 - `frontend/tests/browser/fixtures/dplayer-test0.ts`: first parser error at L1.
 - `frontend/tests/browser/fixtures/dplayer-test1.ts`: first parser error at L1.
-- `mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt`: first parser error at L43.
+- `mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/ActorBrowser.kt`: first parser error at L1.
+- `mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt`: first parser error at L53.
+- `mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/DoubanConnection.kt`: first parser error at L1.
 - `mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/SeekPreview.kt`: first parser error at L1.
 - `mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/html/HtmlNode.kt`: first parser error at L1.
 - `mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/BundledPosters.kt`: first parser error at L1.
 - `mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CacheMaintenance.kt`: first parser error at L1.
 - `mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogAvailability.kt`: first parser error at L1.
-- `mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt`: first parser error at L42.
+- `mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt`: first parser error at L50.
 - `mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/JianpianSource.kt`: first parser error at L1.
+- `mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/ActorUi.kt`: first parser error at L1.
 - `mobile/tools/feature-verification.init.gradle`: first parser error at L7.
 
-Integrity diagnostics: 0 dangling edges, 0 missing-endpoint edges, 61 self-loops, 142 same-endpoint edge collisions in the raw extraction. Collisions can combine distinct static relationships in the exported graph; inspect source for full detail.
+Integrity diagnostics: 0 dangling edges, 0 missing-endpoint edges, 62 self-loops, 172 same-endpoint edge collisions in the raw extraction. Collisions can combine distinct static relationships in the exported graph; inspect source for full detail.

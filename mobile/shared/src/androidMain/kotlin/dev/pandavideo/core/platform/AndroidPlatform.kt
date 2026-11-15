@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import android.util.Rational
 import android.view.WindowManager
@@ -20,7 +21,10 @@ import androidx.core.content.ContextCompat
 import androidx.media3.common.*
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -38,6 +42,8 @@ import kotlinx.coroutines.flow.*
 import kotlin.math.roundToInt
 
 class AndroidPlatform(private val activity: Activity) : PlatformServices {
+    private val douban by lazy { AndroidDoubanSession(activity.applicationContext) }
+    override fun doubanSession(): DoubanSession = douban
     override fun offlineEngine(): dev.pandavideo.data.repository.OfflineEngine =
         AndroidOfflineEngine.get(activity.applicationContext)
     override fun avatarDirectory(): String =
@@ -182,11 +188,17 @@ class AndroidPlayer(context: Context) : PlayerController {
 
     private val mutable = MutableStateFlow(PlayerState())
     override val state = mutable.asStateFlow()
-    override val capabilities = PlayerCapabilities(pictureInPicture = true, framePreview = true, audioOnly = true)
+    override val capabilities = PlayerCapabilities(pictureInPicture = true, framePreview = true,
+        audioOnly = true, initialPosition = true, initialSkipping = true)
     private val seekPreview = AndroidSeekPreview(appContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var released = false
     private val listener = object : Player.Listener {
+        override fun onRenderedFirstFrame() {
+            if (!released && native?.currentMediaItem?.mediaId == mutable.value.mediaId.toString())
+                mutable.value = mutable.value.copy(firstFrameRendered = true,
+                    position = native?.currentPosition?.coerceAtLeast(0) ?: 0)
+        }
         override fun onEvents(player: Player, events: Player.Events) {
             if (released) return
             val id = player.currentMediaItem?.mediaId?.toLongOrNull() ?: mutable.value.mediaId
@@ -219,7 +231,11 @@ class AndroidPlayer(context: Context) : PlayerController {
         }, ContextCompat.getMainExecutor(appContext))
         scope.launch {
             while (isActive) {
-                delay(500)
+                // Startup timing needs a progressing playhead as well as a rendered frame.
+                // A permanent 500ms poll would quantize every fast startup to that interval.
+                val starting = mutable.value.wantsPlay && (!mutable.value.firstFrameRendered ||
+                    mutable.value.position <= 0)
+                delay(if (starting) 25 else 500)
                 val player = native ?: continue
                 if (!released) mutable.value = mutable.value.copy(position = player.currentPosition.coerceAtLeast(0), duration = player.duration.takeIf { it > 0 } ?: 0)
             }
@@ -228,18 +244,31 @@ class AndroidPlayer(context: Context) : PlayerController {
     private fun applyLoad(source: MediaSource) {
         val player = native ?: return
         mutable.value = PlayerState(mediaId = source.id, phase = PlayerPhase.Preparing, wantsPlay = source.autoplay)
-        player.playWhenReady = source.autoplay
-        player.setMediaItem(MediaItem.Builder().setUri(source.url).setMediaId(source.id.toString())
-            .setMimeType(if (source.kind == "hls") MimeTypes.APPLICATION_M3U8 else null)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(source.title)
-                    .setSubtitle(source.episodeLabel)
-                    .setArtist(source.episodeLabel)
-                    .build(),
-            )
-            .build())
-        player.prepare()
+        val result = (player as MediaController).sendCustomCommand(
+            SessionCommand(PlaybackMediaSessionService.ACTION_LOAD, Bundle.EMPTY), source.commandArgs())
+        result.addListener({
+            if (!released && mutable.value.mediaId == source.id) {
+                val response = runCatching { result.get() }.getOrNull()
+                if (response?.resultCode == SessionResult.RESULT_SUCCESS)
+                    mutable.value = mutable.value.copy(dataPreloadHit = response.extras.getBoolean("preloadHit"))
+                else mutable.value = mutable.value.copy(phase = PlayerPhase.Error,
+                    error = "播放器准备失败，请重试")
+            }
+        }, ContextCompat.getMainExecutor(appContext))
+    }
+    private fun MediaSource.commandArgs() = Bundle().apply {
+        putString("url", url); putLong("id", id)
+        putString("mime", if (kind == "hls") MimeTypes.APPLICATION_M3U8 else null)
+        putString("title", title); putString("episode", episodeLabel)
+        putBoolean("autoplay", autoplay); putLong("position", startPosition)
+        putInt("introSeconds", startupSkip.introSeconds); putInt("outroSeconds", startupSkip.outroSeconds)
+    }
+    /** Sends speculative work to the service owning the playback buffers. */
+    override fun preload(source: MediaSource?) {
+        if (released) return
+        (native as? MediaController)?.sendCustomCommand(
+            SessionCommand(PlaybackMediaSessionService.ACTION_PRELOAD, Bundle.EMPTY),
+            source?.commandArgs() ?: Bundle.EMPTY)
     }
     override fun load(source: MediaSource) {
         if (released) return
@@ -295,6 +324,7 @@ class AndroidPlayer(context: Context) : PlayerController {
     }
     override fun close() {
         if (released) return
+        preload(null)
         released = true
         seekPreview.close()
         scope.cancel()
@@ -309,17 +339,18 @@ class AndroidPlayer(context: Context) : PlayerController {
 }
 
 @Composable
-actual fun PlayerSurface(controller: PlayerController, modifier: Modifier, zoom: Float) {
+actual fun PlayerSurface(controller: PlayerController, modifier: Modifier, zoom: Float, audioOnly: Boolean, fillViewport: Boolean) {
     val player = controller as AndroidPlayer
     val nativePlayer = player.nativePlayer
-    AndroidView(factory = { context -> PlayerView(context).apply {
-        keepScreenOn = true; useController = false
-        clipChildren = true
-        clipToPadding = true
-    } },
+    AndroidView(factory = ::createAndroidPlayerView,
         modifier = modifier,
         update = {
-            it.player = nativePlayer
+            // Retain one PlayerView across audio/video switches. Releasing an old view while
+            // its replacement is attaching can clear the shared player's newly bound surface.
+            it.keepScreenOn = !audioOnly
+            it.player = if (audioOnly) null else nativePlayer
+            it.resizeMode = if (fillViewport) AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                else AspectRatioFrameLayout.RESIZE_MODE_FIT
             // Transform Media3's native content frame, including its SurfaceView, rather than
             // a Compose graphics layer which does not reliably transform native video surfaces.
             it.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_content_frame)?.apply {
@@ -329,3 +360,19 @@ actual fun PlayerSurface(controller: PlayerController, modifier: Modifier, zoom:
         },
         onRelease = { it.player = null })
 }
+
+/** Creates the native host shared by the production surface and device regression tests. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+internal fun createAndroidPlayerView(context: Context): PlayerView =
+    PlayerView(context).apply {
+        keepScreenOn = true; useController = false
+        // Track/output resets can occur while waiting for replacement video data. Media3's
+        // default closes a black shutter at that point. Retain the painted frame instead;
+        // the shared startup overlay still hides previous-episode content during a new load.
+        setKeepContentOnPlayerReset(true)
+        // Preserve the actual stream aspect ratio, including subtitles burned into its
+        // bottom edge. Only an explicit user pinch may enlarge and crop the picture.
+        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+        clipChildren = true
+        clipToPadding = true
+    }

@@ -60,7 +60,8 @@ internal object JianpianSource {
             SearchItem(title, "荐片", "jianpian:$id", true, address(id),
                 posterUrl(cover, imageOrigin),
                 row.names("years", "year"), row.names("areas", "area"),
-                row.names("types"), row.names("actors"), row.text("mask").take(80))
+                row.names("types"), row.names("actors"), row.text("mask").take(80),
+                rating = SearchPresentation.rating(row.text("douban_score").toDoubleOrNull()))
         }.distinctBy { it.detailUrl }
         return SearchResult(items, listOf(SourceCount("荐片", items.size, "可在线播放")))
     }
@@ -82,10 +83,25 @@ internal object JianpianSource {
 
     fun episodes(body: String, page: String): List<Pair<Episode, String>> {
         val detail = data(body) as? JsonObject ?: throw ApiError("荐片详情格式异常")
+        val routes = (detail["source_list_source"] as? JsonArray).orEmpty().take(100)
+        val hasSeries = routes.any { route ->
+            ((route as? JsonObject)?.get("source_list") as? JsonArray).orEmpty().any {
+                Regex("(?:第\\s*)?\\d{1,4}\\s*集")
+                    .containsMatchIn((it as? JsonObject)?.text("source_name").orEmpty())
+            }
+        }
         // Native FTP/P2P resources are intentionally excluded: mobile has no JPEngine2.
         // Line/index keys preserve upstream order without persisting expiring stream URLs.
-        return (detail["source_list_source"] as? JsonArray).orEmpty().take(100).flatMapIndexed { line, entry ->
-            ((entry as? JsonObject)?.get("source_list") as? JsonArray).orEmpty().take(1000)
+        return routes.flatMapIndexed { line, entry ->
+            // Provider aggregation can mix the 1986 series with a single animated film,
+            // or the 1965 cartoon with the 2021 live-action film. Exclude explicit film
+            // lines only when this detail also contains positive numbered-series evidence.
+            val rows = ((entry as? JsonObject)?.get("source_list") as? JsonArray).orEmpty()
+            if (hasSeries && rows.size == 1 &&
+                ContentParsers.movieOnlyEpisodes(listOf(Episode(
+                    "", (rows.single() as? JsonObject)?.text("source_name").orEmpty(), line + 1,
+                )))) return@flatMapIndexed emptyList()
+            rows.take(1000)
                 .mapIndexedNotNull { index, value ->
                     val row = value as? JsonObject ?: return@mapIndexedNotNull null
                     val media = row.text("url").takeIf { mediaKind(it) != null } ?: return@mapIndexedNotNull null

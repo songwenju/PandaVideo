@@ -1,11 +1,31 @@
 package dev.pandavideo
 
 import dev.pandavideo.app.RetryPrompts
+import dev.pandavideo.app.failureDetails
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class RetryPromptsTest {
+    @Test fun failureDetailsPreserveStatusAndNestedNetworkCause() {
+        val message = failureDetails(IllegalStateException("无法访问影视来源",
+            IllegalArgumentException("来源暂时不可用（HTTP 503）")))
+        assertTrue(message.contains("无法访问影视来源"))
+        assertTrue(message.contains("HTTP 503"))
+        assertTrue(failureDetails(Exception()).contains("Exception"))
+    }
+
+    @Test fun failureDetailsHideUrlsAndCredentialsAndBoundLongMessages() {
+        val message = failureDetails(Exception(
+            "请求 https://source.test/video?token=url-secret 失败\n" +
+                "token=plain-secret password=private secret=hidden\nAuthorization: Bearer credential\n" +
+                "Cookie: session=cookie-value"))
+        for (value in listOf("source.test", "url-secret", "plain-secret", "private", "credential", "cookie-value"))
+            assertTrue(value !in message, value)
+        assertTrue(message.contains("请求"))
+        assertTrue(failureDetails(Exception("x".repeat(10_000))).length < 600)
+    }
+
     @Test fun dismissDoesNotRetryAndRepeatedFailureDoesNotDuplicate() {
         val prompts = RetryPrompts()
         var attempts = 0

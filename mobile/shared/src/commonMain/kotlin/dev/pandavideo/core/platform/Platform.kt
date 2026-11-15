@@ -17,6 +17,8 @@ interface KeyValueStorage {
 }
 
 interface PlatformServices {
+    /** Persistent official Douban browser session for catalog requests. */
+    fun doubanSession(): DoubanSession = UnsupportedDoubanSession
     /** Native offline-media adapter, retained across screen changes. */
     fun offlineEngine(): dev.pandavideo.data.repository.OfflineEngine =
         dev.pandavideo.data.repository.UnsupportedOfflineEngine
@@ -98,10 +100,12 @@ interface PlatformServices {
  *
  * @param controller Player whose video is displayed.
  * @param modifier Layout of the fixed viewport.
- * @param zoom Centered picture scale on mobile, from 1 to 4; overflow is clipped to the viewport.
+ * @param zoom Centered picture scale on mobile, from 0.5 to 4; overflow is clipped to the viewport.
+ * @param audioOnly Detaches video output and its screen-on request while retaining the host view.
+ * @param fillViewport Uses centered aspect fill on mobile, cropping edges without stretching.
  */
 @Composable
-expect fun PlayerSurface(controller: PlayerController, modifier: Modifier, zoom: Float = 1f)
+expect fun PlayerSurface(controller: PlayerController, modifier: Modifier, zoom: Float = 1f, audioOnly: Boolean = false, fillViewport: Boolean = false)
 
 /** Wall-clock epoch milliseconds provided by the platform. */
 internal expect fun currentEpochMillis(): Long
