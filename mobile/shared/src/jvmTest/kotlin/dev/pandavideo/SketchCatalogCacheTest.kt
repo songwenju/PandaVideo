@@ -15,6 +15,31 @@ import java.io.File
 import kotlin.test.*
 
 class SketchCatalogCacheTest {
+    @Test fun downloadPromotionsNeverReturnFromStartupCacheOrOfflineRefresh() = runTest {
+        val file = File.createTempFile("pandavideo-sketch-download-", ".db")
+        try {
+            val page = SketchSource.catalog(dieyinSketchFixture(), "www.dieyin.cn", 1)
+            CatalogDatabase(file.absolutePath).write("sketch:v1:www.dieyin.cn:0",
+                page.copy(items = page.items + page.items.single().copy(
+                    title = "2026宋小宝春晚小品合集 3部高清下载",
+                    url = "https://www.dieyin.cn/video/407963.html")),
+                dev.pandavideo.core.platform.currentEpochMillis())
+            val repo = ContentRepository(HttpClient(mockEngine {
+                respond("", HttpStatusCode.ServiceUnavailable)
+            }), CatalogDatabase(file.absolutePath))
+            try {
+                val snapshots = mutableListOf<dev.pandavideo.core.model.CatalogPage>()
+                val restored = repo.sketches(onCached = { snapshots += it })
+                assertEquals(listOf("又来了"), restored.items.map { it.title })
+                assertEquals(1, snapshots.size)
+                assertEquals(restored.items, snapshots.single().items)
+                val offline = repo.sketches(refresh = true)
+                assertEquals(restored.items, offline.items)
+                assertTrue(offline.stale)
+            } finally { repo.close() }
+        } finally { file.delete() }
+    }
+
     @Test fun removedYoukuCacheNeverReturnsAfterRestartOrOfflineRefresh() = runTest {
         val file = File.createTempFile("pandavideo-sketch-", ".db")
         var requests = 0

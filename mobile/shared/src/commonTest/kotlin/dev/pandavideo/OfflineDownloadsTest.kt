@@ -5,10 +5,89 @@ package dev.pandavideo
 import dev.pandavideo.core.model.*
 import dev.pandavideo.data.repository.*
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.MutableStateFlow
+import dev.pandavideo.core.platform.DownloadNetwork
 import kotlinx.coroutines.test.*
 import kotlin.test.*
 
 class OfflineDownloadsTest {
+    @Test fun mobileBatchWaitsForOneConsentBeforeResolvingAnyMedia() = runTest {
+        val network = MutableStateFlow(DownloadNetwork.Other)
+        val engine = Engine()
+        var requests = 0
+        val confirmations = mutableListOf<() -> Unit>()
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope,
+            network = network, onNetworkWarning = { proceed, _ -> confirmations += proceed }) {
+            requests++; info(it.episode!!)
+        }
+        val ids = store.enqueueEpisodes(info(), listOf("e1", "e2"))
+        runCurrent()
+        assertEquals(1, confirmations.size)
+        assertEquals(0, requests)
+        assertTrue(store.tasks.value.all { it.status == DownloadStatus.Paused })
+        confirmations.single()(); runCurrent()
+        engine.finish(ids[0]); runCurrent()
+        assertEquals(2, requests)
+        assertEquals(1, confirmations.size)
+        engine.finish(ids[1]); runCurrent()
+    }
+
+    @Test fun wifiLossPreservesProgressAndWifiReturnDoesNotResumeManualPause() = runTest {
+        val network = MutableStateFlow(DownloadNetwork.Wifi)
+        val engine = Engine()
+        val confirmations = mutableListOf<() -> Unit>()
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope,
+            network = network, onNetworkWarning = { proceed, _ -> confirmations += proceed }) { info(it.episode!!) }
+        val ids = store.enqueueEpisodes(info(), listOf("e1", "e2"))
+        runCurrent()
+        engine.callbacks.getValue(ids[0])(0.4f); runCurrent()
+        store.pause(ids[1])
+        network.value = DownloadNetwork.Other; runCurrent()
+        assertEquals(0.4f, store.tasks.value.first { it.id == ids[0] }.progress)
+        assertTrue(store.tasks.value.all { it.status == DownloadStatus.Paused })
+        assertEquals(1, confirmations.size)
+        network.value = DownloadNetwork.Wifi; runCurrent()
+        assertEquals(listOf(ids[0], ids[0]), engine.started)
+        assertEquals(DownloadStatus.Paused, store.tasks.value.first { it.id == ids[1] }.status)
+        confirmations.single()() // A stale dialog cannot approve a later cellular connection.
+        network.value = DownloadNetwork.Other; runCurrent()
+        assertEquals(2, confirmations.size)
+        confirmations.first()(); runCurrent()
+        assertTrue(store.tasks.value.all { it.status == DownloadStatus.Paused })
+    }
+
+    @Test fun offlineWaitAndExplicitPauseNeverStartOnReconnect() = runTest {
+        val network = MutableStateFlow(DownloadNetwork.Offline)
+        val engine = Engine()
+        var warnings = 0
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope,
+            network = network, onNetworkWarning = { _, _ -> warnings++ }) { info() }
+        val id = store.enqueue(info()); runCurrent()
+        assertTrue(engine.started.isEmpty())
+        assertEquals(0, warnings)
+        store.pause(id)
+        network.value = DownloadNetwork.Wifi; runCurrent()
+        assertTrue(engine.started.isEmpty())
+        store.resume(id); runCurrent()
+        assertEquals(listOf(id), engine.started)
+    }
+
+    @Test fun cancellingWaitingTaskInvalidatesConsentAndRetryRequiresConsentAgain() = runTest {
+        val network = MutableStateFlow(DownloadNetwork.Other)
+        val engine = Engine()
+        var available: (() -> Boolean)? = null
+        var confirmations = 0
+        val store = OfflineDownloads(FakeStorage(), engine, backgroundScope,
+            network = network, onNetworkWarning = { _, valid -> confirmations++; available = valid }) { info() }
+        val id = store.enqueue(info()); runCurrent()
+        assertTrue(available!!())
+        store.pause(id)
+        assertFalse(available())
+        store.resume(id); runCurrent()
+        assertEquals(2, confirmations)
+        assertTrue(engine.started.isEmpty())
+    }
+
     private fun info(episode: String = "e1") = PlaybackInfo(
         "Film", "https://media.test/expiring-token.m3u8", "hls",
         listOf(Episode("e1", "第一集", 1), Episode("e2", "第二集", 1)),

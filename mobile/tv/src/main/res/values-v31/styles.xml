@@ -1,0 +1,8 @@
+<resources>
+    <style name="TvLaunchTheme" parent="TvTheme">
+        <item name="android:windowBackground">@drawable/tv_startup_background</item>
+        <item name="android:windowSplashScreenBackground">#151726</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_tv_system_startup_logo</item>
+        <item name="android:windowSplashScreenBrandingImage">@drawable/launch_slogan</item>
+    </style>
+</resources>

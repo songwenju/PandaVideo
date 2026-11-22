@@ -1,24 +1,32 @@
 package dev.pandavideo.ui.player
 
-import dev.pandavideo.core.player.PlayerPhase
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.key
 import dev.pandavideo.core.player.PlayerState
+import kotlinx.coroutines.flow.StateFlow
 
-/** Tracks the visible presentation independently of the first-frame telemetry callback. */
+/** Replaces playback subscriptions without composing the previous session's first-frame flag. */
+@Composable
+internal fun <T> StateFlow<T>.collectPlaybackState(): State<T> = key(this) { collectAsState() }
+
+/** Keeps replacement video covered until the requested media reports a rendered frame. */
 internal class VideoFrameVisibility {
     private var mediaId: Long? = null
     private var presented = false
 
-    fun cover(player: PlayerState, loading: Boolean, audioOnly: Boolean, error: String?): Boolean {
-        if (mediaId != player.mediaId) {
-            mediaId = player.mediaId
+    fun cover(player: PlayerState, loading: Boolean, audioOnly: Boolean, error: String?,
+        requestedMediaId: Long = player.mediaId): Boolean {
+        if (mediaId != requestedMediaId) {
+            mediaId = requestedMediaId
             presented = false
         }
-        // Playing already exposes the native surface even if first-frame telemetry was missed.
-        // Remember that presentation across subsequent buffering; a resume position alone must
-        // never unmask startup. Reset on media ID changes so a new episode cannot show old video.
-        if (!audioOnly && (player.firstFrameRendered || player.phase == PlayerPhase.Playing)) presented = true
-        return !audioOnly && error == null &&
-            (loading || (!presented &&
-                player.phase in listOf(PlayerPhase.Idle, PlayerPhase.Preparing, PlayerPhase.Buffering)))
+        // Resolution and native state are collected independently. An old player's rendered
+        // flag cannot acknowledge the new request, and Ready/Playing may precede video output.
+        // After a verified presentation, preserve it through rebuffering and output resets.
+        if (!loading && !audioOnly && player.mediaId == requestedMediaId && player.firstFrameRendered)
+            presented = true
+        return !audioOnly && error == null && (loading || player.mediaId != requestedMediaId || !presented)
     }
 }

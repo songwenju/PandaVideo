@@ -10,7 +10,7 @@ kotlin {
     android {
         namespace = "dev.pandavideo.shared"
         compileSdk = 36
-        minSdk = 26
+        minSdk = 23
         androidResources.enable = true
         withHostTestBuilder { }.configure { }
         withDeviceTestBuilder { sourceSetTreeName = "test" }.configure {
@@ -54,6 +54,8 @@ kotlin {
             implementation("androidx.sqlite:sqlite-bundled:2.6.2")
         }
         androidMain.dependencies {
+            implementation("androidx.tv:tv-material:1.1.0")
+            implementation("com.belerweb:pinyin4j:2.5.1")
             implementation(libs.activity)
             implementation(libs.ktor.okhttp)
             implementation(libs.media3.exoplayer)

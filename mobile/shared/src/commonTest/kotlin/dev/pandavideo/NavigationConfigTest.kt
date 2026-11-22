@@ -20,7 +20,7 @@ class NavigationConfigTest {
         assertEquals(
             listOf(
                 "hot" to "最近热播",
-                "discover" to "发现",
+                "discover" to "精选",
                 "browse" to "分类",
                 "profile" to "我的",
             ),

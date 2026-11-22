@@ -48,7 +48,7 @@ internal fun DownloadsScreen(model: AppState, back: () -> Unit, openPlayer: () -
                         val status = when (entry.status) {
                             DownloadStatus.Queued -> "等待缓存"
                             DownloadStatus.Downloading -> entry.progress?.let { "缓存中 ${(it * 100).toInt()}%" } ?: "缓存中"
-                            DownloadStatus.Paused -> "已暂停"
+                            DownloadStatus.Paused -> entry.error.ifBlank { "已暂停" }
                             DownloadStatus.Completed -> "已缓存，可离线观看"
                             DownloadStatus.Failed -> entry.error.ifBlank { "缓存失败，请重试" }
                         }

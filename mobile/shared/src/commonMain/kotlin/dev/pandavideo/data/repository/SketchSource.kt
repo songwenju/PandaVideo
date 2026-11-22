@@ -14,6 +14,11 @@ internal object SketchSource {
 
     fun listed(address: String): Boolean = owns(address) && Url(address).host in catalogHosts
 
+    /** Filters visible download promotions, not a playable card's tooltip or download link. */
+    fun catalogTitle(title: String): Boolean = title.isNotBlank() &&
+        !Regex("高清下载|打包下载|全集下载|免费下载|网盘|磁力|迅雷|(?:合集|\\d+部).*下载")
+            .containsMatchIn(title)
+
     fun address(host: String, page: Int): String {
         require(host in hosts && page > 0)
         return if (host == hosts.first()) "https://$host/?cate=2&page=$page"
@@ -82,6 +87,8 @@ internal object SketchSource {
             } catch (_: Exception) { false }
         }
         // The aggregate cursor counts provider pages, not rows (the sites have different sizes).
-        return CatalogPage(items, page - 1, 1, hasMore, label = "小品")
+        // A structurally valid page containing only promotions is still a valid cursor.
+        // Keep its pagination so the next page can supply actual performances.
+        return CatalogPage(items.filter { catalogTitle(it.title) }, page - 1, 1, hasMore, label = "小品")
     }
 }

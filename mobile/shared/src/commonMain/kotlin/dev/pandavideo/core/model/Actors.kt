@@ -58,7 +58,57 @@ internal data class ActorWork(
  */
 internal fun actorPlaybackWorks(works: List<ActorWork>, missingUrls: Set<String>): List<ActorWork> =
     works.filter { (it.verifiedCatalog && it.subjectId.isNotBlank() || it.playbackPageUrl.isNotBlank()) &&
-        it.catalog().url !in missingUrls }
+        it.catalog().url !in missingUrls }.distinctBy { it.catalog().url }
+
+/** Compares credits across typography and explicitly labelled dubbed editions, not sequels. */
+internal fun actorCreditTitle(title: String): String =
+    title.trim().replace(Regex("[（(](?:普通话|国语|粤语|国配|粤配)[）)]$"), "")
+        .lowercase().filter { it.isLetterOrDigit() }
+
+/**
+ * Supplements provider omissions with explicit cast statements from known catalog subjects.
+ *
+ * The caller must validate the unique person identity before using name-based catalog credits.
+ * Only complete cast tokens count. Exact release years win; a unique one-year premiere offset
+ * can repair provider dates, while remakes, later seasons and ambiguous subjects stay separate.
+ */
+internal fun ActorFilmography.withCatalogCredits(actor: ActorRef, items: List<CatalogItem>): ActorFilmography {
+    val subjects = items.groupBy { it.url }.values.map { rows ->
+        val first = rows.first()
+        first.copy(
+            year = first.year.ifBlank { rows.firstOrNull { it.year.isNotBlank() }?.year.orEmpty() },
+            casts = first.casts.ifEmpty { rows.firstOrNull { it.casts.isNotEmpty() }?.casts.orEmpty() },
+            cover = first.cover.ifBlank { rows.firstOrNull { it.cover.isNotBlank() }?.cover.orEmpty() },
+        )
+    }.filter {
+        it.kind in setOf("movie", "tv") && actor.name.trim() in it.casts.map(String::trim) &&
+            Regex("^https://movie\\.douban\\.com/subject/[0-9]+/?$").matches(it.url)
+    }
+    fun subjectId(item: CatalogItem) = item.url.trimEnd('/').substringAfterLast('/')
+    val mapped = works.map { work ->
+        val candidates = subjects.filter {
+            it.kind == work.kind && actorCreditTitle(it.title) == actorCreditTitle(work.title) &&
+                (work.subjectId.isBlank() || subjectId(it) == work.subjectId) &&
+                (work.year.isBlank() || it.year.isBlank() || work.year == it.year ||
+                    work.year.toIntOrNull()?.let { year ->
+                        it.year.toIntOrNull()?.let { other -> kotlin.math.abs(year - other) <= 1 }
+                    } == true)
+        }
+        val exact = candidates.filter { work.year.isNotBlank() && it.year == work.year }
+        val match = (exact.ifEmpty { candidates }).singleOrNull() ?: return@map work
+        work.copy(title = match.title, year = match.year.ifBlank { work.year },
+            subjectId = subjectId(match), verifiedCatalog = true,
+            cover = match.cover.ifBlank { work.cover })
+    }
+    val added = subjects.filter { item -> mapped.none { it.subjectId == subjectId(item) } }.map {
+        ActorWork("catalog:${subjectId(it)}", it.title, it.kind, it.year,
+            subjectId = subjectId(it), cover = it.cover, verifiedCatalog = true)
+    }
+    return copy(works = (mapped + added).distinctBy {
+        if (it.subjectId.isNotBlank()) "subject:${it.subjectId}"
+        else it.id
+    }.sortedWith(compareByDescending<ActorWork> { it.year.toIntOrNull() ?: 0 }.thenBy { it.title }))
+}
 
 /**
  * Supplements a partial provider filmography with a credit confirmed by the current player.

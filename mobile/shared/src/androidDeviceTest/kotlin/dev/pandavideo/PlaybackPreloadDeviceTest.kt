@@ -4,11 +4,14 @@ import android.graphics.SurfaceTexture
 import android.os.Bundle
 import android.view.Surface
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.pandavideo.core.platform.AndroidPlayer
+import dev.pandavideo.core.platform.AndroidPlaybackPreloader
 import dev.pandavideo.core.platform.PlaybackMediaSessionService
 import dev.pandavideo.core.player.MediaSource
 import dev.pandavideo.core.player.PlayerPhase
@@ -27,6 +30,40 @@ import kotlin.test.*
 @UnstableApi
 @RunWith(AndroidJUnit4::class)
 class PlaybackPreloadDeviceTest {
+    @Test fun autoplayReplacementNeverRestartsThePausedPreviousItem() = runBlocking {
+        val base = InstrumentationRegistry.getArguments().getString("preloadFixtureBase")
+        assumeTrue("Provide preloadFixtureBase", base != null)
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preloader = withContext(Dispatchers.Main) { AndroidPlaybackPreloader(context) }
+        val playedIds = mutableListOf<String>()
+        try {
+            withContext(Dispatchers.Main) {
+                preloader.load(MediaItem.Builder().setMediaId("1").setUri("$base/video.mp4").build(),
+                    0, autoplay = false)
+            }
+            waitUntil {
+                assertNull(preloader.player.playerError)
+                preloader.player.playbackState == Player.STATE_READY
+            }
+            withContext(Dispatchers.Main) {
+                preloader.player.addListener(object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        if (isPlaying) playedIds += preloader.player.currentMediaItem!!.mediaId
+                    }
+                })
+                // Reopening or changing skip settings can replace a paused, ready item.
+                // Autoplay belongs to the replacement, never to the previous decoder.
+                preloader.load(MediaItem.Builder().setMediaId("2").setUri("$base/video.mp4?new").build(),
+                    0, autoplay = true)
+                assertFalse("1" in playedIds, "Replacing media briefly restarted the previous item")
+            }
+            waitUntil { preloader.player.isPlaying }
+            withContext(Dispatchers.Main) { assertEquals(listOf("2"), playedIds) }
+        } finally {
+            withContext(Dispatchers.Main) { preloader.release() }
+        }
+    }
+
     @Test fun sharedSessionConsumesTheNativeNextEpisodePreload() = runBlocking {
         val base = InstrumentationRegistry.getArguments().getString("preloadFixtureBase")
         assumeTrue("Provide preloadFixtureBase", base != null)

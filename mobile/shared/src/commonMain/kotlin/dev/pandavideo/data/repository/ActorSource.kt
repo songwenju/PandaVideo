@@ -83,7 +83,7 @@ internal class ActorSource(private val fetch: suspend (String) -> String) {
 
         /** Normalizes typography and only the optional first-part suffix of television titles. */
         private fun catalogTitle(title: String, kind: String): String {
-            val normalized = ContentParsers.normalizedTitle(title)
+            val normalized = actorCreditTitle(title)
             if (kind != "tv") return normalized
             val withoutFirst = normalized.replace(Regex("第(?:1|一)(?:季|部)$"), "")
             // Strip "1" in "马大帅1", but preserve 11, 21, 1981 and every later season number.
@@ -143,7 +143,8 @@ internal class ActorSource(private val fetch: suspend (String) -> String) {
             if (row.array("contributor").none { it.jsonObject.text("id") == person }) return null
             val role = row.text("desc")
             val id = row.text("album_id").ifBlank { row.text("entity_id") }
-            val title = row.text("title")
+            val title = row.text("title").trim()
+                .replace(Regex("[（(](?:普通话|国语|粤语|国配|粤配)[）)]$"), "")
             val url = row.text("page_url")
             if (!Regex("[0-9]+").matches(id) || title.isBlank() ||
                 !Regex("^https://www\\.iqiyi\\.com/v_[a-zA-Z0-9]+\\.html(?:\\?.*)?$").matches(url)) return null

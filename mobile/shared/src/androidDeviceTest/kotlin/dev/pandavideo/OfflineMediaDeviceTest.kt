@@ -14,6 +14,9 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.net.URL
+import java.net.ServerSocket
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.concurrent.thread
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import kotlin.test.*
@@ -22,6 +25,68 @@ import kotlin.test.*
 @UnstableApi
 @RunWith(AndroidJUnit4::class)
 class OfflineMediaDeviceTest {
+    @Test fun pausedMp4ResumesFromCachedBytesAndNeverPublishesAPartialAsset() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val engine = AndroidOfflineEngine.get(context)
+        val id = "device-resume-${System.nanoTime()}"
+        val server = ServerSocket(0)
+        val offsets = CopyOnWriteArrayList<Int>()
+        val bytes = ByteArray(4 * 1024 * 1024) { (it % 251).toByte() }
+        val serving = thread(isDaemon = true) {
+            while (!server.isClosed) {
+                try {
+                    server.accept().use { socket ->
+                        socket.soTimeout = 5_000
+                        val input = socket.getInputStream().bufferedReader()
+                        input.readLine()
+                        var offset = 0
+                        while (true) {
+                            val line = input.readLine() ?: break
+                            if (line.isEmpty()) break
+                            if (line.startsWith("Range:", ignoreCase = true))
+                                offset = line.substringAfter("bytes=").substringBefore('-').toInt()
+                        }
+                        offsets += offset
+                        val output = socket.getOutputStream()
+                        val headers = if (offset > 0)
+                            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes $offset-${bytes.lastIndex}/${bytes.size}\r\n"
+                            else "HTTP/1.1 200 OK\r\n"
+                        output.write((headers + "Content-Length: ${bytes.size - offset}\r\n" +
+                            "Accept-Ranges: bytes\r\nContent-Type: video/mp4\r\nConnection: close\r\n\r\n").toByteArray())
+                        while (offset < bytes.size) {
+                            val count = minOf(16 * 1024, bytes.size - offset)
+                            output.write(bytes, offset, count)
+                            output.flush()
+                            offset += count
+                            // Keep the first transfer in flight long enough for a real pause.
+                            Thread.sleep(3)
+                        }
+                    }
+                } catch (_: java.io.IOException) { /* A pause intentionally closes the socket. */ }
+            }
+        }
+        try {
+            val info = PlaybackInfo("Resume fixture", "http://127.0.0.1:${server.localPort}/video.mp4",
+                "video", pageUrl = "https://fixture.test/resume")
+            val partial = CompletableDeferred<Unit>()
+            val downloading = async(Dispatchers.IO) {
+                engine.download(id, info) { if (it != null && it >= 0.15f) partial.complete(Unit) }
+            }
+            withTimeout(15_000) { partial.await() }
+            engine.cancel(id)
+            downloading.cancelAndJoin()
+            assertNull(engine.asset(id, id), "Incomplete media must not be playable")
+            val locator = withTimeout(30_000) { engine.download(id, info) {} }
+            assertNotNull(engine.asset(id, locator))
+            assertTrue(offsets.drop(1).any { it > 0 }, "Resume must request a nonzero byte range: $offsets")
+            println("OFFLINE_RESUME range_offsets=$offsets partial_asset=false completed_asset=true")
+        } finally {
+            server.close()
+            serving.join(5_000)
+            engine.remove(id)
+        }
+    }
+
     @Test fun hlsAndMp4StillPlayAndSeekWhenTheOriginIsUnavailable() = runBlocking {
         val base = InstrumentationRegistry.getArguments().getString("offlineFixtureBase")
         assumeTrue("Provide offlineFixtureBase to run real media verification", base != null)

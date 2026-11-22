@@ -6,7 +6,10 @@
     <application android:theme="@style/AppTheme" android:label="熊猫视频"
         android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round"
         android:usesCleartextTraffic="true" android:allowBackup="false" android:supportsRtl="true">
+        <!-- All entry points reuse the same UI session. Duplicate activities keep hidden
+             playback observers alive and can pause the shared MediaSession after play. -->
         <activity android:name=".MainActivity" android:exported="true"
+            android:launchMode="singleTask"
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|keyboardHidden" android:windowSoftInputMode="adjustResize">
             <intent-filter>

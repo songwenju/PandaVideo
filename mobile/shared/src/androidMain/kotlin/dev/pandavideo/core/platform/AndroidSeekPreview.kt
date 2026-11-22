@@ -29,6 +29,7 @@ internal class AndroidSeekPreview(context: Context) {
     private val mainExecutor = ContextCompat.getMainExecutor(this.context)
     private var source: MediaSource? = null
     private var extractor: FrameExtractor? = null
+    private var extractorUrl: String? = null
     private var pending: Request? = null
     private data class Request(val position: Long, val future: ListenableFuture<FrameExtractor.Frame>)
 
@@ -45,6 +46,10 @@ internal class AndroidSeekPreview(context: Context) {
         // scrubbing for this transport instead of firing CDN requests known to return 403.
         if (dev.pandavideo.core.player.BilibiliMedia.owns(loaded.url)) return@withContext null
         val target = position.coerceAtLeast(0)
+        val segment = loaded.segments.takeIf { it.isNotEmpty() }
+            ?.let { dev.pandavideo.core.player.SegmentedTimeline(it).locate(target) }
+        val address = segment?.let { loaded.segments[it.index].url } ?: loaded.url
+        val local = segment?.local ?: target
         // Media3 1.9.3 serializes extraction internally. Cancelling a running getFrame future
         // does not interrupt its decoder. Keep that one request and await it before submitting
         // the latest target, so rapid scrubbing cannot accumulate an unbounded native queue.
@@ -52,21 +57,27 @@ internal class AndroidSeekPreview(context: Context) {
         var frame = previous?.future?.awaitFrame()
         currentCoroutineContext().ensureActive()
         if (source !== loaded) return@withContext null
-        if (previous == null || previous.position != target) {
+        if (extractorUrl != address) {
+            extractor?.close()
+            extractor = null
+            pending = null
+            frame = null
+        }
+        if (frame == null || previous?.position != target) {
             val decoder = extractor ?: FrameExtractor.Builder(context,
-                MediaItem.Builder().setUri(loaded.url)
-                    .setMimeType(if (loaded.kind == "hls") MimeTypes.APPLICATION_M3U8 else null)
+                MediaItem.Builder().setUri(address)
+                    .setMimeType(if (segment == null && loaded.kind == "hls") MimeTypes.APPLICATION_M3U8 else null)
                     .build())
                 .setSeekParameters(SeekParameters.CLOSEST_SYNC)
                 .setEffects(listOf(Presentation.createForWidthAndHeight(
                     320, 180, Presentation.LAYOUT_SCALE_TO_FIT)))
-                .build().also { extractor = it }
-            val request = Request(target, decoder.getFrame(target))
+                .build().also { extractor = it; extractorUrl = address }
+            val request = Request(target, decoder.getFrame(local))
             pending = request
             frame = request.future.awaitFrame()
         }
         currentCoroutineContext().ensureActive()
-        if (source !== loaded || frame == null) return@withContext null
+        if (source !== loaded) return@withContext null
         val image = frame
         val bytes = withContext(Dispatchers.Default) {
             // Media3 retains the bitmap for seek deduplication; it owns recycling. Encode a
@@ -77,7 +88,7 @@ internal class AndroidSeekPreview(context: Context) {
             }
         }
         if (source !== loaded || bytes.isEmpty()) null
-        else PreviewFrame(mediaId, image.presentationTimeMs, bytes)
+        else PreviewFrame(mediaId, (segment?.offset ?: 0) + image.presentationTimeMs, bytes)
     }
 
     private suspend fun ListenableFuture<FrameExtractor.Frame>.awaitFrame(): FrameExtractor.Frame =
@@ -99,5 +110,6 @@ internal class AndroidSeekPreview(context: Context) {
         pending = null
         extractor?.close()
         extractor = null
+        extractorUrl = null
     }
 }

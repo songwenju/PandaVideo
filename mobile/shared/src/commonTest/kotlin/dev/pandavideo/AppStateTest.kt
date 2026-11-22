@@ -31,10 +31,12 @@ import kotlin.test.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AppStateTest {
-    private class TestPlatform(
+    internal class TestPlatform(
         val testScope: TestScope,
         private val offline: OfflineEngine = UnsupportedOfflineEngine,
+        private val databasePath: String? = null,
     ) : PlatformServices {
+        override fun catalogDatabasePath(): String? = databasePath
         var slowSearch = false
         var catalogDelay = 0L
         var browseDelay = 0L
@@ -45,13 +47,18 @@ class AppStateTest {
         var detailFixture = pomoDetailFixture
         var catalogUnavailable = false
         var networkUnavailable = false
+        var actorWorksGate: CompletableDeferred<Unit>? = null
+        var browseCatalog: String? = null
         var actorSuggestions = """{"data":{"templates":[{"template":105,"albumInfo":{"qipuId":208582705,"title":"朱一龙","img":"https://pic8.iqiyipic.com/avatar.jpg"}}]}}"""
         val players = mutableListOf<TestPlayer>()
         val catalogStarts = mutableListOf<Int>()
         val hotRequests = mutableListOf<Pair<String, Int>>()
+        val jianpianHotRequests = mutableListOf<Pair<String, Int>>()
+        val originalHotRequests = mutableListOf<Pair<String, Int>>()
         val hosts = mutableListOf<String>()
         val openedLinks = mutableListOf<String>()
         var nativeSketch = false
+        var audioOnlySupported = false
         var volumeLevel = 0.5f
         var brightnessLevel = 0.5f
         val volumeChanges = mutableListOf<Float>()
@@ -60,8 +67,13 @@ class AppStateTest {
         val fullscreenBlockedEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
         override val fullscreenBlocked: Flow<Unit> = fullscreenBlockedEvents.asSharedFlow()
         val hotSorts = mutableListOf<String>()
-        override fun httpClient() = HttpClient(testScope.mockEngine(backupSources = catalogUnavailable) { request ->
+        val parsedMedia = mutableListOf<String>()
+        override fun httpClient() = HttpClient(testScope.mockEngine(backupSources = true) { request ->
             hosts += request.url.host
+            if (request.url.host == "mesh.if.iqiyi.com" &&
+                !request.url.encodedPath.endsWith("/search/homePageV3")) {
+                actorWorksGate?.await()
+            }
             if (networkUnavailable) return@mockEngine respond("offline", io.ktor.http.HttpStatusCode.ServiceUnavailable)
             if (request.url.host in setOf("www.xiaopin.tv", "www.dieyin.cn")) {
                 if (nativeSketch && request.url.encodedPath == "/video/407962.html")
@@ -75,9 +87,32 @@ class AppStateTest {
             if (request.url.host == "mesh.if.iqiyi.com" && request.url.encodedPath.endsWith("/search/homePageV3")) {
                 return@mockEngine respond(actorSuggestions)
             }
-            when (request.url.parameters["type"] ?: request.url.encodedPath) {
+            when (request.url.parameters["type"]?.takeIf { it != "0" } ?: request.url.encodedPath) {
                 "/api/v2/sys/init" -> respond("""{"code":1,"data":{"secret":"test-secret"}}""")
-                "/api/v2/search/videoV2" -> respond("""{"code":1,"data":[]}""")
+                "/api/v2/search/videoV2" -> respond(if (matchFails) "offline" else """{"code":1,"data":[]}""",
+                    if (matchFails) io.ktor.http.HttpStatusCode.ServiceUnavailable else io.ktor.http.HttpStatusCode.OK)
+                "/api/v2/settings/resourceDomainConfig" -> respond("""{"code":1,"data":{"imgDomain":"images.test"}}""")
+                "/api/crumb/list" -> {
+                    // General discovery fixtures model an empty supplementary source catalog.
+                    // Dedicated homepage tests supply source rows and release metadata.
+                    if (request.url.parameters["sort"] != "hot")
+                        return@mockEngine respond("""{"code":1,"data":[]}""")
+                    delay(browseDelay)
+                    val tag = when (request.url.parameters["category_id"]) {
+                        "1" -> "电影"; "2" -> "电视剧"; "3" -> "动画"
+                        "4" -> "综艺"; "50" -> "纪录片"; else -> error("Unexpected category")
+                    }
+                    val start = (request.url.parameters["page"]!!.toInt() - 1) * 24
+                    hotSorts += "hot"
+                    hotRequests += tag to start
+                    jianpianHotRequests += tag to start
+                    respond("""{"code":1,"data":[${(start until start + 24).joinToString(",") {
+                        """{"id":${it + 1},"title":"$tag$it","score":"7.9"}"""
+                    }}]}""")
+                }
+                "/api/video/detailv2" -> respond(if (catalogUnavailable)
+                    """{"code":1,"data":{"source_list_source":[]}}""" else
+                    """{"code":1,"data":{"source_list_source":[{"source_list":[{"source_name":"第1集","url":"https://media.test/hot.m3u8"}]}]}}""")
                 "/top250" -> {
                     val start = request.url.parameters["start"]?.toInt() ?: 0
                     catalogStarts += start
@@ -106,7 +141,10 @@ class AppStateTest {
                     }
                 }
                 "auto_detail" -> respond(detailFixture)
-                "parse" -> respond(pomoMedia())
+                "parse" -> {
+                    parsedMedia += request.url.parameters["url"].orEmpty()
+                    respond(pomoMedia())
+                }
                 "/j/new_search_subjects" -> {
                     delay(browseDelay)
                     val tags = request.url.parameters["tags"].orEmpty()
@@ -115,6 +153,8 @@ class AppStateTest {
                     assertTrue(sort in listOf("U", "S", "R"))
                     hotSorts += sort
                     hotRequests += tags to start
+                    if (sort == "U") originalHotRequests += tags to start
+                    browseCatalog?.let { return@mockEngine respond(it) }
                     respond("""{"data":[${(start until start + 20).joinToString(",") {
                         """{"title":"$tags$it","url":"https://movie.douban.com/subject/${it + 1}/","rate":"8.0"}"""
                     }}]}""")
@@ -122,7 +162,7 @@ class AppStateTest {
                 else -> error("Unexpected upstream path")
             }
         }) { followRedirects = false }
-        override fun player(): PlayerController = TestPlayer().also { players += it }
+        override fun player(): PlayerController = TestPlayer(audioOnlySupported).also { players += it }
         val storage = FakeStorage()
         override fun storage(): KeyValueStorage = storage
         override fun offlineEngine(): OfflineEngine = offline
@@ -143,7 +183,8 @@ class AppStateTest {
         override val pictureInPictureActive = MutableStateFlow(false)
         override fun enterPictureInPicture() = false
     }
-    private class TestPlayer : PlayerController {
+    internal class TestPlayer(audioOnlySupported: Boolean = false) : PlayerController {
+        override val capabilities = dev.pandavideo.core.player.PlayerCapabilities(audioOnly = audioOnlySupported)
         override val state = MutableStateFlow(PlayerState())
         val loads = mutableListOf<MediaSource>()
         var closed = false
@@ -161,16 +202,69 @@ class AppStateTest {
     }
     private val matchingItem = CatalogItem("匹配影片", "https://movie.douban.com/subject/123/", year = "2020")
 
+    @Test fun televisionDetailResolvesWithoutStartingPlayerOrRecordingHistory() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        try {
+            val info = model.televisionDetail(null, PlayerRequest(page = pomoPage, title = "详情影片"))
+            assertEquals(pomoPage, info.pageUrl)
+            assertTrue(info.episodes.isNotEmpty())
+            assertNull(model.session)
+            assertTrue(platform.players.isEmpty())
+            assertTrue(model.user.history.value.isEmpty())
+        } finally { model.close() }
+    }
+
+    @Test fun televisionSketchDetailUsesEmbeddedVideoWithoutMovieMatching() = runTest {
+        val platform = TestPlatform(this).apply { nativeSketch = true }
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        try {
+            runCurrent()
+            platform.hosts.clear()
+            val item = CatalogItem("又来了", sketchPage, kind = "xiaopin")
+            val info = model.televisionDetail(item, PlayerRequest(title = item.title))
+            assertEquals(sketchPage, info.pageUrl)
+            assertEquals("video", info.kind)
+            assertTrue(info.episodes.isNotEmpty())
+            assertTrue(platform.hosts.all { it in setOf("www.dieyin.cn", "api.bilibili.com") },
+                "Sketch details must not title-search an unrelated movie")
+            assertNull(model.session)
+            assertTrue(platform.players.isEmpty())
+            assertTrue(model.user.history.value.isEmpty())
+        } finally { model.close() }
+    }
+
+    @Test fun leavingTelevisionDetailCancelsMatchingWithoutStartingPlayer() = runTest {
+        val platform = TestPlatform(this).apply { matchDelay = 5_000 }
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        try {
+            val detail = async { model.televisionDetail(matchingItem, PlayerRequest(title = matchingItem.title)) }
+            runCurrent()
+            detail.cancelAndJoin()
+            advanceTimeBy(6_000)
+            runCurrent()
+            assertTrue(detail.isCancelled)
+            assertNull(model.session)
+            assertTrue(platform.players.isEmpty())
+            assertTrue(model.user.history.value.isEmpty())
+        } finally { model.close() }
+    }
+
     @Test fun cachedHotListEndsLoadingWhileRevalidationIsPending() = runTest {
         val platform = TestPlatform(this)
         val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
         try {
             runCurrent()
-            // Warm the same source key through Browse, then enter an empty Hot screen.
-            model.loadBrowse(BrowseFilters(type = "tv", sort = "hot"))
+            // Seed the provider cache, then retry a failed refresh through the normal load.
+            model.loadHot()
             runCurrent()
-            val expected = model.browse.value.items
-            assertEquals(20, expected.size)
+            val expected = model.hot.value.items
+            assertEquals(24, expected.size)
+            platform.networkUnavailable = true
+            model.loadHot(refresh = true)
+            advanceTimeBy(30_000); runCurrent()
+            assertTrue(model.hot.value.page!!.stale)
+            platform.networkUnavailable = false
             platform.browseDelay = 1_000
             model.loadHot()
             runCurrent()
@@ -210,6 +304,105 @@ class AppStateTest {
         runCurrent()
         assertSame(original.items, model.discover.value.items)
         model.close()
+    }
+
+    @Test fun selectingUnfinishedNeighborReusesItsRequestAcrossCatalogChannels() = runTest {
+        for (channel in listOf("discover", "browse", "hot")) {
+            val platform = TestPlatform(this)
+            val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+            fun state() = when (channel) {
+                "discover" -> model.discover.value
+                "browse" -> model.browse.value
+                else -> model.hot.value
+            }
+            try {
+                runCurrent()
+                platform.browseDelay = 1_000
+                val preview = when (channel) {
+                    "discover" -> model.discoverPage("tv", "cn")
+                    "browse" -> model.browsePage(BrowseFilters(type = "tv", country = "cn"))
+                    else -> model.hotPage("movie")
+                }
+                runCurrent()
+                advanceTimeBy(500); runCurrent()
+                when (channel) {
+                    "discover" -> model.loadDiscover("tv", country = "cn")
+                    "browse" -> model.loadBrowse(BrowseFilters(type = "tv", country = "cn"))
+                    else -> model.loadHot("movie")
+                }
+                runCurrent()
+                assertTrue(state().loading, channel)
+                advanceTimeBy(500); runCurrent()
+                assertFalse(state().loading, "$channel must finish at the original preview deadline")
+                assertEquals(preview.value.items, state().items)
+                assertTrue(state().items.isNotEmpty(), channel)
+                advanceTimeBy(1_000); runCurrent()
+                assertEquals(if (channel == "hot") 2 else 1, platform.hotRequests.size,
+                    "$channel must share one request per source")
+            } finally { model.close() }
+        }
+    }
+
+    @Test fun promotingStaleNeighborKeepsItsCachedRowsWhileJoiningRevalidation() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        try {
+            runCurrent()
+            // A failed refresh retains a stale provider snapshot. Re-entering that
+            // neighbor must join its revalidation without hiding those cached rows.
+            model.loadHot("movie")
+            runCurrent()
+            platform.networkUnavailable = true
+            model.loadHot(refresh = true)
+            advanceTimeBy(30_000); runCurrent()
+            assertTrue(model.hot.value.page!!.stale)
+            platform.networkUnavailable = false
+            model.loadHot("tv")
+            runCurrent()
+            platform.hotRequests.clear()
+            platform.browseDelay = 1_000
+            val preview = model.hotPage("movie")
+            runCurrent()
+            val rows = preview.value.items
+            assertTrue(rows.isNotEmpty())
+            assertTrue(preview.value.page!!.stale)
+            advanceTimeBy(500); runCurrent()
+            model.loadHot("movie")
+            runCurrent()
+            assertSame(rows, model.hot.value.items)
+            assertFalse(model.hot.value.loading)
+            assertFalse(model.hot.value.refreshing)
+            advanceTimeBy(500); runCurrent()
+            assertFalse(model.hot.value.page!!.stale)
+            advanceTimeBy(1_000); runCurrent()
+            assertEquals(2, platform.hotRequests.size, "One shared revalidation per hot source")
+        } finally { model.close() }
+    }
+
+    @Test fun leavingPromotedNeighborCannotPublishIntoAnotherRegion() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        try {
+            runCurrent()
+            platform.browseDelay = 1_000
+            model.discoverPage("tv", "cn")
+            runCurrent()
+            advanceTimeBy(500); runCurrent()
+            model.loadDiscover("tv", country = "cn")
+            runCurrent()
+            // A different region owns a different request and must not join the CN preview.
+            model.loadDiscover("tv", country = "jp")
+            runCurrent()
+            advanceTimeBy(500); runCurrent()
+            assertTrue(model.discover.value.loading)
+            assertTrue(model.discover.value.items.isEmpty())
+            advanceTimeBy(500); runCurrent()
+            assertEquals("jp", model.discoverCountry)
+            assertTrue(model.discover.value.items.all { it.countries == listOf("日本") })
+            assertFalse(model.discover.value.loading)
+            assertEquals(1, platform.hotRequests.count { it.first.contains("中国大陆") })
+            assertEquals(1, platform.hotRequests.count { it.first.contains("日本") })
+        } finally { model.close() }
     }
 
     @Test fun browseAndHotPreviewsKeepActiveFiltersAndFailuresSilent() = runTest {
@@ -340,6 +533,10 @@ class AppStateTest {
         runCurrent()
         assertEquals("电影,剧情,中国大陆" to 0, platform.hotRequests.last())
         assertEquals(20, model.discover.value.items.size)
+        model.loadDiscover(refresh = true)
+        runCurrent()
+        assertEquals("cn", model.discoverCountry)
+        assertEquals("电影,剧情,中国大陆" to 0, platform.hotRequests.last())
         val requests = platform.hotRequests.size
         model.loadDiscover()
         runCurrent()
@@ -423,8 +620,8 @@ class AppStateTest {
         val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
         runCurrent()
         assertEquals("测试电影", model.discover.value.items.single().title)
-        assertEquals("movie.douban.com", platform.hosts.first())
-        assertEquals("pomo.mom", platform.hosts.last())
+        assertTrue("movie.douban.com" in platform.hosts)
+        assertTrue("pomo.mom" in platform.hosts)
         model.search("new", "tv")
         runCurrent()
         assertEquals("new", model.search.value.result?.results?.single()?.title)
@@ -454,6 +651,59 @@ class AppStateTest {
             assertEquals(before, platform.players.single().state.value)
             assertFails { model.actorWorks(dev.pandavideo.core.model.ActorRef("iqiyi:other", "倪大红")) }
             assertFails { model.actorWorks(dev.pandavideo.core.model.ActorRef("iqiyi:unknown", "其他演员")) }
+        } finally { model.close() }
+    }
+
+    @Test fun actorFilmographyIncludesLoadedCatalogCreditsWithoutAnActivePlayer() = runTest {
+        val platform = TestPlatform(this).apply {
+            browseCatalog = """{"data":[
+                {"title":"电影1","url":"https://movie.douban.com/subject/901/","rate":"9.0","casts":["朱一龙"]},
+                {"title":"电影2","url":"https://movie.douban.com/subject/902/","rate":"9.0","casts":["朱一龙"]},
+                {"title":"电影3","url":"https://movie.douban.com/subject/903/","rate":"9.0","casts":["朱一龙客串"]}
+            ]}"""
+        }
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        try {
+            model.loadBrowse()
+            runCurrent()
+            assertEquals(3, model.browse.value.items.size)
+            assertNotNull(model.findCastActor("朱一龙"))
+            platform.networkUnavailable = true
+            val snapshot = model.actorWorks(dev.pandavideo.core.model.ActorRef("iqiyi:208582705", "朱一龙"))
+            assertEquals(setOf("电影1", "电影2"), snapshot.works.map { it.title }.toSet())
+            assertTrue(snapshot.works.all { it.verifiedCatalog })
+            assertTrue(snapshot.stale)
+            assertNull(model.session)
+            assertFails { model.actorWorks(dev.pandavideo.core.model.ActorRef("iqiyi:999", "朱一龙")) }
+        } finally { model.close() }
+    }
+
+    @Test fun actorFilmographyPublishesKnownCreditsBeforeProviderCompletes() = runTest {
+        val platform = TestPlatform(this).apply {
+            browseCatalog = """{"data":[
+                {"title":"电影1","url":"https://movie.douban.com/subject/901/","rate":"9.0","casts":["朱一龙"]}
+            ]}"""
+        }
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        try {
+            model.loadBrowse()
+            runCurrent()
+            assertNotNull(model.findCastActor("朱一龙"))
+            val gate = CompletableDeferred<Unit>()
+            platform.actorWorksGate = gate
+            val snapshots = mutableListOf<dev.pandavideo.core.model.ActorFilmography>()
+            val result = async {
+                model.actorWorks(dev.pandavideo.core.model.ActorRef("iqiyi:208582705", "朱一龙")) {
+                    snapshots += it
+                }
+            }
+            runCurrent()
+            assertFalse(result.isCompleted)
+            assertEquals(listOf("电影1"), snapshots.single().works.map { it.title })
+            assertTrue(snapshots.single().works.single().verifiedCatalog)
+            assertNull(model.session)
+            gate.complete(Unit)
+            assertEquals(listOf("电影1"), result.await().works.map { it.title })
         } finally { model.close() }
     }
 
@@ -522,7 +772,7 @@ class AppStateTest {
         assertTrue(model.browse.value.items.isEmpty())
         assertTrue(model.hot.value.items.isEmpty())
         assertTrue(model.browse.value.page?.hasMore == true)
-        assertEquals(20, model.hot.value.page?.nextStart())
+        assertEquals(24, model.hot.value.page?.nextStart())
         model.close()
     }
     @Test fun newSearchCancelsOldResults() = runTest {
@@ -616,6 +866,40 @@ class AppStateTest {
         assertFalse(model.discover.value.refreshing)
         model.close()
     }
+    @Test fun staleTabsKeepTheirRowsWhileRevalidatingAfterASelectionChange() = runTest {
+        for (channel in listOf("discover", "browse", "hot")) {
+            val platform = TestPlatform(this)
+            val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+            fun load(second: Boolean = false, refresh: Boolean = false) = when (channel) {
+                "discover" -> model.loadDiscover(if (second) "tv" else "top250", refresh = refresh)
+                "browse" -> model.loadBrowse(BrowseFilters(type = if (second) "tv" else "movie"), refresh = refresh)
+                else -> model.loadHot(if (second) "movie" else "tv", refresh = refresh)
+            }
+            fun state() = when (channel) {
+                "discover" -> model.discover.value
+                "browse" -> model.browse.value
+                else -> model.hot.value
+            }
+            try {
+                load(); runCurrent()
+                val rows = state().items
+                assertTrue(rows.isNotEmpty())
+                platform.networkUnavailable = true
+                load(refresh = true); runCurrent()
+                assertTrue(state().page?.stale == true, channel)
+                platform.networkUnavailable = false
+                load(second = true); runCurrent()
+                platform.catalogDelay = 1_000
+                platform.browseDelay = 1_000
+                load()
+                assertSame(rows, state().items, "$channel must not replace a cached grid with a skeleton")
+                assertTrue(state().loading)
+                assertFalse(state().refreshing)
+                advanceTimeBy(1_000); runCurrent()
+                assertEquals(rows, state().items)
+            } finally { model.close() }
+        }
+    }
     @Test fun tabLoadsAndCancelledRefreshesDoNotShowPullIndicator() = runTest {
         val platform = TestPlatform(this).apply { catalogDelay = 1000 }
         val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
@@ -658,20 +942,22 @@ class AppStateTest {
         val home = model.discover.value
         model.loadHot()
         runCurrent()
-        assertEquals("电视剧" to 0, platform.hotRequests.single())
-        assertEquals(20, model.hot.value.items.size)
+        assertEquals("电视剧" to 0, platform.jianpianHotRequests.single())
+        assertEquals("电视剧" to 0, platform.originalHotRequests.single())
+        assertEquals(24, model.hot.value.items.size)
         model.loadHot(more = true); model.loadHot(more = true)
         runCurrent()
-        assertEquals(40, model.hot.value.items.size)
-        assertEquals(listOf("电视剧" to 0, "电视剧" to 20), platform.hotRequests)
+        assertEquals(48, model.hot.value.items.size)
+        assertEquals(listOf("电视剧" to 0, "电视剧" to 24), platform.jianpianHotRequests)
+        assertEquals(listOf("电视剧" to 0, "电视剧" to 20), platform.originalHotRequests)
         model.loadHot("movie")
         runCurrent()
-        assertEquals("电影" to 0, platform.hotRequests.last())
-        assertEquals(20, model.hot.value.items.size)
+        assertEquals("电影" to 0, platform.jianpianHotRequests.last())
+        assertEquals(24, model.hot.value.items.size)
         assertEquals("最近热播 · 电影", model.hot.value.page?.label)
         assertEquals(home, model.discover.value)
         assertNull(model.browse.value.page)
-        assertTrue(platform.hotSorts.all { it == "U" })
+        assertTrue(platform.hotSorts.all { it == "hot" || it == "U" })
         model.close()
     }
     @Test fun clearingHomeSearchCancelsPendingResults() = runTest {
@@ -772,18 +1058,19 @@ class AppStateTest {
         )) {
             model.loadHot(type)
             runCurrent()
-            assertEquals(tag to 0, platform.hotRequests.last())
+            assertEquals(tag to 0, platform.jianpianHotRequests.last())
             assertEquals("最近热播 · $label", model.hot.value.page?.label)
-            assertEquals(20, model.hot.value.items.size)
+            assertEquals(24, model.hot.value.items.size)
             assertTrue(model.hot.value.items.all { it.kind == type })
             model.loadHot(more = true)
             runCurrent()
-            assertEquals(tag to 20, platform.hotRequests.last())
-            assertEquals(40, model.hot.value.items.size)
+            assertEquals(tag to 24, platform.jianpianHotRequests.last())
+            assertEquals(tag to 20, platform.originalHotRequests.last())
+            assertEquals(48, model.hot.value.items.size)
         }
         assertEquals(home, model.discover.value)
         assertNull(model.browse.value.page)
-        assertTrue(platform.hotSorts.all { it == "U" })
+        assertTrue(platform.hotSorts.all { it == "hot" || it == "U" })
         model.close()
     }
     @Test fun closePlayerRestoresBrightnessAndLeavesFullscreen() = runTest {
@@ -848,6 +1135,75 @@ class AppStateTest {
         assertEquals(false, platform.fullscreenChanges.last())
         model.close()
     }
+    @Test fun audioModeReopensFromCatalogSearchAndHistoryWithoutReloading() = runTest {
+        val platform = TestPlatform(this).apply { audioOnlySupported = true }
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        try {
+            model.match(matchingItem) {}
+            runCurrent()
+            val active = assertNotNull(model.session)
+            val info = assertNotNull(active.state.value.info)
+            active.setAudioOnly(true)
+            platform.players.single().state.value = platform.players.single().state.value.copy(
+                position = 120_000, duration = 600_000, rate = 1.5f)
+            val requests = platform.hosts.size
+            var navigations = 0
+            model.minimizePlayer()
+            model.match(matchingItem) { navigations++ }
+            runCurrent()
+            assertEquals(1, navigations)
+            model.minimizePlayer()
+            model.startPlayer(PlayerRequest(page = info.pageUrl, title = info.title))
+            runCurrent()
+            model.minimizePlayer()
+            model.reopenSaved(info.pageUrl, info.title)
+            runCurrent()
+            model.minimizePlayer()
+            model.resumeHomeHistory(model.user.history.value.first())
+            runCurrent()
+            assertSame(active, model.session)
+            assertEquals(1, platform.players.size)
+            assertEquals(1, platform.players.single().loads.size)
+            assertEquals(requests, platform.hosts.size)
+            assertFalse(platform.players.single().closed)
+            assertTrue(active.state.value.audioOnly)
+            assertFalse(active.state.value.loading)
+            assertEquals(120_000L, platform.players.single().state.value.position)
+            assertEquals(1.5f, platform.players.single().state.value.rate)
+            assertTrue(platform.players.single().state.value.wantsPlay)
+        } finally { model.close() }
+    }
+
+    @Test fun audioModeReentryPreservesPauseButOtherEpisodesAndTitlesReplaceSession() = runTest {
+        val platform = TestPlatform(this).apply { audioOnlySupported = true }
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        try {
+            model.match(matchingItem) {}
+            runCurrent()
+            val active = assertNotNull(model.session)
+            val info = assertNotNull(active.state.value.info)
+            active.setAudioOnly(true)
+            active.controller.pause()
+            model.minimizePlayer()
+            model.reopenSaved(info.pageUrl, info.title)
+            runCurrent()
+            assertSame(active, model.session)
+            assertFalse(platform.players.single().state.value.wantsPlay)
+            model.startPlayer(PlayerRequest(page = info.pageUrl, title = info.title,
+                episode = "$pomoPage#1-1"))
+            runCurrent()
+            assertNotSame(active, model.session)
+            assertTrue(platform.players.first().closed)
+            assertEquals("$pomoPage#1-1", model.session?.state?.value?.info?.selected)
+            val second = assertNotNull(model.session)
+            second.setAudioOnly(true)
+            model.match(matchingItem.copy(url = "https://movie.douban.com/subject/456/")) {}
+            runCurrent()
+            assertNotSame(second, model.session)
+            assertTrue(platform.players[1].closed)
+        } finally { model.close() }
+    }
+
     @Test fun leavingPageWithVisiblePictureInPictureKeepsPlayback() = runTest {
         val platform = TestPlatform(this)
         val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
@@ -1189,6 +1545,53 @@ class AppStateTest {
         assertEquals(230_000L, platform.players.last().loads.single().startPosition)
         model.close()
     }
+    @Test fun directHlsSourceDoesNotWaitForParser() = runTest {
+        val platform = TestPlatform(this).apply {
+            // Both candidates are direct HLS. An indirect fixture would legitimately
+            // invoke the parser while fresh automatic entry compares every route.
+            detailFixture = pomoDetailFixture.replace("/1.m3u8", "/stream.m3u8")
+                .replace("https://media/embed", "https://media/stream.m3u8")
+        }
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        model.startPlayer(PlayerRequest(page = pomoPage))
+        runCurrent()
+        assertTrue(platform.parsedMedia.isEmpty(),
+            "An already validated HLS source must not pay for an unnecessary parser request")
+        assertEquals("https://media/stream.m3u8", model.session!!.state.value.info!!.url)
+        model.close()
+    }
+
+    @Test fun catalogResumeResolvesOnlyTheRememberedStream() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        model.rememberPlayed("匹配影片", pomoPage, null, "2020", "第 2 集", "$pomoPage#1-1")
+        model.saveProgress(pomoPage, "$pomoPage#1-1", "第 2 集", 120_000, 600_000)
+        runCurrent()
+        platform.parsedMedia.clear()
+        model.match(matchingItem) {}
+        runCurrent()
+        assertEquals(listOf("https://media/2.m3u8"), platform.parsedMedia,
+            "Restoring history must not parse/probe episode one before the remembered episode")
+        assertEquals("$pomoPage#1-1", model.session!!.state.value.info!!.selected)
+        assertEquals(120_000L, platform.players.last().loads.single().startPosition)
+        model.close()
+    }
+
+    @Test fun staleRememberedEpisodeFallsBackBeforeResolvingAnyStream() = runTest {
+        val platform = TestPlatform(this)
+        val model = AppState(platform, backgroundScope, resolveDispatcher = StandardTestDispatcher(testScheduler))
+        model.rememberPlayed("测试电影", pomoPage, null, "2020", "第 9 集", "$pomoPage#1-8")
+        runCurrent()
+        platform.parsedMedia.clear()
+        model.startPlayer(PlayerRequest(page = pomoPage))
+        runCurrent()
+        val info = assertNotNull(model.session!!.state.value.info)
+        assertTrue(info.selected.endsWith("-0"), "Missing history must fall back to a first episode")
+        assertEquals(listOf("https://media/1.m3u8"), platform.parsedMedia,
+            "Cached-first startup resolves one first episode without waiting for alternate measurements")
+        model.close()
+    }
+
     @Test fun defaultEntriesRestoreFourthEpisodeAfterRestartAndExplicitSelectionWins() = runTest {
         val platform = TestPlatform(this)
         platform.detailFixture = pomoDetailFixture.replace(

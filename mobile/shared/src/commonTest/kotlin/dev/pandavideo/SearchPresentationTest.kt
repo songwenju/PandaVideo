@@ -41,7 +41,7 @@ class SearchPresentationTest {
         assertEquals(playable, result.results.single())
     }
 
-    @Test fun ratingsTakePriorityOverTitleAndYearWhileInvalidRatingsRemainUnknown() {
+    @Test fun exactTitlesTakePriorityOverRatingAndYearWhileInvalidRatingsRemainUnknown() {
         val rows = listOf(
             item(year = "2010", rating = 6.0),
             item("西游记续集", year = "2000", id = 2, rating = 9.1),
@@ -49,7 +49,17 @@ class SearchPresentationTest {
             item("未评分", id = 4), item("错误评分", id = 5, rating = 99.0),
         )
         val result = SearchPresentation.apply(SearchResult(rows), "西游记")
-        assertEquals(listOf(9.7, 9.1, 6.0, null, null), result.results.map { it.rating })
+        assertEquals(listOf(9.7, 6.0, 9.1, null, null), result.results.map { it.rating })
+    }
+
+    @Test fun unratedExactTitleAndVerifiedReleaseAliasesPrecedeHighlyRatedPartialMatches() {
+        val exact = item("《海贼王》", year = "1999")
+        val alias = item("海贼王国语1999", year = "1999", id = 2, genre = "动画")
+        val prefix = item("海贼王特别篇", id = 3, rating = 9.8)
+        val contains = item("寻找海贼王", id = 4, rating = 9.9)
+        val unrelated = item("其他高分作品", id = 5, rating = 10.0)
+        val result = SearchPresentation.apply(SearchResult(listOf(unrelated, contains, prefix, alias, exact)), "海 贼 王")
+        assertEquals(listOf(alias, exact, prefix, contains, unrelated), result.results)
     }
 
     @Test fun conflictingCastsAndRegionsAreNotCollapsed() {

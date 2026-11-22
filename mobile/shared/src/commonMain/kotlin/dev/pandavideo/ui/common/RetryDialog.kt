@@ -16,7 +16,8 @@ import androidx.compose.ui.unit.sp
 
 /** Consistent recovery actions for failed user operations on every shared platform. */
 @Composable
-internal fun RetryDialog(title: String, message: String, retry: () -> Unit, dismiss: () -> Unit) {
+internal fun RetryDialog(title: String, message: String, retry: () -> Unit, dismiss: () -> Unit,
+    confirmLabel: String = "重试") {
     AlertDialog(
         onDismissRequest = dismiss,
         title = { Text(title, fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold) },
@@ -27,7 +28,7 @@ internal fun RetryDialog(title: String, message: String, retry: () -> Unit, dism
             Button(
                 onClick = retry,
                 colors = ButtonDefaults.buttonColors(containerColor = Accent),
-            ) { Text("重试", fontSize = 14.sp) }
+            ) { Text(confirmLabel, fontSize = 14.sp) }
         },
         dismissButton = { TextButton(onClick = dismiss) { Text("取消", fontSize = 14.sp) } },
     )

@@ -10,6 +10,7 @@ import dev.pandavideo.core.model.HomeMinimumRating
 import dev.pandavideo.core.model.Episode
 import dev.pandavideo.core.model.MatchResult
 import dev.pandavideo.core.model.PlaybackInfo
+import dev.pandavideo.core.model.LineProbe
 import dev.pandavideo.core.model.PlayerRequest
 import dev.pandavideo.core.model.SearchItem
 import dev.pandavideo.core.model.SearchResult
@@ -36,8 +37,12 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import kotlin.io.encoding.Base64
 import dev.pandavideo.core.platform.currentEpochMillis
+import okio.ByteString.Companion.encodeUtf8
 
-class ApiError(message: String, cause: Throwable? = null) : Exception(message, cause)
+open class ApiError(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/** An explicit server rejection or invalid media prefix, never a transport timeout. */
+private class MediaUnavailable : ApiError("此播放线路暂时不可用")
 
 fun isWebUrl(value: String): Boolean = try {
     val url = Url(value)
@@ -52,10 +57,13 @@ class ContentRepository(
     private val database: CatalogDatabase? = null,
     private val doubanSession: dev.pandavideo.core.platform.DoubanSession =
         dev.pandavideo.core.platform.UnsupportedDoubanSession,
+    private val lineHasAds: (String, Episode) -> Boolean = { _, _ -> false },
+    private val playbackCacheNowMs: () -> Long = ::currentEpochMillis,
     private val rules: () -> ParserRules = { ParserRules() },
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val actors = ActorSource { address -> fetch(address) }
+    private val bilibili = BilibiliSource { address, headers -> fetch(address, 10_000, headers) }
 
     /** Queries source-owned person identities independently from playback search. */
     internal suspend fun searchActors(query: String): dev.pandavideo.core.model.ActorSuggestions = cachedResponse(
@@ -64,14 +72,27 @@ class ContentRepository(
     ) { actors.search(query.trim()) }
 
     /** Caches complete source properties separately so legacy search snapshots cannot hide them. */
-    internal suspend fun actorProfile(actor: dev.pandavideo.core.model.ActorRef): dev.pandavideo.core.model.ActorRef =
+    internal suspend fun actorProfile(
+        actor: dev.pandavideo.core.model.ActorRef,
+        onCached: suspend (dev.pandavideo.core.model.ActorRef) -> Unit = {},
+    ): dev.pandavideo.core.model.ActorRef =
         cachedResponse("actors:iqiyi:profile:v1:${actor.id}", 7L * 24 * 60 * 60 * 1000,
-            30L * 24 * 60 * 60 * 1000) { actors.profile(actor) }
+            30L * 24 * 60 * 60 * 1000, onCached = onCached) { actors.profile(actor) }
+
+    /** Reads explicit casts from local catalogs and cached subject details, including offline pages. */
+    internal suspend fun actorCatalogSnapshot(): List<CatalogItem> = database?.actorCatalogSnapshot().orEmpty()
 
     /** Loads verified cast statements, with bounded offline fallback and explicit coverage. */
-    internal suspend fun actorWorks(actor: dev.pandavideo.core.model.ActorRef): dev.pandavideo.core.model.ActorFilmography =
+    internal suspend fun actorWorks(
+        actor: dev.pandavideo.core.model.ActorRef,
+        onCached: suspend (dev.pandavideo.core.model.ActorFilmography) -> Unit = {},
+    ): dev.pandavideo.core.model.ActorFilmography =
         cachedResponse("actors:iqiyi:works:v2:${actor.id}", 7L * 24 * 60 * 60 * 1000, 30L * 24 * 60 * 60 * 1000,
-            onStale = { it.copy(stale = true) }, legacyKey = "actors:iqiyi:works:v1:${actor.id}") {
+            onStale = { it.copy(stale = true) }, onCached = onCached,
+            legacyKey = "actors:iqiyi:works:v1:${actor.id}",
+            freshWhen = { snapshot ->
+                snapshot.works.none { Regex("[（(](?:普通话|国语|粤语|国配|粤配)[）)]$").containsMatchIn(it.title) }
+            }) {
             actors.filmography(actor)
         }
 
@@ -176,7 +197,7 @@ class ContentRepository(
     }
     private val pages = linkedMapOf<String, CatalogPage>()
     private val jianpian = JianpianClient(fetch = { address, budget, headers -> fetch(address, budget, headers) })
-    private val availability = CatalogAvailability(database, { "online:5:${json.encodeToString(rules())}" },
+    private val availability = CatalogAvailability(database, { "online:6:${json.encodeToString(rules())}" },
         check = { probeMatch(it).status })
 
     internal suspend fun visibleCatalog(page: CatalogPage): CatalogPage = availability.visible(page)
@@ -236,7 +257,9 @@ class ContentRepository(
         // equal titles across sites: different recordings may legitimately share a name.
         val items = (0 until pages.maxOf { it.items.size }).flatMap { index ->
             pages.mapNotNull { it.items.getOrNull(index) }
-        }.filter { SketchSource.listed(it.url) }.distinctBy { it.url }
+        // Apply the visible-title rule at the merge boundary as well: older persisted
+        // pages must not briefly show download promotions during startup or offline fallback.
+        }.filter { SketchSource.listed(it.url) && SketchSource.catalogTitle(it.title) }.distinctBy { it.url }
         return CatalogPage(items, start, 1, pages.any { it.hasMore } || results.any { it.isFailure },
             label = "小品", stale = pages.any { it.stale } || results.any { it.isFailure })
     }
@@ -248,6 +271,8 @@ class ContentRepository(
     internal suspend fun clearCache() {
         database?.clearCache()
         pages.clear()
+        detailMutex.withLock { recentDetails.clear(); playbackSources.clear() }
+        mediaProbeMutex.withLock { mediaProbes.clear() }
         availability.clearMemory()
     }
 
@@ -291,8 +316,11 @@ class ContentRepository(
                     val cookie = if (trusted) doubanSession.cookieHeader(target) else null
                     val response = client.get(target) {
                         header(HttpHeaders.UserAgent, if (trusted) doubanSession.userAgent ?: "Mozilla/5.0" else "Mozilla/5.0")
-                        header(HttpHeaders.Referrer, "${origin.protocol.name}://${origin.host}/")
-                        headers.forEach { (name, value) -> header(name, value) }
+                        header(HttpHeaders.Referrer, headers.entries.firstOrNull {
+                            it.key.equals(HttpHeaders.Referrer, true)
+                        }?.value ?: "${origin.protocol.name}://${origin.host}/")
+                        headers.filterKeys { !it.equals(HttpHeaders.Referrer, true) }
+                            .forEach { (name, value) -> header(name, value) }
                         if (!cookie.isNullOrBlank()) header(HttpHeaders.Cookie, cookie)
                     }
                     if (trusted) doubanSession.acceptCookies(target,
@@ -307,9 +335,9 @@ class ContentRepository(
                         }
                         // A mirror has its own initialization secret. Never forward a signed
                         // request to an unrelated origin through an upstream redirect.
-                        if (headers.containsKey("signature") &&
+                        if ((headers.containsKey("signature") || headers.keys.any { it.equals(HttpHeaders.Cookie, true) }) &&
                             (next.protocol != origin.protocol || next.host != origin.host || next.port != origin.port))
-                            throw ApiError("签名接口跳转到其他来源")
+                            throw ApiError("受保护接口跳转到其他来源")
                         target = next.toString()
                         continue
                     }
@@ -339,15 +367,24 @@ class ContentRepository(
         catch (error: Exception) { throw ApiError("无法访问影视来源，请检查网络后重试", error) }
     }
 
+    internal suspend fun cctvPrograms(column: String, start: Int = 0, period: String = ""): CatalogPage {
+        val address = CctvSource.listAddress(column, start, period)
+        // Version the key so older rows without broadcast metadata are reloaded.
+        return catalog("cctv:v2:$column:$period:$start", ttl = 30L * 60 * 1000) {
+            CctvSource.programs(fetch(address), column, start)
+        }
+    }
+
     private suspend fun catalog(
         key: String, ttl: Long = 7L * 24 * 60 * 60 * 1000, forceRefresh: Boolean = false,
+        freshWhen: (CatalogPage) -> Boolean = { true },
         onCached: (suspend (CatalogPage) -> Unit)? = null, load: suspend () -> CatalogPage,
     ): CatalogPage {
         val stored = try {
             database?.read(key)
         } catch (error: CancellationException) { throw error }
         catch (_: Exception) { null }
-        val fresh = stored != null && currentEpochMillis() - stored.savedAt in 0 until ttl
+        val fresh = stored != null && currentEpochMillis() - stored.savedAt in 0 until ttl && freshWhen(stored.page)
         // Expiration controls revalidation, not whether a useful list can be displayed.
         // Publish before starting any network work; cancellation still belongs to the caller.
         if (!forceRefresh) (stored?.page ?: pages[key])?.let { cached ->
@@ -373,7 +410,8 @@ class ContentRepository(
     private suspend inline fun <reified T> cachedResponse(
         key: String, ttl: Long, maxStale: Long, onStale: (T) -> T = { it },
         legacyKey: String? = null, cacheWhen: (T) -> Boolean = { true },
-        freshWhen: (T) -> Boolean = { true }, load: () -> T,
+        freshWhen: (T) -> Boolean = { true },
+        noinline onCached: (suspend (T) -> Unit)? = null, load: () -> T,
     ): T {
         val primary = try { database?.readResponse(key) }
         catch (error: CancellationException) { throw error }
@@ -388,6 +426,9 @@ class ContentRepository(
         }
         val age = saved?.let { currentEpochMillis() - it.savedAt }
         if (primary != null && cached != null && age != null && age in 0 until ttl && freshWhen(cached)) return cached
+        // Publish bounded stale snapshots before revalidation, rather than making the UI
+        // wait for a timeout. Cancellation from the consumer must stop the request as well.
+        if (cached != null && age != null && age in 0..maxStale) onCached?.invoke(onStale(cached))
         try {
             // Parse and validate before persisting. Captcha/error pages must never replace
             // useful data; a storage failure must not turn a successful request into an error.
@@ -403,7 +444,69 @@ class ContentRepository(
         }
     }
 
-    private suspend fun detail(address: String): String = cachedResponse(
+    private val detailLocks = mutableMapOf<String, Mutex>()
+    private val recentDetails = linkedMapOf<String, Pair<Long, String>>()
+    private val detailMutex = Mutex()
+    private data class ValidatedMedia(val at: Long, val media: Pair<String, String>, val probe: LineProbe)
+    private data class PlaybackSource(
+        val body: String, var entries: List<Pair<Episode, String>>, val metadata: JsonObject?,
+        val media: LinkedHashMap<Pair<String, String>, ValidatedMedia> = linkedMapOf(),
+    )
+    private val playbackSources = linkedMapOf<String, PlaybackSource>()
+
+    /** Keeps stable source lists separate from short-lived signed URLs; refresh replaces changed lists. */
+    private suspend fun playbackSource(page: String, reuse: Boolean): PlaybackSource {
+        if (reuse) detailMutex.withLock { playbackSources[page] }?.let { return it }
+        val body = detail(page)
+        val savedMirrors = try {
+            database?.readResponse("playback-mirrors:v1:$page")?.takeIf {
+                currentEpochMillis() - it.savedAt in 0 until 7L * 24 * 60 * 60_000
+            }?.let { json.decodeFromString<List<Pair<Episode, String>>>(it.payload) }.orEmpty()
+        } catch (error: CancellationException) { throw error }
+        catch (_: Exception) { emptyList() }
+        return detailMutex.withLock {
+            playbackSources[page]?.takeIf { it.body == body } ?: PlaybackSource(
+                body, episodes(body, page) + (playbackSources[page]?.entries ?: savedMirrors).filter {
+                    it.first.path.substringBefore('#') != page
+                }, metadata(body, page),
+            ).also {
+                playbackSources[page] = it
+                if (playbackSources.size > 48) playbackSources.remove(playbackSources.keys.first())
+            }
+        }
+    }
+
+    /** Failed/cancelled validation never populates this cache, and evicted pages cannot be resurrected. */
+    private suspend fun cachePlaybackMedia(
+        page: String, source: PlaybackSource, episode: Episode, address: String,
+        media: Pair<String, String>, probe: LineProbe,
+    ) = detailMutex.withLock {
+        if (playbackSources[page] === source && probe.available == true) {
+            source.media[episode.path to address] = ValidatedMedia(playbackCacheNowMs(), media, probe)
+            if (source.media.size > 128) source.media.remove(source.media.keys.first())
+        }
+    }
+
+    /** Shares verified detail bodies between availability checks and player resolution. */
+    private suspend fun detail(address: String): String {
+        val page = address.substringBefore('#')
+        val lock = detailMutex.withLock { detailLocks.getOrPut(page) { Mutex() } }
+        return lock.withLock {
+            detailMutex.withLock { recentDetails[page] }?.let { (at, body) ->
+                if (currentEpochMillis() - at in 0 until 10 * 60_000L) return@withLock body
+            }
+            val body = loadDetail(page)
+            detailMutex.withLock {
+                recentDetails[page] = currentEpochMillis() to body
+                if (recentDetails.size > 48) recentDetails.remove(recentDetails.keys.first())
+                // Only remove idle locks; an active or queued reader must retain its lock.
+                detailLocks.entries.removeAll { it.key != page && !it.value.isLocked }
+            }
+            body
+        }
+    }
+
+    private suspend fun loadDetail(address: String): String = cachedResponse(
         "detail:$address", ttl = 6L * 60 * 60 * 1000, maxStale = 7L * 24 * 60 * 60 * 1000,
     ) {
         (if (JianpianSource.owns(address)) jianpian.detail(address) else fetch(address)).also {
@@ -417,26 +520,31 @@ class ContentRepository(
     private fun metadata(body: String, page: String): JsonObject? =
         (if (JianpianSource.owns(page)) JianpianSource.data(body) else PomoSource.data(body)) as? JsonObject
 
-    /** Tries providers in preference order; each request keeps its existing timeout budget. */
-    private suspend fun preferredSearch(loads: List<suspend () -> SearchResult>): SearchResult {
-        var empty: SearchResult? = null
-        var failure: Exception? = null
-        for (load in loads) {
-            try {
-                val value = load()
-                if (value.results.isNotEmpty()) return value
-                empty = value
-            } catch (error: CancellationException) { throw error }
-            catch (error: Exception) { if (failure == null) failure = error }
+    /** Queries both providers concurrently, retaining raw mirrors for catalog verification. */
+    private suspend fun mergedSearch(loads: List<suspend () -> SearchResult>): SearchResult = coroutineScope {
+        val results = loads.map { load ->
+            async {
+                try { Result.success(load()) }
+                catch (error: CancellationException) { throw error }
+                catch (error: Exception) { Result.failure(error) }
+            }
+        }.awaitAll()
+        val loaded = results.mapNotNull { it.getOrNull() }
+        if (loaded.isEmpty()) {
+            val failure = results.last().exceptionOrNull()!!
+            throw (failure as? ApiError ?: ApiError("所有播放来源暂时不可用，请稍后重试", failure))
         }
-        // One successful empty search plus an unavailable backup is not proof that a
-        // title has no resource. Preserve the existing catalog's "unknown" semantics.
-        return empty?.let { it.copy(stale = it.stale || failure != null) }
-            ?: throw (failure as? ApiError ?: ApiError("所有播放来源暂时不可用，请稍后重试", failure))
+        // A successful empty response cannot prove absence while another provider is
+        // unavailable. Presentation merges releases later; matching keeps all mirrors.
+        SearchResult(
+            results = loaded.flatMap { it.results }.distinctBy { it.detailUrl },
+            sources = loaded.flatMap { it.sources },
+            stale = results.any { it.isFailure } || loaded.any { it.stale },
+        )
     }
 
     /**
-     * Loads full Douban categories; only the selected ranking is limited to Top 250.
+     * Combines high-rated source catalogs; only the selected ranking is limited to Top 250.
      * [onCached] receives a filtered local snapshot before revalidation, except on explicit refresh.
      */
     suspend fun list(
@@ -447,9 +555,138 @@ class ContentRepository(
         if (kind != "top250" && kind !in HomeCatalogFilters) throw ApiError("无效的榜单")
         if (kind == "top250" && country == "all") return top250Page(start, refresh, onCached)
         val filters = (HomeCatalogFilters[kind] ?: BrowseFilters(sort = "rating")).copy(country = country)
-        return browse(filters, start, HomeMinimumRating, refresh,
+        if (kind == "top250") return browse(filters, start, HomeMinimumRating, refresh,
             onCached = onCached?.let { publish -> { page -> publish(page.highRated()) } }).highRated()
+        if (start !in 0..10_000 || start % 20 != 0) throw ApiError("无效的榜单页码")
+        var snapshotPublished = false
+        return catalog("home:merged:v1:$kind:$country:$start", ttl = 24 * 60 * 60_000L,
+            forceRefresh = refresh, freshWhen = { !it.stale },
+            onCached = onCached?.let { publish -> { page -> snapshotPublished = true; publish(page) } }) {
+            coroutineScope {
+                val loads: List<suspend () -> CatalogPage> = listOf(
+                    { homeSourceCatalog(filters, start, refresh) },
+                    { browse(filters, start, HomeMinimumRating, refresh,
+                        onCached = onCached?.takeIf { !refresh && start == 0 }?.let { publish ->
+                            { page ->
+                                if (!snapshotPublished) {
+                                    snapshotPublished = true
+                                    publish(page.highRated().copy(hasMore = false, stale = true))
+                                }
+                            }
+                        }) },
+                )
+                val results = loads.map { load -> async {
+                    try { Result.success(load()) }
+                    catch (error: CancellationException) { throw error }
+                    catch (error: Exception) { Result.failure<CatalogPage>(error) }
+                } }.awaitAll()
+                val loaded = results.mapNotNull { it.getOrNull() }
+                if (loaded.isEmpty()) throw ApiError("精选来源暂时不可用，请稍后重试")
+                CatalogPage(mergeHotCatalog(loaded.flatMap { it.items }), start, 20,
+                    start < 10_000 && (loaded.any { it.hasMore } || results.any { it.isFailure }),
+                    label = loaded.lastOrNull()?.label.orEmpty(),
+                    stale = results.any { it.isFailure } || loaded.any { it.stale }).highRated()
+            }
+        }.highRated()
     }
+
+    /** Enriches source cards before regional/genre filtering without resolving media URLs. */
+    private suspend fun homeSourceCatalog(filters: BrowseFilters, start: Int, refresh: Boolean): CatalogPage {
+        val sourceStart = start / 20 * 24
+        if (sourceStart > 9_984) return CatalogPage(emptyList(), start, 20, false)
+        return catalog("home:jianpian:v1:${filters.type}:${filters.genre}:${filters.country}:$start",
+            ttl = 24 * 60 * 60_000L, forceRefresh = refresh, freshWhen = { !it.stale }) {
+            val page = jianpian.catalog(filters.type, sourceStart, "rating")
+            val permits = Semaphore(4)
+            val incomplete = MutableStateFlow(false)
+            val items = coroutineScope { page.items.map { item -> async {
+                permits.withPermit {
+                    try {
+                        val enriched = jianpianCatalogMetadata(item)
+                        enriched.takeIf { JianpianSource.matchesFilters(it, filters) }
+                    } catch (error: CancellationException) { throw error }
+                    catch (error: Exception) {
+                        // Sparse cards cannot establish a region or genre. Let the page
+                        // cache supply its prior verified snapshot instead of mixing scopes.
+                        if (filters.country != "all" || filters.genre != "all") throw error
+                        incomplete.value = true
+                        item
+                    }
+                }
+            } }.awaitAll().filterNotNull() }
+            page.copy(items = items, start = start, pageSize = 20, stale = incomplete.value)
+        }
+    }
+
+    /** Reuses release metadata without replacing a current card's score, artwork or badges. */
+    private suspend fun jianpianCatalogMetadata(item: CatalogItem): CatalogItem {
+        val metadata = cachedResponse<CatalogItem>(
+            "catalog:jianpian:metadata:v1:${item.url}", 24 * 60 * 60_000L,
+            7L * 24 * 60 * 60 * 1000,
+        ) { JianpianSource.catalogMetadata(jianpian.detail(item.url), item) }
+        return item.copy(year = metadata.year, countries = metadata.countries,
+            genres = metadata.genres, casts = metadata.casts)
+    }
+
+    /** Restores the original hot catalog after Jianpian rows, with independent source offsets. */
+    internal suspend fun hotCatalog(
+        type: String, start: Int = 0, refresh: Boolean = false,
+        onCached: (suspend (CatalogPage) -> Unit)? = null,
+    ): CatalogPage = catalog("hot:merged:v2:$type:$start", ttl = 15 * 60_000L,
+        forceRefresh = refresh, freshWhen = { !it.stale }, onCached = onCached) {
+        require(start in 0..9_984 && start % 24 == 0)
+        coroutineScope {
+            val primary = async {
+                try {
+                    Result.success(catalog("hot:jianpian:v2:$type:$start:metadata-v1", ttl = 30 * 60_000L,
+                        forceRefresh = refresh, freshWhen = { !it.stale }) {
+                        val page = jianpian.catalog(type, start, "hot")
+                        val permits = Semaphore(4)
+                        val incomplete = MutableStateFlow(false)
+                        val items = page.items.map { item -> async {
+                            permits.withPermit {
+                                try { jianpianCatalogMetadata(item) }
+                                catch (error: CancellationException) { throw error }
+                                catch (_: Exception) {
+                                    // Optional dates must never remove a playable hot title.
+                                    incomplete.value = true
+                                    item
+                                }
+                            }
+                        } }.awaitAll()
+                        page.copy(items = items, stale = incomplete.value)
+                    })
+                } catch (error: CancellationException) { throw error }
+                catch (error: Exception) { Result.failure<CatalogPage>(error) }
+            }
+            val original = async {
+                try {
+                    // Jianpian's page number advances every logical 24 slots; the original
+                    // Douban endpoint advances by 20. Display filtering changes neither cursor.
+                    Result.success(browse(BrowseFilters(type = type, sort = "hot"),
+                        start / 24 * 20, refresh = refresh))
+                } catch (error: CancellationException) { throw error }
+                catch (error: Exception) { Result.failure<CatalogPage>(error) }
+            }
+            val first = primary.await()
+            if (!refresh && start == 0) first.getOrNull()?.takeIf { it.items.isNotEmpty() }?.let {
+                // Show working source rows while the older catalog revalidates. Do not allow
+                // automatic pagination to cancel that still-pending supplement request.
+                onCached?.invoke(it.copy(hasMore = false, stale = true))
+            }
+            val results = listOf(first, original.await())
+            val loaded = results.mapNotNull { it.getOrNull() }
+            if (loaded.isEmpty()) throw ApiError("热播来源暂时不可用，请稍后重试")
+            CatalogPage(mergeHotCatalog(loaded.flatMap { it.items }), start, 24,
+                start < 9_984 && (loaded.any { it.hasMore } || results.any { it.isFailure }),
+                stale = loaded.any { it.stale } || results.any { it.isFailure })
+        }
+    }
+
+    /** Loads regional recommendations with the homepage score floor for every content type. */
+    internal suspend fun recommendationCatalog(type: String, country: String, start: Int = 0): CatalogPage =
+        browse(BrowseFilters(type = type, country = country, sort = "rating"), start,
+            minimumRating = HomeMinimumRating).highRated()
 
     private suspend fun top250Page(
         start: Int, refresh: Boolean = false, onCached: (suspend (CatalogPage) -> Unit)? = null,
@@ -469,8 +706,9 @@ class ContentRepository(
      * low/unrated entries. Keep the upstream page size and cursor even when filtering rows.
      */
     private fun CatalogPage.highRated(): CatalogPage = copy(
-        items = items.filter { it.rating != null && it.rating in HomeMinimumRating..10.0 }
-            .sortedByDescending { it.rating },
+        items = mergeHighRatedCatalog(items.filter {
+            it.rating != null && it.rating in HomeMinimumRating..10.0
+        }),
     )
 
     /**
@@ -547,7 +785,14 @@ class ContentRepository(
             // prove a drama identity: the same pool contains events and factual programs.
             // Apply on every cache read/publication too, without changing the upstream cursor.
             items = items.filter { filters.type != "tv" || it.isTelevisionDrama() }
-                .map { it.copy(kind = filters.type) },
+                .map { item ->
+                    // The regional request is positive provenance for sparse upstream rows.
+                    // Keep explicit production countries, including co-production metadata.
+                    item.copy(kind = filters.type, countries = item.countries.ifEmpty {
+                        if (filters.country == "all") emptyList()
+                        else listOf(BrowseCountries.getValue(filters.country))
+                    })
+                },
         )
         return catalog(if (bundled && minimumRating == HomeMinimumRating) "tv:$start" else address, ttl, forceRefresh = refresh,
             onCached = onCached?.let { publish -> { page -> publish(page.forCategory()) } }) {
@@ -567,6 +812,9 @@ class ContentRepository(
                     kind = filters.type,
                     genres = (item["genres"] as? JsonArray).orEmpty()
                         .mapNotNull { (it as? JsonPrimitive)?.contentOrNull },
+                    countries = (item["countries"] as? JsonArray).orEmpty()
+                        .mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim() }
+                        .filter(String::isNotBlank).distinct(),
                 )
             }
             CatalogPage(items, start, 20, data.size == 20, tags.joinToString(" · "))
@@ -582,16 +830,21 @@ class ContentRepository(
         query.trim().replace("《", "").replace("》", "")
             .replace(Regex("(?<=[\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])"), "")
 
-    /** Presents one row per verified release, with rated results ordered from highest to lowest. */
-    suspend fun search(query: String, type: String): SearchResult =
-        SearchPresentation.apply(sourceSearch(query, type), searchKeyword(query))
+    /** Presents one row per verified release, ordered by title relevance and then verified rating. */
+    suspend fun search(query: String, type: String): SearchResult {
+        if (type == "bilibili" || BilibiliSource.reference(query) != null) return cachedResponse(
+            "search:bilibili:v2:${query.trim()}", 15L * 60 * 1000, 7L * 24 * 60 * 60 * 1000,
+            onStale = { result: SearchResult -> result.copy(stale = true) },
+        ) { bilibili.search(query) }
+        return SearchPresentation.apply(sourceSearch(query, type), searchKeyword(query))
+    }
 
     /**
      * Supplements search scores from verified catalog identities without delaying first results.
      * Existing scores and completed lookups survive optional lookup failures or the total budget.
      */
     internal suspend fun searchRatings(result: SearchResult, query: String): SearchResult {
-        if (result.results.isEmpty()) return result
+        if (result.results.isEmpty() || result.results.any { it.sourceId.startsWith("bilibili:") }) return result
         val catalog = try { database?.searchCatalogSnapshot().orEmpty() }
         catch (error: CancellationException) { throw error }
         catch (_: Exception) { emptyList() }
@@ -681,16 +934,16 @@ class ContentRepository(
         val address = PomoSource.address("auto_search", "wd" to keyword)
         val activeRules = rules()
         return cachedResponse(
-            // Refresh race-selected backup results immediately under the Pomo-first policy.
-            // Old search snapshots remain available only as bounded offline fallback.
-            "search:online4:$type:$address:${json.encodeToString(activeRules)}",
+            // Refresh single-provider snapshots so their omissions cannot hide new sources.
+            "search:online5:$type:$address:${json.encodeToString(activeRules)}",
             ttl = 15L * 60 * 1000, maxStale = 7L * 24 * 60 * 60 * 1000,
             onStale = { result: SearchResult -> result.copy(stale = true) },
-            legacyKey = "search:online3:$type:$address:${json.encodeToString(activeRules)}",
+            legacyKey = "search:online4:$type:$address:${json.encodeToString(activeRules)}",
+            freshWhen = { !it.stale },
         ) {
-            preferredSearch(listOf(
-                { PomoSource.search(fetch(address, 8_000), type) },
+            mergedSearch(listOf(
                 { jianpian.search(keyword, type) },
+                { PomoSource.search(fetch(address, 8_000), type) },
             ))
         }
     }
@@ -720,7 +973,32 @@ class ContentRepository(
     }
 
     private suspend fun probeMatch(original: CatalogItem): ResourceMatch {
+        val result = findMatch(original)
+        if (result.match.playable) {
+            // Confirmed release identities outlive search/detail caches. A database
+            // write failure must not delay or invalidate a successfully resolved video.
+            try { database?.pinPlaybackIdentity(original, result.match.pageUrl) }
+            catch (error: CancellationException) { throw error }
+            catch (_: Exception) { /* Playback remains usable without optional persistence. */ }
+        }
+        return result
+    }
+
+    private suspend fun findMatch(original: CatalogItem): ResourceMatch {
         val item = database?.playbackIdentity(original) ?: original
+        if (JianpianSource.owns(item.url)) {
+            val page = ContentParsers.pageUrl(item.url)
+            return try {
+                detail(page)
+                ResourceMatch(MatchResult(true, page), ResourceStatus.Available)
+            } catch (error: CancellationException) { throw error }
+            catch (error: ApiError) {
+                // A valid source detail with only native/P2P routes is positive evidence
+                // of missing mobile resources. Transport failures remain visible/unknown.
+                ResourceMatch(MatchResult(false),
+                    if (error.message == "原站暂无可播放剧集") ResourceStatus.Missing else ResourceStatus.Unknown)
+            }
+        }
         ContentParsers.playbackPageOrNull(item.playbackPageUrl)?.let { page ->
             try {
                 val entries = episodes(detail(page), page).map { it.first }
@@ -749,24 +1027,23 @@ class ContentRepository(
         }
         // UI de-duplication cannot remove a mirror that might be the only playable resource.
         val search = sourceSearch(item.title, type)
-        val first = matchCandidates(item, search)
-        // The preferred provider may contain only related films or resources with no
-        // mobile-compatible episode list; preference must not prevent useful failover.
-        // Verify the other provider before declaring absence. An ambiguous verified release
-        // still requires a user choice and must never be overridden by another provider.
+        val first = matchCandidates(item, search.copy(
+            results = search.results.filter { JianpianSource.owns(it.detailUrl) }))
+        // Prefer Jianpian's direct lines only after release and episode verification.
+        // An ambiguous verified release still requires a choice; Pomo remains fallback
+        // for unrelated, retired or native-only Jianpian entries, without repeating search.
         if (first.status == ResourceStatus.Available || search.results.isEmpty()) return first
-        val alternative = try {
-            if (JianpianSource.owns(search.results.first().detailUrl))
-                PomoSource.search(fetch(PomoSource.address("auto_search", "wd" to searchKeyword(item.title)), 8_000), type)
-            else jianpian.search(searchKeyword(item.title), type)
-        } catch (error: CancellationException) { throw error }
-        catch (_: ApiError) { return ResourceMatch(first.match, ResourceStatus.Unknown) }
-        val second = matchCandidates(item, alternative)
+        val second = matchCandidates(item, search.copy(
+            results = search.results.filterNot { JianpianSource.owns(it.detailUrl) }))
         return if (second.status == ResourceStatus.Missing && first.status == ResourceStatus.Unknown)
             ResourceMatch(second.match, ResourceStatus.Unknown) else second
     }
 
-    private suspend fun matchCandidates(original: CatalogItem, search: SearchResult): ResourceMatch {
+    private suspend fun matchCandidates(
+        original: CatalogItem, search: SearchResult,
+        onVerified: (List<String>) -> Unit = {},
+        collectMirrors: Boolean = false,
+    ): ResourceMatch {
         // Resolve ambiguous yearless subjects against their catalog ID, never against
         // a source title that could refer to a remake. Metadata failures retain the
         // conservative existing matcher rather than guessing a release.
@@ -812,8 +1089,8 @@ class ContentRepository(
         for (candidate in candidates) {
             // Once a strongest release is verified, weaker matches cannot change the result.
             // Mirror providers remain fallbacks only until that release has a working list.
-            if (verified.any { it.score > candidate.score }) break
-            if (verified.any {
+            if (!collectMirrors && verified.any { it.score > candidate.score }) break
+            if (!collectMirrors && verified.any {
                 it.score == candidate.score &&
                     ContentParsers.normalizedTitle(it.item.title) == ContentParsers.normalizedTitle(candidate.item.title) &&
                     it.item.year == candidate.item.year && it.item.cast == candidate.item.cast
@@ -824,6 +1101,8 @@ class ContentRepository(
                 // Inspect each line independently: several HD mirrors are still one film,
                 // and must not win the rank cutoff before a numbered series is examined.
                 if ((item.kind == "tv" || item.isSeries == true) && ContentParsers.movieOnlyEpisodes(
+                        episodes(detail, candidate.item.detailUrl).map { it.first })) continue
+                if (collectMirrors && item.isSeries == false && ContentParsers.serialEpisodes(
                         episodes(detail, candidate.item.detailUrl).map { it.first })) continue
                 val knownYears = listOfNotNull(
                     ContentParsers.titleYear(candidate.item.title),
@@ -850,32 +1129,116 @@ class ContentRepository(
         )
         // Provider mirrors must not make one release appear ambiguous. Different years or
         // casts at equal scores still require an explicit user choice.
+        val referenceCast = item.casts.ifEmpty {
+            best.item.cast.split(Regex("[/、,，\\s]+")).filter(String::isNotBlank)
+        }
+        fun compatibleCast(candidate: SearchItem): Boolean =
+            candidate.cast.isBlank() || referenceCast.isEmpty() ||
+                ContentParsers.castOverlapScore(referenceCast, candidate.cast) > 0
         val distinct = verified.filter { it.score == best.score }.distinctBy {
-            listOf(ContentParsers.coreTitle(it.item.title), it.item.year, it.item.cast)
+            // Mirrors commonly publish different subsets of the same cast. Once the
+            // target release year is known, incomplete cast strings are not new releases.
+            listOf(ContentParsers.coreTitle(it.item.title), it.item.year,
+                if (collectMirrors && wantedYear.isNotBlank() && it.item.year == wantedYear &&
+                    compatibleCast(it.item)) "" else it.item.cast)
         }
         val match = if (distinct.size == 1)
             MatchResult(true, best.pageUrl) else MatchResult(false)
+        if (match.playable) onVerified(verified.filter {
+            // Background aggregation needs positive release evidence even for lower-ranked
+            // mirrors. A yearless hit cannot silently attach a same-name remake.
+            it.item.year.isNotBlank() && it.item.year == best.item.year && compatibleCast(it.item)
+        }.map { it.pageUrl }.distinct())
         return ResourceMatch(match, ResourceStatus.Available,
             if (match.playable) best.item.thumbnailUrl else "")
+    }
+
+    /**
+     * Searches verified mirrors after initial playback and appends their stable episode paths.
+     * Each appended line retains its provider identity; media parsing never uses the root
+     * page's provider for an episode belonging to another provider. Failures are optional.
+     */
+    internal suspend fun supplementPlayback(info: PlaybackInfo, catalog: CatalogItem? = null): PlaybackInfo {
+        val page = info.pageUrl
+        if (!JianpianSource.owns(page) && !page.startsWith("https://pomo.mom/")) return info
+        val source = playbackSource(page, reuse = true)
+        val data = source.metadata
+        val search = sourceSearch(catalog?.title ?: info.title, "all")
+        val year = catalog?.year?.takeIf(String::isNotBlank)
+            ?: data?.text("year")?.takeIf(String::isNotBlank)
+            ?: search.results.firstOrNull { it.detailUrl == page }?.year.orEmpty()
+        if (year.isBlank()) return info
+        val series = ContentParsers.serialEpisodes(source.entries.map { it.first })
+        val item = catalog?.copy(year = year, isSeries = catalog.isSeries ?: series) ?: CatalogItem(
+            title = info.title, url = "", year = year,
+            kind = if (series) "tv" else "movie", isSeries = series,
+        )
+        var pages = emptyList<String>()
+        matchCandidates(item, search,
+            onVerified = { pages = it }, collectMirrors = true)
+        for (mirror in pages.filter { it != page }) {
+            val extra = try { playbackSource(mirror, reuse = true).entries.filter {
+                it.first.path.substringBefore('#') == mirror
+            } } catch (error: CancellationException) { throw error }
+            catch (_: Exception) { continue }
+            detailMutex.withLock {
+                if (playbackSources[page] !== source) return@withLock
+                var nextLine = maxOf(100_000, (source.entries.maxOfOrNull { it.first.line } ?: 0) + 1)
+                val previous = source.entries.filter { it.first.path.substringBefore('#') == mirror }
+                val lines = extra.map { it.first.line }.distinct().associateWith { originalLine ->
+                    previous.firstOrNull {
+                        it.first.path.substringAfter('#').substringBefore('-') == originalLine.toString()
+                    }?.first?.line ?: nextLine++
+                }
+                source.entries = source.entries.filter { it.first.path.substringBefore('#') != mirror } +
+                    extra.map { (episode, address) ->
+                    episode.copy(line = lines.getValue(episode.line),
+                        lineName = "${if (JianpianSource.owns(mirror)) "荐片" else "Pomo"} · ${episode.lineName}") to address
+                }
+            }
+        }
+        try {
+            val mirrors = detailMutex.withLock { source.entries.filter { it.first.path.substringBefore('#') != page } }
+            if (mirrors.isNotEmpty()) database?.writeResponse("playback-mirrors:v1:$page",
+                json.encodeToString(mirrors), currentEpochMillis())
+        } catch (error: CancellationException) { throw error }
+        catch (_: Exception) { /* Optional mirror caching must never interrupt playback. */ }
+        return info.copy(episodes = detailMutex.withLock { source.entries.map { it.first } })
     }
 
     /** Checks the explicit embed before choosing native navigation or the browser fallback. */
     internal suspend fun sketchHasNative(page: String): Boolean =
         SketchPlayback.videoId(page, fetch(page, 10_000)) != null
 
-    suspend fun player(request: PlayerRequest): PlaybackInfo {
+    /**
+     * Resolves a validated episode and its playable media address.
+     *
+     * @param request Explicit title, episode and rejected-source identities.
+     * @param selectEpisode Optional resume selection from the freshly loaded episode list.
+     * Invalid remembered entries are ignored; invalid explicit requests still fail.
+     */
+    suspend fun player(
+        request: PlayerRequest,
+        selectEpisode: ((String, List<Episode>) -> String?)? = null,
+    ): PlaybackInfo {
+        if (CctvSource.owns(request.page.orEmpty())) return CctvSource.resolve(request) { fetch(it, 10_000) }
+        if (BilibiliSource.reference(request.page.orEmpty()) != null) return bilibili.resolve(request)
         val original = ContentParsers.pageUrl(request.page.orEmpty())
         if (SketchSource.owns(original)) return SketchPlayback { fetch(it, 10_000) }.resolve(request)
-        if (Url(original).host == "huolot.com") return resolvePlayer(request)
+        if (Url(original).host == "huolot.com") return resolvePlayer(request, selectEpisode)
         try {
-            return resolvePlayer(request)
+            return resolvePlayer(request, selectEpisode)
         } catch (error: CancellationException) { throw error }
         catch (failure: ApiError) {
-            return fallbackPlayer(request, original, failure)
+            if (!request.allowLineFallback) throw failure
+            return fallbackPlayer(request, original, failure, selectEpisode)
         }
     }
 
-    private suspend fun fallbackPlayer(request: PlayerRequest, original: String, failure: ApiError): PlaybackInfo {
+    private suspend fun fallbackPlayer(
+        request: PlayerRequest, original: String, failure: ApiError,
+        selectEpisode: ((String, List<Episode>) -> String?)?,
+    ): PlaybackInfo {
         val page = original.substringBefore('#')
         val body = try { detail(page) }
         catch (error: CancellationException) { throw error }
@@ -920,7 +1283,7 @@ class ContentRepository(
                             alternatives.count { entry -> entry.first.line == it.first.line } == 1
                     }?.first ?: continue
                 }
-                return resolvePlayer(request.copy(page = candidate.detailUrl, episode = next?.path))
+                return resolvePlayer(request.copy(page = candidate.detailUrl, episode = next?.path), selectEpisode)
             } catch (error: CancellationException) { throw error }
             catch (_: ApiError) { /* A backup failure must not replace the original useful error. */ }
         }
@@ -936,32 +1299,70 @@ class ContentRepository(
         else ContentParsers.normalizedTitle(first.label) == ContentParsers.normalizedTitle(second.label)
     }
 
-    private suspend fun resolvePlayer(request: PlayerRequest): PlaybackInfo {
+    private suspend fun resolvePlayer(
+        request: PlayerRequest, selectEpisode: ((String, List<Episode>) -> String?)? = null,
+    ): PlaybackInfo {
         val original = ContentParsers.pageUrl(request.page.orEmpty())
         if (Url(original).host == "huolot.com") {
             val title = request.title?.takeIf { it.isNotBlank() } ?: throw ApiError("请重新搜索影片后播放")
             val match = resolve(CatalogItem(title, ""))
             if (!match.playable) throw ApiError("新来源暂未找到此影片，请重新搜索")
-            return resolvePlayer(PlayerRequest(page = match.pageUrl, title = title))
+            return resolvePlayer(PlayerRequest(page = match.pageUrl, title = title), selectEpisode)
         }
         val page = original.substringBefore('#')
-        val body = detail(page)
-        val entries = episodes(body, page)
-        val selected = request.episode ?: original.takeIf { '#' in it }
-        if (selected != null && entries.none { it.first.path == selected })
+        val source = playbackSource(page, request.reuseSourceInfo)
+        val entries = source.entries
+        val explicit = request.episode ?: original.takeIf { '#' in it }
+        if (explicit != null && entries.none { it.first.path == explicit })
             throw ApiError("该剧集不在当前影片的播放列表中")
+        // Select history from fresh identities before parsing/probing a stream. Resolving
+        // the default first stream and then the saved line adds an entire network round trip.
+        val selected = selectEpisode?.invoke(page, entries.map { it.first })
+            ?.takeIf { target -> entries.any { it.first.path == target } } ?: explicit
         val selectedEpisode = entries.find { it.first.path == selected }?.first
         // Movie routes often call the same feature "国语", "HD" or "正片". Only a
         // singleton on every line permits this fallback; series must match their episode
         // label and must never move from a later episode into a singleton movie route.
         val singleFeature = ContentParsers.movieOnlyEpisodes(entries.map { it.first })
-        val choices = if (selectedEpisode != null) entries.filter {
+        val candidates = if (selectedEpisode != null) entries.filter {
             it.first.path == selected || sameEpisode(selectedEpisode, it.first) || singleFeature
         }.sortedBy { if (it.first.path == selected) 0 else 1 }
             // Retry the first episode on alternate lines, never a later episode of the same
             // series. A failed first stream must not silently skip part of the story.
             else entries.filter { it.first.path.endsWith("-0") }
                 .sortedBy { if (Url(it.second).encodedPath.endsWith(".m3u8")) 0 else 1 }
+        // Automatic entry must compare this attempt's real response times, including
+        // when reopening within the normal probe TTL. Never pin playback to yesterday's
+        // fastest route. Probe only candidates for the requested episode, using the same
+        // bounded concurrency/retry policy as background checks. Keep validated media
+        // locally so choosing a winner does not parse or download its prefix twice.
+        // A manual selection skips this batch and keeps its explicit route.
+        val checkedMedia = mutableMapOf<String, Pair<String, String>>()
+        if (!request.reuseSourceInfo || request.rejectedMedia.isNotEmpty() || request.rejectedEpisodes.isNotEmpty())
+            detailMutex.withLock {
+                candidates.forEach { source.media.remove(it.first.path to it.second) }
+            }
+        val probes = if (request.preferFastestLine && request.allowLineFallback)
+            probeLineEntries(page, candidates.filter {
+                it.first.path !in request.rejectedEpisodes && it.second !in request.rejectedMedia
+            }, refresh = true, onResolved = { episode, media, probe ->
+                checkedMedia[episode.path] = media
+                candidates.firstOrNull {
+                    it.first.path == episode.path && media.first !in request.rejectedMedia
+                }?.let {
+                    cachePlaybackMedia(page, source, episode, it.second, media, probe)
+                }
+            })
+        else emptyMap()
+        val choices = if (!request.allowLineFallback) candidates.filter { it.first.path == selected }
+        else if (request.preferFastestLine) candidates.sortedWith(compareBy<Pair<Episode, String>> {
+            lineHasAds(page, it.first)
+        }.thenBy {
+            val probe = probes[it.first.line]
+            if (probe?.available == true) probe.elapsedMs?.takeIf { elapsed -> elapsed >= 0 } ?: Long.MAX_VALUE
+            else Long.MAX_VALUE
+        }) else if (request.reuseSourceInfo) candidates.sortedBy { lineHasAds(page, it.first) }
+        else candidates
         var failure: ApiError? = null
         for ((episode, address) in choices.distinctBy { it.second }) {
             try {
@@ -969,27 +1370,46 @@ class ContentRepository(
                 // Reject its stable episode identity before parsing, not only the last URL.
                 if (episode.path in request.rejectedEpisodes) continue
                 if (address in request.rejectedMedia) continue
-                val media = if (JianpianSource.owns(page)) {
+                if (probes[episode.line]?.available == false) continue
+                val probeStarted = currentEpochMillis()
+                var probeElapsed: Long? = null
+                val cached = if (request.reuseSourceInfo) detailMutex.withLock {
+                    source.media[episode.path to address]?.takeIf {
+                        playbackCacheNowMs() - it.at in 0 until 5 * 60_000L &&
+                            it.media.first !in request.rejectedMedia
+                    }
+                } else null
+                val media = cached?.media ?: checkedMedia[episode.path] ?: if (JianpianSource.owns(episode.path)) {
                     val kind = JianpianSource.mediaKind(address) ?: throw ApiError("此线路无法直接播放")
-                    probeMedia(address, kind)
+                    probeElapsed = probeMedia(address, kind)
                     address to kind
                 } else {
-                    // Some parser responses are successful even when their resolved host is
-                    // dead. Verify parsed URLs before handing them to AVPlayer. A native
-                    // stream can survive an unavailable parser; otherwise try another line.
+                    // A direct HLS/MP4 route already contains its media address. Validate
+                    // that endpoint before asking a parser to wrap it again: slow or broken
+                    // parsers otherwise add up to five seconds to a healthy direct route.
+                    // Keep parsing as recovery for expired, indirect or rejected addresses.
+                    val directKind = JianpianSource.mediaKind(address)
                     try {
+                        if (directKind == null) throw ApiError("此线路需要解析")
+                        // Bound this speculative shortcut: a dead original endpoint must
+                        // not delay a parser that can supply a fresh working address.
+                        probeElapsed = withTimeoutOrNull(1_000) { probeMedia(address, directKind) }
+                            ?: throw ApiError("直接线路响应较慢，尝试解析")
+                        address to directKind
+                    } catch (error: CancellationException) { throw error }
+                    catch (_: ApiError) {
                         PomoSource.media(
                             fetch(PomoSource.address("parse", "url" to address), 5_000),
-                        ).also { probeMedia(it.first, it.second) }
-                    } catch (error: CancellationException) { throw error }
-                    catch (error: ApiError) {
-                        val kind = JianpianSource.mediaKind(address) ?: throw error
-                        probeMedia(address, kind)
-                        address to kind
+                        ).also { probeElapsed = probeMedia(it.first, it.second) }
                     }
                 }
                 if (media.first in request.rejectedMedia) continue
-                val data = metadata(body, page)
+                val measured = cached?.probe ?: probes[episode.line]?.takeIf { it.available == true }
+                    ?: LineProbe((currentEpochMillis() - probeStarted).coerceAtLeast(probeElapsed ?: 0), true)
+                saveLineProbe(page, episode, address, measured)
+                // Reusing a URL must not extend its lifetime indefinitely across repeated taps.
+                if (cached == null) cachePlaybackMedia(page, source, episode, address, media, measured)
+                val data = source.metadata
                 return PlaybackInfo(request.title ?: data?.text(if (JianpianSource.owns(page)) "title" else "name")
                     .orEmpty().ifBlank { "影视播放" },
                     media.first, media.second, entries.map { it.first }, episode.path, page,
@@ -997,15 +1417,164 @@ class ContentRepository(
                     data?.text(if (JianpianSource.owns(page)) "description" else "content").orEmpty(),
                     // Only 荐片's detail payload carries the area label; skipping falls back
                     // to the 90-second reference when the field is absent.
-                    data?.text("area").orEmpty().trim().take(40))
+                    data?.text("area").orEmpty().trim().take(40),
+                    lineProbes = cachedLineProbes(page, entries, episode) + probes + (episode.line to measured),
+                    resumeFromEpisode = selectedEpisode?.path?.takeIf {
+                        (request.preferFastestLine || request.reuseSourceInfo) && it != episode.path
+                    })
             } catch (error: CancellationException) { throw error }
             catch (error: ApiError) { failure = error }
         }
         throw failure ?: ApiError("原站暂无可播放剧集")
     }
 
-    /** Reads a bounded prefix, rejecting dead hosts, HTML error pages and login responses. */
-    private suspend fun probeMedia(address: String, kind: String) {
+    /**
+     * Probes alternate direct resources after playback resolution, never on its critical path.
+     * Prefer the same episode, then manual line selection's index/first-episode fallback.
+     * A successful prefix is not a first-frame claim.
+     */
+    internal suspend fun probeLines(
+        info: PlaybackInfo, onMeasured: suspend (Map<Int, LineProbe>) -> Unit = {},
+    ): Map<Int, LineProbe> {
+        val selected = info.episodes.firstOrNull { it.path == info.selected } ?: return emptyMap()
+        val source = playbackSource(info.pageUrl, reuse = true)
+        val entries = source.entries
+        val results = cachedLineProbes(info.pageUrl, entries, selected).toMutableMap()
+        // Unknown results from a previous attempt must not block pending-line retries.
+        results.putAll(info.lineProbes.filterValues { it.available != null })
+        return probeLineEntries(info.pageUrl, compatibleLineEntries(entries, selected),
+            initialProbes = results, onMeasured = onMeasured, onResolved = { episode, media, probe ->
+                entries.firstOrNull { it.first.path == episode.path }?.let { entry ->
+                    cachePlaybackMedia(info.pageUrl, source, episode, entry.second, media,
+                        probe)
+                }
+            })
+    }
+
+    /** Shares bounded route checks between fresh automatic entry and pending background probes. */
+    private suspend fun probeLineEntries(
+        page: String, targets: List<Pair<Episode, String>>,
+        initialProbes: Map<Int, LineProbe> = emptyMap(), refresh: Boolean = false,
+        onMeasured: suspend (Map<Int, LineProbe>) -> Unit = {},
+        onResolved: suspend (Episode, Pair<String, String>, LineProbe) -> Unit = { _, _, _ -> },
+    ): Map<Int, LineProbe> {
+        val results = initialProbes.toMutableMap()
+        val knownLines = results.keys.toSet()
+        val lock = Mutex()
+        val permits = Semaphore(3)
+        // Each line owns its budget. A shared deadline used to cancel queued lines and
+        // leave them pending forever, especially when a provider exposed many mirrors.
+        coroutineScope {
+            targets.map { entry ->
+                async {
+                    val line = entry.first.line
+                    if (line in knownLines) return@async
+                    var resolvedMedia: Pair<String, String>? = null
+                    val result = permits.withPermit {
+                        repeat(2) { attempt ->
+                            if (attempt > 0) delay(500)
+                            val started = currentEpochMillis()
+                            val measured = try {
+                                withTimeoutOrNull(10_000) {
+                                    val kind = JianpianSource.mediaKind(entry.second)
+                                    val elapsed = if (JianpianSource.owns(entry.first.path)) {
+                                        if (kind == null) throw MediaUnavailable()
+                                        probeMedia(entry.second, kind, refresh).also {
+                                            resolvedMedia = entry.second to kind
+                                        }
+                                    } else {
+                                        try {
+                                            if (kind == null) throw ApiError("此线路需要解析")
+                                            (withTimeoutOrNull(1_000) { probeMedia(entry.second, kind, refresh) }
+                                                ?: throw ApiError("直接线路响应较慢，尝试解析")).also {
+                                                resolvedMedia = entry.second to kind
+                                            }
+                                        } catch (error: CancellationException) { throw error }
+                                        catch (_: ApiError) {
+                                            val body = fetch(PomoSource.address("parse", "url" to entry.second), 5_000)
+                                            val media = try { PomoSource.media(body) }
+                                            catch (_: ApiError) { throw MediaUnavailable() }
+                                            probeMedia(media.first, media.second, refresh).also {
+                                                resolvedMedia = media
+                                            }
+                                        }
+                                    }
+                                    LineProbe((currentEpochMillis() - started).coerceAtLeast(elapsed), true)
+                                } ?: LineProbe()
+                            } catch (error: CancellationException) { throw error }
+                            catch (_: MediaUnavailable) { LineProbe(available = false) }
+                            catch (_: Exception) { LineProbe() }
+                            if (measured.available != null) return@withPermit measured
+                        }
+                        // After a bounded retry, a route that cannot respond is unusable
+                        // for this session. The short failure TTL allows later recovery.
+                        LineProbe(available = false)
+                    }
+                    lock.withLock {
+                        results[line] = result
+                        if (result.available == true) resolvedMedia?.let { onResolved(entry.first, it, result) }
+                        onMeasured(mapOf(line to result))
+                    }
+                    saveLineProbe(page, entry.first, entry.second, result)
+                }
+            }.awaitAll()
+        }
+        return results.toMap()
+    }
+
+    /**
+     * Reuses SQLite's bounded response store for per-episode measurements. Media fingerprints
+     * invalidate rotated addresses without storing signed URLs; failures expire sooner so an
+     * upstream repair is promptly retried. Unknown transport results are never persisted.
+     */
+    internal fun lineProbeKey(page: String, episode: Episode, address: String): String =
+        "line-probe:v1:${page.substringBefore('#')}:${episode.path}:${episode.lineName}:${address.encodeUtf8().sha256().hex()}"
+
+    private suspend fun saveLineProbe(page: String, episode: Episode, address: String, probe: LineProbe) {
+        if (probe.available == null) return
+        try {
+            database?.writeResponse(lineProbeKey(page, episode, address), json.encodeToString(probe), currentEpochMillis())
+        } catch (error: CancellationException) { throw error }
+        catch (_: Exception) { /* Optional persistence must not fail an otherwise playable route. */ }
+    }
+
+    private suspend fun cachedLineProbes(
+        page: String, entries: List<Pair<Episode, String>>, selected: Episode,
+    ): Map<Int, LineProbe> = buildMap {
+        for (entry in compatibleLineEntries(entries, selected)) {
+            val stored = try { database?.readResponse(lineProbeKey(page, entry.first, entry.second)) }
+            catch (error: CancellationException) { throw error }
+            catch (_: Exception) { null } ?: continue
+            val probe = runCatching { json.decodeFromString<LineProbe>(stored.payload) }.getOrNull() ?: continue
+            val ttl = if (probe.available == true) 2 * 60_000L else 30_000L
+            if (probe.available != null && currentEpochMillis() - stored.savedAt in 0 until ttl) put(entry.first.line, probe)
+        }
+    }
+
+    private fun compatibleLineEntries(entries: List<Pair<Episode, String>>, selected: Episode): List<Pair<Episode, String>> {
+        val index = entries.filter { it.first.line == selected.line }.indexOfFirst { it.first.path == selected.path }
+        return entries.groupBy { it.first.line }.values.mapNotNull { choices ->
+            choices.firstOrNull { sameEpisode(selected, it.first) }
+                ?: choices.singleOrNull()?.takeIf {
+                    ContentParsers.movieOnlyEpisodes(listOf(selected, it.first))
+                }
+                // Sparse/differently labelled lines remain selectable through the same
+                // fallback as selectLine; they must receive a measurement instead of
+                // staying pending forever. Cache by the actual probed episode identity.
+                ?: choices.getOrNull(index) ?: choices.firstOrNull()
+        }
+    }
+
+    private val mediaProbeMutex = Mutex()
+    private val mediaProbes = linkedMapOf<String, Pair<Long, Long>>()
+
+    /** Reads a bounded prefix; short successful probes also prevent repeated route checks. */
+    private suspend fun probeMedia(address: String, kind: String, refresh: Boolean = false): Long {
+        val key = "$kind:$address"
+        val started = currentEpochMillis()
+        mediaProbeMutex.withLock { mediaProbes[key].takeUnless { refresh } }?.let { (at, elapsed) ->
+            if (started - at in 0 until 2 * 60_000L) return elapsed
+        }
         val available = try { withTimeoutOrNull(5_000) {
             var target = address
             repeat(5) {
@@ -1023,6 +1592,8 @@ class ContentRepository(
                             if (!isWebUrl(target)) return@execute false
                             null
                         } else {
+                            if (response.status.value >= 500 || response.status.value in listOf(408, 429))
+                                throw ApiError("线路检查暂时失败")
                             if (!response.status.isSuccess()) return@execute false
                             val bytes = ByteArray(8192)
                             var count = 0
@@ -1047,10 +1618,17 @@ class ContentRepository(
                 if (checked != null) return@withTimeoutOrNull checked
             }
             false
-        } ?: false }
+        } ?: throw ApiError("线路检查超时") }
         catch (error: CancellationException) { throw error }
-        catch (_: Exception) { false }
-        if (!available) throw ApiError("此播放线路暂时不可用")
+        catch (error: ApiError) { throw error }
+        catch (error: Exception) { throw ApiError("线路检查暂时失败", error) }
+        if (!available) throw MediaUnavailable()
+        val elapsed = (currentEpochMillis() - started).coerceAtLeast(0)
+        mediaProbeMutex.withLock {
+            mediaProbes[key] = currentEpochMillis() to elapsed
+            if (mediaProbes.size > 64) mediaProbes.remove(mediaProbes.keys.first())
+        }
+        return elapsed
     }
 
     fun close() { pages.clear(); client.close() }
@@ -1070,6 +1648,8 @@ private fun CatalogItem.mergeArtwork(details: CatalogItem): CatalogItem = detail
     // Catalog rails may carry only a few lead names. The detail source owns the complete,
     // ordered list; a nonempty card preview must not keep suppressing later cast members.
     casts = details.casts.ifEmpty { casts }, kind = kind.ifBlank { details.kind },
+    countries = details.countries.ifEmpty { countries },
+    genres = details.genres.ifEmpty { genres },
 )
 
 /** Reads Douban's public subject JSON, the app's existing source for scores and subject pages. */
@@ -1136,6 +1716,9 @@ internal object DoubanArtwork {
             genres = (root["genres"] as? JsonArray).orEmpty().mapNotNull {
                 (it as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
             },
+            countries = (root["countries"] as? JsonArray).orEmpty().mapNotNull {
+                (it as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf(String::isNotBlank)
+            }.distinct(),
             isSeries = root["is_tv"]?.jsonPrimitive?.booleanOrNull,
         )
     }.getOrNull()
@@ -1155,6 +1738,7 @@ internal object ContentParsers {
     } catch (_: Exception) { "" }
 
     fun pageUrl(value: String): String {
+        BilibiliSource.reference(value)?.let { return it.page + if (it.part > 1) "?p=${it.part}" else "" }
         val url = try { Url(value) } catch (_: Exception) { throw ApiError("无效的播放页面") }
         if (SketchSource.owns(value)) return value
         if (url.host == "pomo.mom") return PomoSource.page(value)

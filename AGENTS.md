@@ -28,6 +28,22 @@ The graph indexes first-party code, configuration supported by Graphify, and tes
 
 The initial Graphify 0.9.64 build reported partial parsing in ten files, including `AppState.kt` and `ContentRepository.kt`; consult the current coverage report. Imported or unresolved references can have no source location. `EXTRACTED` describes a static syntactic relationship; `INFERRED` is a heuristic relationship. Neither proves runtime behavior. A missing edge does not prove that two components are unrelated, especially in Compose, coroutine flows, platform interop, or partially parsed files. The graph is undirected: `path` shows a structural connection, not execution order.
 
+## Capability contract
+
+All capabilities that other changes must not silently alter are registered in [graphify-out/capabilities.json](graphify-out/capabilities.json); [graphify-out/CAPABILITIES.md](graphify-out/CAPABILITIES.md) is the human-readable mirror. The registry records each capability's requirement, implementation files, code anchors, and guard tests; [graphify-out/capabilities.sig](graphify-out/capabilities.sig) detects unaccepted registry edits.
+
+Run the check before and after any code change:
+
+```sh
+python3 graphify-out/check_capabilities.py
+```
+
+- Adding or intentionally changing a capability requires updating the implementation, its guard tests, `capabilities.json`, and `CAPABILITIES.md`, then explicitly accepting the contract with `python3 graphify-out/check_capabilities.py --accept`.
+- Never run `--accept` to silence an unexpected failure, and never delete an anchor or guard test without following the intentional-change flow.
+- In multi-window work, a failure naming a capability you did not touch means another window changed it. Reconcile or revert; do not re-sign over it.
+- The signature is change detection, not a security boundary. New capabilities are not discovered automatically and must be registered by hand.
+- Text anchors do not prove runtime behavior; still run the mobile host tests and platform builds required by [mobile/AGENTS.md](mobile/AGENTS.md).
+
 ## Refresh and verify
 
 After changing code, refresh the graph and its report from the repository root:

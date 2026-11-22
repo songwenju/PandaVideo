@@ -9,6 +9,9 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -39,9 +42,42 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.channels.awaitClose
 import kotlin.math.roundToInt
 
 class AndroidPlatform(private val activity: Activity) : PlatformServices {
+    override fun downloadNetwork(): Flow<DownloadNetwork> = callbackFlow {
+        val manager = activity.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        fun publish() {
+            val capabilities = manager.getNetworkCapabilities(manager.activeNetwork)
+            trySend(when {
+                capabilities == null || !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ->
+                    DownloadNetwork.Offline
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) -> DownloadNetwork.Wifi
+                else -> DownloadNetwork.Other
+            })
+        }
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = publish()
+            override fun onLost(network: Network) = publish()
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = publish()
+        }
+        // Android 6 televisions expose activeNetwork but not the default-network callback
+        // introduced in API 24. Observe Internet-capable networks and always publish the
+        // current active network, so Ethernet televisions do not masquerade as Wi-Fi.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            manager.registerDefaultNetworkCallback(callback)
+        } else {
+            manager.registerNetworkCallback(
+                android.net.NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
+                callback,
+            )
+        }
+        publish()
+        awaitClose { manager.unregisterNetworkCallback(callback) }
+    }.distinctUntilChanged()
     private val douban by lazy { AndroidDoubanSession(activity.applicationContext) }
     override fun doubanSession(): DoubanSession = douban
     override fun offlineEngine(): dev.pandavideo.data.repository.OfflineEngine =
@@ -65,7 +101,7 @@ class AndroidPlatform(private val activity: Activity) : PlatformServices {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             context.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
     override val haptics: Haptics = AndroidHaptics(activity)
-    override fun httpClient() = HttpClient(OkHttp) { followRedirects = false }
+    override fun httpClient() = AndroidSourceTls.httpClient(context)
     override fun player(): PlayerController = AndroidPlayer(context).also { activePlayer = it }
     override fun storage(): KeyValueStorage = SharedPrefsStorage(context)
     override fun catalogDatabasePath(): String =
@@ -184,6 +220,7 @@ class AndroidPlayer(context: Context) : PlayerController {
     // surface's parameters have not changed. Otherwise the decoder stays on its dummy surface.
     private var native: Player? by mutableStateOf(null)
     private var pendingSource: MediaSource? = null
+    private var pendingBootstrapHit = false
     private var audioOnly = false
 
     private val mutable = MutableStateFlow(PlayerState())
@@ -193,6 +230,18 @@ class AndroidPlayer(context: Context) : PlayerController {
     private val seekPreview = AndroidSeekPreview(appContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var released = false
+    private var seekSettlement: (() -> Unit)? = null
+    private var cancelSeekSettlement: (() -> Unit)? = null
+    private val bootstrapClient = AndroidSourceTls.httpClient(appContext)
+    private val bootstrapCache = dev.pandavideo.core.player.HlsBootstrapCache(bootstrapClient, scope, ::currentEpochMillis)
+    private var bootstrapLoad: Job? = null
+    private var bootstrapPreload: Job? = null
+    private var resolvingSource: MediaSource? = null
+    private var bootstrapDirectory: java.io.File? = null
+    private var activeBootstrapDirectory: java.io.File? = null
+    private var bootstrapAddress: String? = null
+    private var bootstrapUri: String? = null
+    private var bootstrapValue: dev.pandavideo.core.player.HlsBootstrap? = null
     private val listener = object : Player.Listener {
         override fun onRenderedFirstFrame() {
             if (!released && native?.currentMediaItem?.mediaId == mutable.value.mediaId.toString())
@@ -226,7 +275,7 @@ class AndroidPlayer(context: Context) : PlayerController {
                 native = controller
                 controller.addListener(listener)
                 applyAudioOnly(controller)
-                pendingSource?.let { applyLoad(it); pendingSource = null }
+                pendingSource?.let { applyLoad(it, pendingBootstrapHit); pendingSource = null }
             }
         }, ContextCompat.getMainExecutor(appContext))
         scope.launch {
@@ -241,16 +290,16 @@ class AndroidPlayer(context: Context) : PlayerController {
             }
         }
     }
-    private fun applyLoad(source: MediaSource) {
+    private fun applyLoad(source: MediaSource, bootstrapHit: Boolean = false) {
         val player = native ?: return
-        mutable.value = PlayerState(mediaId = source.id, phase = PlayerPhase.Preparing, wantsPlay = source.autoplay)
+        mutable.value = PlayerState(mediaId = source.id, phase = PlayerPhase.Preparing, wantsPlay = source.autoplay, rate = mutable.value.rate)
         val result = (player as MediaController).sendCustomCommand(
             SessionCommand(PlaybackMediaSessionService.ACTION_LOAD, Bundle.EMPTY), source.commandArgs())
         result.addListener({
             if (!released && mutable.value.mediaId == source.id) {
                 val response = runCatching { result.get() }.getOrNull()
                 if (response?.resultCode == SessionResult.RESULT_SUCCESS)
-                    mutable.value = mutable.value.copy(dataPreloadHit = response.extras.getBoolean("preloadHit"))
+                    mutable.value = mutable.value.copy(dataPreloadHit = bootstrapHit || response.extras.getBoolean("preloadHit"))
                 else mutable.value = mutable.value.copy(phase = PlayerPhase.Error,
                     error = "播放器准备失败，请重试")
             }
@@ -258,6 +307,8 @@ class AndroidPlayer(context: Context) : PlayerController {
     }
     private fun MediaSource.commandArgs() = Bundle().apply {
         putString("url", url); putLong("id", id)
+        putStringArrayList("segmentUrls", ArrayList(segments.map { it.url }))
+        putLongArray("segmentDurations", segments.map { it.durationMs }.toLongArray())
         putString("mime", if (kind == "hls") MimeTypes.APPLICATION_M3U8 else null)
         putString("title", title); putString("episode", episodeLabel)
         putBoolean("autoplay", autoplay); putLong("position", startPosition)
@@ -266,23 +317,61 @@ class AndroidPlayer(context: Context) : PlayerController {
     /** Sends speculative work to the service owning the playback buffers. */
     override fun preload(source: MediaSource?) {
         if (released) return
-        (native as? MediaController)?.sendCustomCommand(
-            SessionCommand(PlaybackMediaSessionService.ACTION_PRELOAD, Bundle.EMPTY),
-            source?.commandArgs() ?: Bundle.EMPTY)
+        bootstrapPreload?.cancel()
+        bootstrapCache.preload(source)
+        bootstrapPreload = scope.launch {
+            val cached = source?.let { bootstrapCache.await(it) }
+            val uri = if (source != null && cached != null) publishBootstrap(source.url, cached) else null
+            val resolved = if (uri != null) source?.copy(url = uri) else source
+            (native as? MediaController)?.sendCustomCommand(
+                SessionCommand(PlaybackMediaSessionService.ACTION_PRELOAD, Bundle.EMPTY),
+                resolved?.commandArgs() ?: Bundle.EMPTY)
+        }
     }
     override fun load(source: MediaSource) {
         if (released) return
         seekPreview.setSource(source)
-        val player = native
-        if (player == null) {
-            pendingSource = source
-        } else {
-            applyLoad(source)
+        bootstrapLoad?.cancel()
+        resolvingSource = source
+        mutable.value = PlayerState(mediaId = source.id, phase = PlayerPhase.Preparing, wantsPlay = source.autoplay, rate = mutable.value.rate)
+        bootstrapLoad = scope.launch {
+            val cached = bootstrapCache.await(source)
+            val current = resolvingSource ?: return@launch
+            val uri = cached?.let { publishBootstrap(source.url, it) }
+            val resolved = if (uri != null) current.copy(url = uri) else current
+            resolvingSource = null
+            val previous = activeBootstrapDirectory
+            activeBootstrapDirectory = bootstrapDirectory.takeIf { uri != null }
+            if (native == null) {
+                pendingSource = resolved
+                pendingBootstrapHit = uri != null
+            } else applyLoad(resolved, uri != null)
+            if (previous != activeBootstrapDirectory && previous != bootstrapDirectory) previous?.deleteRecursively()
         }
+    }
+    private fun publishBootstrap(address: String, cached: dev.pandavideo.core.player.HlsBootstrap): String? = try {
+        if (bootstrapAddress == address && bootstrapValue === cached) bootstrapUri?.let { return it }
+        val directory = java.io.File(appContext.cacheDir, "hls-bootstrap").apply { mkdirs() }
+        val target = java.io.File.createTempFile("session-", ".tmp", directory)
+        target.delete()
+        check(target.mkdir())
+        try {
+            java.io.File(target, "first.ts").writeBytes(cached.segment)
+            val playlist = java.io.File(target, "index.m3u8")
+            playlist.writeText(cached.manifest(Uri.fromFile(java.io.File(target, "first.ts")).toString()))
+            if (bootstrapDirectory != activeBootstrapDirectory) bootstrapDirectory?.deleteRecursively()
+            bootstrapDirectory = target
+            bootstrapAddress = address
+            bootstrapValue = cached
+            return Uri.fromFile(playlist).toString().also { bootstrapUri = it }
+        } catch (e: Exception) { target.deleteRecursively(); throw e }
+    } catch (_: Exception) {
+        null
     }
     override fun play() {
         if (released) return
         pendingSource = pendingSource?.copy(autoplay = true)
+        resolvingSource = resolvingSource?.copy(autoplay = true)
         mutable.value = mutable.value.copy(wantsPlay = true)
         native?.play()
     }
@@ -290,12 +379,48 @@ class AndroidPlayer(context: Context) : PlayerController {
         if (released) return
         // MediaController connects asynchronously; remember pause before it exists.
         pendingSource = pendingSource?.copy(autoplay = false)
+        resolvingSource = resolvingSource?.copy(autoplay = false)
         mutable.value = mutable.value.copy(wantsPlay = false)
         native?.pause()
     }
     override fun seekTo(position: Long) {
         val player = native ?: return
-        if (!released && player.isCurrentMediaItemSeekable) player.seekTo(position.coerceIn(0, state.value.duration.coerceAtLeast(0)))
+        if (!released && player.isCurrentMediaItemSeekable) {
+            val target = position.coerceIn(0, state.value.duration.coerceAtLeast(0))
+            val settled = seekSettlement
+            if (settled != null) {
+                seekSettlement = null
+                cancelSeekSettlement = PlaybackMediaSessionService.seekToReady(target, settled)
+                if (cancelSeekSettlement == null) settled()
+            } else player.seekTo(target)
+        }
+    }
+    /**
+     * Runs a session-owned seek and waits for the service player's native acknowledgment.
+     * The session retains intro/credits policy; this adapter only observes its one command.
+     * Cancellation removes the native listener without reversing the committed seek.
+     */
+    internal suspend fun seekAndAwaitReady(seek: () -> Unit) {
+        try {
+            suspendCancellableCoroutine<Unit> { continuation ->
+                seekSettlement = { if (continuation.isActive) continuation.resumeWith(Result.success(Unit)) }
+                continuation.invokeOnCancellation {
+                    cancelSeekSettlement?.invoke()
+                    cancelSeekSettlement = null
+                    seekSettlement = null
+                }
+                seek()
+                // Session guards can decline a command (loading/replaced/unseekable media).
+                if (seekSettlement != null) {
+                    seekSettlement = null
+                    if (continuation.isActive) continuation.resumeWith(Result.success(Unit))
+                }
+            }
+        } finally {
+            cancelSeekSettlement?.invoke()
+            cancelSeekSettlement = null
+            seekSettlement = null
+        }
     }
     override fun setPlaybackRate(rate: Float) { if (!released && rate in 0.5f..2f) native?.setPlaybackSpeed(rate) }
     /** Changes track selection on the service player, including before controller connection. */
@@ -316,6 +441,8 @@ class AndroidPlayer(context: Context) : PlayerController {
         if (released) return
         seekPreview.close()
         pendingSource = null
+        bootstrapLoad?.cancel()
+        resolvingSource = null
         native?.let { it.stop(); it.clearMediaItems() }
         mutable.value = mutable.value.copy(phase = PlayerPhase.Idle, wantsPlay = false, error = null)
     }
@@ -328,6 +455,8 @@ class AndroidPlayer(context: Context) : PlayerController {
         released = true
         seekPreview.close()
         scope.cancel()
+        bootstrapCache.close()
+        bootstrapClient.close()
         PlaybackMediaSessionService.setEpisodeHandlers(onNext = null, onReplay = null)
         native?.removeListener(listener)
         MediaController.releaseFuture(future)

@@ -27,6 +27,7 @@ import com.google.common.util.concurrent.ListenableFuture
 class PlaybackMediaSessionService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private lateinit var preloader: AndroidPlaybackPreloader
+    private var systemMute: AndroidSystemMediaMute? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -39,10 +40,12 @@ class PlaybackMediaSessionService : MediaSessionService() {
                 )
                 setHandleAudioBecomingNoisy(true)
             }
+        if (packageName == "dev.pandavideo.tv") systemMute = AndroidSystemMediaMute(this, player)
         mediaSession = MediaSession.Builder(this, player).setCallback(SessionCallback()).build().also {
             activeSession = it
             publishCommands()
         }
+        activeService = this
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
@@ -56,13 +59,29 @@ class PlaybackMediaSessionService : MediaSessionService() {
     }
 
     override fun onDestroy() {
-        activeSession = null
-        mediaSession?.run {
-            preloader.release()
-            release()
-        }
-        mediaSession = null
+        releasePlayback()
+        // Bootstrap files outlive MediaControllers so background playback keeps working.
+        // The service owns the final readers; purge only after its player/preloader release.
+        java.io.File(cacheDir, "hls-bootstrap").deleteRecursively()
         super.onDestroy()
+    }
+
+    private fun releasePlayback() {
+        if (activeService === this) {
+            activeService = null
+            activeSession = null
+        }
+        systemMute?.close()
+        systemMute = null
+        val session = mediaSession
+        mediaSession = null
+        if (session != null) {
+            // ExoPlayer.release() waits for its playback thread to release native codecs.
+            // A controller disconnect or pause leaves the service's decoder allocated;
+            // receiver playback must start only after this owner has released it.
+            preloader.release()
+            session.release()
+        }
     }
 
     private inner class SessionCallback : MediaSession.Callback {
@@ -91,12 +110,13 @@ class PlaybackMediaSessionService : MediaSessionService() {
                 val item = mediaItem(args) ?: return Futures.immediateFuture(
                     SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE))
                 val hit = preloader.load(item, args.getLong("position").coerceAtLeast(0),
-                    args.getBoolean("autoplay"), SkipDurations(args.getInt("introSeconds"), args.getInt("outroSeconds")))
+                    args.getBoolean("autoplay"), SkipDurations(args.getInt("introSeconds"), args.getInt("outroSeconds")),
+                    segments(args))
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS,
                     Bundle().apply { putBoolean("preloadHit", hit) }))
             }
             if (controller.packageName == packageName && customCommand.customAction == ACTION_PRELOAD) {
-                preloader.preload(mediaItem(args))
+                preloader.preload(if (segments(args).isEmpty()) mediaItem(args) else null)
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
             if (controller.packageName == packageName && customCommand.customAction == ACTION_PRELOAD_STATUS)
@@ -120,6 +140,13 @@ class PlaybackMediaSessionService : MediaSessionService() {
         internal const val ACTION_PRELOAD = "dev.pandavideo.action.PRELOAD"
         internal const val ACTION_PRELOAD_STATUS = "dev.pandavideo.action.PRELOAD_STATUS"
 
+        private fun segments(args: Bundle): List<dev.pandavideo.core.model.MediaSegment> {
+            val urls = args.getStringArrayList("segmentUrls") ?: return emptyList()
+            val durations = args.getLongArray("segmentDurations") ?: return emptyList()
+            if (urls.size != durations.size || durations.any { it <= 0 }) return emptyList()
+            return urls.mapIndexed { index, url -> dev.pandavideo.core.model.MediaSegment(url, durations[index]) }
+        }
+
         private fun mediaItem(args: Bundle): MediaItem? {
             val url = args.getString("url") ?: return null
             return MediaItem.Builder().setUri(url).setMediaId(args.getLong("id").toString())
@@ -131,6 +158,66 @@ class PlaybackMediaSessionService : MediaSessionService() {
 
         @Volatile
         private var activeSession: MediaSession? = null
+
+        private var activeService: PlaybackMediaSessionService? = null
+
+        /**
+         * Seeks once and acknowledges native command processing followed by readiness.
+         * A playback-thread message is a FIFO barrier behind seekTo: the controller's
+         * optimistic position discontinuity alone is not evidence of decoder readiness.
+         * Call and cancel on the main thread. Errors, release and media replacement also
+         * settle the request so a failed seek cannot permanently suspend UI timers.
+         */
+        internal fun seekToReady(position: Long, settled: () -> Unit): (() -> Unit)? {
+            val player = activeService?.preloader?.player ?: return null
+            val media = player.currentMediaItem?.mediaId
+            var processed = false
+            var finished = false
+            lateinit var observer: androidx.media3.common.Player.Listener
+            fun finish() {
+                if (finished) return
+                finished = true
+                player.removeListener(observer)
+                settled()
+            }
+            fun checkReady() {
+                if (processed && (player.playbackState != androidx.media3.common.Player.STATE_BUFFERING ||
+                        player.playerError != null || player.currentMediaItem?.mediaId != media)) finish()
+            }
+            observer = object : androidx.media3.common.Player.Listener {
+                override fun onEvents(observed: androidx.media3.common.Player,
+                    events: androidx.media3.common.Player.Events) { checkReady() }
+            }
+            player.addListener(observer)
+            player.seekTo(position)
+            val barrier = player.createMessage { _, _ ->
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    processed = true
+                    checkReady()
+                }
+            }.send()
+            return {
+                finished = true
+                barrier.cancel()
+                player.removeListener(observer)
+            }
+        }
+
+        /**
+         * Releases local playback and preload resources before the integrated TV receiver
+         * creates its player. Call on the main thread; completion means the native player
+         * has been released, rather than merely scheduling service destruction.
+         * Repeated calls without an active service are harmless.
+         */
+        @JvmStatic
+        fun releaseForCasting() {
+            check(android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
+            val service = activeService ?: return
+            // Background playback on phones keeps its ordinary lifetime.
+            check(service.packageName == "dev.pandavideo.tv")
+            service.releasePlayback()
+            service.stopSelf()
+        }
 
         @Volatile
         private var nextEpisodeHandler: (() -> Unit)? = null

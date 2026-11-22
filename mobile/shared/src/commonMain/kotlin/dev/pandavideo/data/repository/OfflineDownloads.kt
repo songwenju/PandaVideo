@@ -4,6 +4,7 @@ import dev.pandavideo.core.model.PlaybackInfo
 import dev.pandavideo.core.model.Episode
 import dev.pandavideo.core.model.PlayerRequest
 import dev.pandavideo.core.platform.KeyValueStorage
+import dev.pandavideo.core.platform.DownloadNetwork
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.Serializable
@@ -72,6 +73,8 @@ data class OfflineDownload(
  * @param engine Native media transfer and playback adapter.
  * @param scope Application lifetime scope; leaving a screen does not cancel downloads.
  * @param onFailure Reports a fresh failure with an action retrying the operation that failed.
+ * @param network Effective connection observed for the queue's lifetime.
+ * @param onNetworkWarning Offers one consent action for pending work on a non-Wi-Fi connection.
  * @param resolve Resolves a fresh URL immediately before each attempt.
  */
 class OfflineDownloads(
@@ -79,6 +82,8 @@ class OfflineDownloads(
     private val engine: OfflineEngine,
     private val scope: CoroutineScope,
     private val onFailure: (OfflineDownload, () -> Unit) -> Unit = { _, _ -> },
+    private val network: Flow<DownloadNetwork> = flowOf(DownloadNetwork.Wifi),
+    private val onNetworkWarning: (continueDownload: () -> Unit, available: () -> Boolean) -> Unit = { _, _ -> },
     private val resolve: suspend (PlayerRequest) -> PlaybackInfo,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -90,13 +95,67 @@ class OfflineDownloads(
     private var deleting = mutableSetOf<String>()
     private var closed = false
     private var attemptGeneration = 0L
+    private var connection = DownloadNetwork.Unknown
+    private var otherNetworkAllowed = false
+    private var warningOffered = false
+    private var networkGeneration = 0L
+    private val networkWaiting = mutableSetOf<String>()
+    private val networkJob = scope.launch {
+        network.distinctUntilChanged().collect { value ->
+            connection = value
+            networkGeneration++
+            otherNetworkAllowed = false
+            warningOffered = false
+            if (value == DownloadNetwork.Wifi) {
+                val waiting = networkWaiting.toSet()
+                networkWaiting.clear()
+                publish(tasks.value.map {
+                    if (it.id in waiting) it.copy(status = DownloadStatus.Queued, error = "") else it
+                })
+            }
+            if (!networkAllowed()) holdForNetwork()
+            pump()
+        }
+    }
+
+    private fun networkAllowed() = connection == DownloadNetwork.Wifi ||
+        (connection == DownloadNetwork.Other && otherNetworkAllowed)
+
+    private fun holdForNetwork() {
+        val held = tasks.value.filter { it.status in setOf(DownloadStatus.Queued, DownloadStatus.Downloading) }
+        networkWaiting.addAll(held.map { it.id })
+        if (held.isNotEmpty()) {
+            val ids = held.map { it.id }.toSet()
+            publish(tasks.value.map {
+                if (it.id in ids) it.copy(status = DownloadStatus.Paused,
+                    error = if (connection == DownloadNetwork.Offline) "等待网络连接" else "等待 Wi-Fi 或确认继续") else it
+            })
+            activeId?.takeIf { it in ids }?.let { engine.cancel(it); worker?.cancel() }
+        }
+        if (connection == DownloadNetwork.Other && networkWaiting.isNotEmpty() && !warningOffered) {
+            warningOffered = true
+            val generation = networkGeneration
+            onNetworkWarning({
+                if (!closed && generation == networkGeneration && connection == DownloadNetwork.Other) {
+                    otherNetworkAllowed = true
+                    val waiting = networkWaiting.toSet()
+                    networkWaiting.clear()
+                    publish(tasks.value.map {
+                        if (it.id in waiting) it.copy(status = DownloadStatus.Queued, error = "") else it
+                    })
+                    pump()
+                }
+            }, { !closed && generation == networkGeneration && connection == DownloadNetwork.Other &&
+                !otherNetworkAllowed && networkWaiting.isNotEmpty() })
+        }
+    }
 
     private fun restore(): List<OfflineDownload> = try {
         storage.getString(KEY)?.let { value ->
             json.decodeFromString<List<OfflineDownload>>(value).filter {
                 it.id.matches(Regex("[a-z0-9-]+")) && it.info.pageUrl.isNotBlank()
             }.map {
-                it.copy(info = it.info.copy(url = ""), status =
+                it.copy(info = it.info.copy(url = "", segments = emptyList()), status =
                     if (it.status in setOf(DownloadStatus.Queued, DownloadStatus.Downloading))
                         DownloadStatus.Paused else it.status)
             }
@@ -137,7 +196,8 @@ class OfflineDownloads(
             return it.id
         }
         val id = "cache-${Random.nextLong().toULong().toString(16)}"
-        publish(listOf(OfflineDownload(id, info.copy(url = ""), cover)) + tasks.value)
+        publish(listOf(OfflineDownload(id, info.copy(url = "", segments = emptyList()), cover)) + tasks.value)
+        warningOffered = false
         pump()
         return id
     }
@@ -171,11 +231,12 @@ class OfflineDownloads(
             } ?: run {
                 val id = "cache-${Random.nextLong().toULong().toString(16)}"
                 // This episode's transport URL is resolved when its turn starts.
-                additions += OfflineDownload(id, info.copy(selected = episode.path, url = ""), cover)
+                additions += OfflineDownload(id, info.copy(selected = episode.path, url = "", segments = emptyList()), cover)
                 id
             }
         }
         if (additions.isNotEmpty() || resumeIds.isNotEmpty()) {
+            warningOffered = false
             // Store a whole selection once. Persisting a growing index after every episode
             // makes selecting a long series increasingly expensive on the UI thread.
             // Newest-first storage means reversing additions preserves source-order work.
@@ -189,8 +250,10 @@ class OfflineDownloads(
 
     /** Pauses queued or active work; Android can reuse previously cached media ranges. */
     fun pause(id: String) {
+        // Explicit pauses must never be undone by a later Wi-Fi reconnection.
+        if (networkWaiting.remove(id)) update(id) { it.copy(error = "") }
         if (tasks.value.none { it.id == id && it.status in setOf(DownloadStatus.Queued, DownloadStatus.Downloading) }) return
-        update(id) { it.copy(status = DownloadStatus.Paused) }
+        update(id) { it.copy(status = DownloadStatus.Paused, error = "") }
         if (activeId == id) {
             engine.cancel(id)
             worker?.cancel()
@@ -200,6 +263,8 @@ class OfflineDownloads(
     /** Retries failed/paused work with freshly resolved media information. */
     fun resume(id: String) {
         if (id in deleting) return
+        networkWaiting.remove(id)
+        warningOffered = false
         update(id) {
             if (it.status in setOf(DownloadStatus.Paused, DownloadStatus.Failed))
                 it.copy(status = DownloadStatus.Queued, error = "") else it
@@ -240,11 +305,14 @@ class OfflineDownloads(
         val available = candidates.filter { engine.asset(it.id, it.locator) != null }
             .map { it.info.selected }.toSet()
         return entry.info.copy(url = asset.url, kind = asset.kind,
+            segments = emptyList(),
             episodes = entry.info.episodes.filter { it.path in available })
     }
 
     private fun pump() {
-        if (closed || worker?.isActive == true || activeId != null) return
+        if (closed) return
+        if (!networkAllowed()) { holdForNetwork(); return }
+        if (worker?.isActive == true || activeId != null) return
         val entry = tasks.value.lastOrNull { it.status == DownloadStatus.Queued && it.id !in deleting } ?: return
         activeId = entry.id
         val attempt = ++attemptGeneration
@@ -273,7 +341,7 @@ class OfflineDownloads(
                 ensureActive()
                 check(engine.asset(entry.id, locator) != null) { "缓存文件不可用" }
                 update(entry.id) { it.copy(status = DownloadStatus.Completed, progress = 1f, locator = locator,
-                    info = fresh.copy(url = "")) }
+                    info = fresh.copy(url = "", segments = emptyList())) }
             } catch (error: CancellationException) {
                 update(entry.id) {
                     if (it.status == DownloadStatus.Downloading) it.copy(status = DownloadStatus.Paused) else it
@@ -293,6 +361,7 @@ class OfflineDownloads(
     /** Stops native work when the application-owned scope is being disposed. */
     fun close() {
         closed = true
+        networkJob.cancel()
         activeId?.let { pause(it) }
         tasks.value.filter { it.status == DownloadStatus.Queued }.forEach { pause(it.id) }
     }

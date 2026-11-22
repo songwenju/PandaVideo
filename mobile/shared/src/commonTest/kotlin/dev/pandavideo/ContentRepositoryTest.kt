@@ -47,6 +47,37 @@ internal val topFixture = """
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ContentRepositoryTest {
+    @Test fun slowDirectSourceFallsBackToParserWithinOneSecond() = runTest {
+        var directCancelled = false
+        var parseCalls = 0
+        val repo = ContentRepository(HttpClient(mockEngine { request ->
+            when {
+                request.url.host == "slow-media.example" -> {
+                    try {
+                        delay(10_000)
+                        respond("#EXTM3U\n#EXTINF:10,\nsegment.ts\n")
+                    } finally { directCancelled = true }
+                }
+                request.url.parameters["type"] == "auto_detail" ->
+                    respond(pomoDetailFixture.replace("https://media/1.m3u8",
+                        "https://slow-media.example/video.m3u8"))
+                request.url.parameters["type"] == "parse" -> {
+                    parseCalls++
+                    respond(pomoMedia())
+                }
+                else -> error("Unexpected request")
+            }
+        }))
+        try {
+            val started = testScheduler.currentTime
+            val info = repo.player(PlayerRequest(page = pomoPage))
+            assertEquals(1_000, testScheduler.currentTime - started)
+            assertEquals(1, parseCalls)
+            assertTrue(directCancelled)
+            assertTrue(info.url.startsWith("https://media/stream.m3u8"))
+        } finally { repo.close() }
+    }
+
     @Test fun searchRanksExactTitlesThenRelevantRecentTitlesWithoutDroppingOtherResults() = runTest {
         val repo = ContentRepository(HttpClient(mockEngine {
             respond(pomoSearch(
@@ -225,7 +256,7 @@ class ContentRepositoryTest {
     @Test fun everyHomeCategoryRequestsHighScoresAndKeepsUpstreamPaging() = runTest {
         val expectedTags = mapOf(
             "tv" to "电视剧", "comedy" to "电影,喜剧", "anime" to "动画", "nature" to "纪录片,自然",
-            "movie" to "电影", "documentary" to "纪录片", "drama" to "电影,剧情",
+            "movie" to "电影", "documentary" to "纪录片", "variety" to "综艺", "drama" to "电影,剧情",
             "action" to "电影,动作", "romance" to "电影,爱情", "scifi" to "电影,科幻",
             "mystery" to "电影,悬疑", "finance" to "电影,金融", "biography" to "电影,传记",
             "war" to "电影,战争", "hollywood" to "电影,美国,大片",

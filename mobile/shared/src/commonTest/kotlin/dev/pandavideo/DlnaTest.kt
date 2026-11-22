@@ -137,4 +137,18 @@ class DlnaTest {
         try { assertFailsWith<CancellationException> { client.device(location) } }
         finally { client.close(); base.close() }
     }
+    @Test fun bufferingKeepsPlayIntentAndRendererErrorsAreReported() = runTest {
+        var status = "OK"
+        val base = HttpClient(mockEngine {
+            respond("<root><CurrentTransportState>TRANSITIONING</CurrentTransportState>" +
+                "<CurrentTransportStatus>$status</CurrentTransportStatus></root>")
+        })
+        val client = DlnaClient(base)
+        try {
+            assertTrue(client.playing(target))
+            status = "ERROR_OCCURRED"
+            assertEquals("电视播放失败，请在电视重试或更换播放线路",
+                assertFailsWith<DlnaException> { client.playing(target) }.message)
+        } finally { client.close(); base.close() }
+    }
 }

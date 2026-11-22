@@ -1,0 +1,6 @@
+<!-- Android 12 uses a 288dp splash icon canvas. Keep the same 96dp artwork
+     inside its mask by reserving 96dp (one third) on every side. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_tv_startup_logo"
+    android:insetLeft="33.33%" android:insetTop="33.33%"
+    android:insetRight="33.33%" android:insetBottom="33.33%" />

@@ -21,10 +21,11 @@ import androidx.compose.ui.unit.dp
 import dev.pandavideo.core.platform.PlayerOverlayBackHandler
 import dev.pandavideo.ui.common.NavigationIcons
 
-/** Actor overlay that slides into the caller's viewport without replacing the player. */
+/** Player overlay with a caller-owned viewport, also shared by the casting device list. */
 @Composable
 internal fun ActorHalfSheet(
     visible: Boolean, onDismiss: () -> Unit, modifier: Modifier = Modifier,
+    title: String = "演员资料",
     content: @Composable () -> Unit,
 ) {
     val dismiss = rememberUpdatedState(onDismiss)
@@ -38,7 +39,7 @@ internal fun ActorHalfSheet(
         ) {
             Surface(
                 modifier = Modifier.fillMaxSize()
-                    .semantics { contentDescription = "演员资料面板" },
+                    .semantics { contentDescription = "${title}面板" },
                 shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
                 color = MaterialTheme.colorScheme.background,
                 shadowElevation = 8.dp,
@@ -68,9 +69,9 @@ internal fun ActorHalfSheet(
                         }
                         Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp),
                             verticalAlignment = Alignment.CenterVertically) {
-                            Text("演员资料", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                            Text(title, Modifier.weight(1f), fontWeight = FontWeight.Bold)
                             IconButton(onDismiss, Modifier.size(40.dp)) {
-                                Icon(NavigationIcons.Close, "关闭演员资料", Modifier.size(20.dp))
+                                Icon(NavigationIcons.Close, "关闭$title", Modifier.size(20.dp))
                             }
                         }
                     }

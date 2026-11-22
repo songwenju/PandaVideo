@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -29,15 +30,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.pandavideo.core.model.Episode
+import dev.pandavideo.core.model.visiblePlaybackLines
 import dev.pandavideo.core.player.PlaybackState
 import dev.pandavideo.ui.common.Accent
 import dev.pandavideo.ui.common.NavigationIcons
@@ -50,10 +53,17 @@ internal fun FullscreenEpisodeDrawer(
     onDismiss: () -> Unit,
     onLineSelected: (Int) -> Unit,
     onEpisodeSelected: (Episode) -> Unit,
+    adMarkedLines: Set<Int> = emptySet(),
+    onLineLongPress: (Int) -> Unit = {},
 ) {
     val info = state.info
     // Playback progress changes frequently. Only a new episode list invalidates grouping.
     val lines = remember(info?.episodes) { info?.episodes?.groupBy { it.line }.orEmpty() }
+    val visibleLines = remember(lines, info?.lineProbes) {
+        visiblePlaybackLines(lines.keys, info?.lineProbes.orEmpty())
+    }
+    val lineListState = rememberLazyListState()
+    LaunchedEffect(visibleLines) { lineListState.scrollToItem(0) }
     var requestedLine by remember(info?.pageUrl) { mutableStateOf<Int?>(null) }
     val currentLine = remember(info?.episodes, info?.selected) {
         info?.episodes?.find { it.path == info.selected }?.line
@@ -107,23 +117,27 @@ internal fun FullscreenEpisodeDrawer(
                         Icon(NavigationIcons.Close, "关闭选集", tint = Color.White, modifier = Modifier.size(20.dp))
                     }
                 }
-                if (lines.size > 1) {
+                if (visibleLines.isNotEmpty()) {
                     LazyRow(
+                        state = lineListState,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(vertical = 8.dp),
                     ) {
-                        items(lines.keys.toList()) { target ->
+                        items(visibleLines, key = { it }) { target ->
                             val isSelected = target == line
-                            Text("线路 $target", color = if (isSelected) Accent else Color(0xFFBCBCC3),
-                                fontSize = 12.sp, fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                modifier = Modifier.clip(RoundedCornerShape(8.dp))
-                                    .background(if (isSelected) Accent.copy(alpha = .15f) else Color(0xFF29292E))
-                                    .semantics { selected = isSelected }
-                                    .clickable(role = Role.Tab) {
-                                        requestedLine = target
-                                        onLineSelected(target)
-                                    }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp))
+                            val marked = target in adMarkedLines
+                            PlaybackLineButton(
+                                name = playbackLineName(lines.getValue(target).first(), info?.source.orEmpty()),
+                                probe = info?.lineProbes?.get(target),
+                                selected = isSelected, marked = marked, enabled = !state.loading,
+                                onLongClick = { onLineLongPress(target) },
+                                onClick = {
+                                    requestedLine = target
+                                    onLineSelected(target)
+                                },
+                                background = Color(0xFF29292E), foreground = Color.White,
+                                supporting = Color(0xFFBCBCC3),
+                            )
                         }
                     }
                 }
@@ -132,17 +146,17 @@ internal fun FullscreenEpisodeDrawer(
                         modifier = Modifier.padding(vertical = 20.dp))
                 } else {
                     LazyVerticalGrid(
-                        columns = GridCells.Fixed(if (panelWidth >= 360.dp) 5 else 4),
+                        columns = GridCells.Adaptive(80.dp * LocalDensity.current.fontScale.coerceAtLeast(1f)),
                         state = gridState,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp),
                     ) {
-                        // Source labels may be quality names such as “HD 1080P”. They need two
-                        // cells so the name is readable instead of collapsing to an ellipsis.
+                        // Reserve a full row for descriptive source labels, and allow wrapping.
+                        // A fixed two-cell span still clips Chinese titles and enlarged fonts.
                         items(episodes, key = { it.path }, span = { episode ->
-                            GridItemSpan(if (episode.label.length > 5) 2 else 1)
+                            GridItemSpan(if (episode.label.length > 5) maxLineSpan else 1)
                         }) { episode ->
                             val isSelected = episode.path == info?.selected
                             val shape = RoundedCornerShape(10.dp)
@@ -157,8 +171,8 @@ internal fun FullscreenEpisodeDrawer(
                             ) {
                                 Text(episode.label, color = if (isSelected) Accent else Color.White.copy(
                                     alpha = if (state.loading) .45f else .9f),
-                                    fontSize = 14.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
+                                    fontSize = 14.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium)
                             }
                         }
                     }

@@ -19,6 +19,196 @@ private fun jpDetail(url: String = "https://media.test/jp.m3u8", year: String = 
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class JianpianSourceTest {
+    @Test fun backgroundMirrorsRetainProviderPathsAndRejectRemakeYears() = runTest {
+        var searchCount = 0
+        var parses = 0
+        val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+            when {
+                request.url.host == "pomo.mom" -> when (request.url.parameters["type"]) {
+                    "auto_search" -> {
+                        searchCount++
+                        respond(pomoSearch(pomoRow("测试电影"), pomoRow("测试电影", id = 2, year = "2024"),
+                            pomoRow("测试电影", id = 3, actor = "王五")))
+                    }
+                    "auto_detail" -> respond(pomoDetailFixture)
+                    "parse" -> { parses++; respond(pomoMedia()) }
+                    else -> error("Unexpected Pomo request")
+                }
+                request.url.encodedPath.endsWith("/init") -> respond("""{"code":1,"data":{"secret":"s"}}""")
+                request.url.encodedPath.contains("search") -> respond(jpSearch)
+                request.url.host.endsWith("zxfmj.com") -> respond(jpDetail())
+                request.url.host == "media" && request.url.encodedPath != "/stream.m3u8" -> respond("<html>expired</html>")
+                else -> respond("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\na.ts\n#EXT-X-ENDLIST")
+            }
+        }))
+        try {
+            val initial = repo.player(PlayerRequest(page = jpPage, reuseSourceInfo = true))
+            assertEquals(0, searchCount)
+            val updated = repo.supplementPlayback(initial,
+                CatalogItem("测试电影", "", "2020", casts = listOf("张三"), isSeries = true))
+            assertEquals(initial.url, updated.url)
+            assertEquals(initial.selected, updated.selected)
+            assertTrue(updated.episodes.any { it.path == "$pomoPage#1-1" })
+            assertFalse(updated.episodes.any { it.path.contains("id=2") })
+            assertFalse(updated.episodes.any { it.path.contains("id=3") })
+            assertEquals(updated.episodes.map { it.path }.toSet().size, updated.episodes.size)
+            val target = updated.episodes.first { it.path == "$pomoPage#1-1" }
+            val switched = repo.player(PlayerRequest(page = jpPage, episode = target.path,
+                allowLineFallback = false, reuseSourceInfo = true))
+            assertEquals(target.path, switched.selected)
+            assertEquals(target.line, switched.episodes.first { it.path == switched.selected }.line)
+            assertEquals(1, parses, "A Pomo mirror must use Pomo parsing even under a Jianpian root")
+            val repeated = repo.supplementPlayback(switched,
+                CatalogItem("测试电影", "", "2020", casts = listOf("张三"), isSeries = true))
+            assertEquals(updated.episodes, repeated.episodes, "Discovery never duplicates appended lines")
+            val refreshed = repo.player(PlayerRequest(page = jpPage, episode = target.path,
+                allowLineFallback = false))
+            assertEquals(target.path, refreshed.selected, "Retry retains verified foreign episode identities")
+        } finally { repo.close() }
+    }
+
+    @Test fun lineMeasurementsUseRealPrefixesAndReuseSelectedProbe() = runTest {
+        val probes = mutableListOf<String>()
+        val body = """{"code":1,"data":{"title":"测试电影","source_list_source":[
+            {"name":"线路一","source_list":[{"source_name":"第 1 集","url":"https://media.test/jp.m3u8"}]},
+            {"name":"线路二","source_list":[{"source_name":"第 1 集","url":"https://media.test/alternate.m3u8"}]},
+            {"name":"失效线路","source_list":[{"source_name":"第 1 集","url":"https://media.test/broken.m3u8"}]}]}}"""
+        val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+            when {
+                request.url.encodedPath.endsWith("/init") -> respond("""{"code":1,"data":{"secret":"s"}}""")
+                request.url.host == "media.test" -> {
+                    probes += request.url.encodedPath
+                    if (request.url.encodedPath == "/broken.m3u8") respond("<html>error</html>")
+                    else respond("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\na.ts\n#EXT-X-ENDLIST")
+                }
+                else -> respond(body)
+            }
+        }))
+        try {
+            val info = repo.player(PlayerRequest(page = jpPage))
+            assertEquals(true, info.lineProbes[1]?.available)
+            assertNotNull(info.lineProbes[1]?.elapsedMs)
+            val measured = repo.probeLines(info)
+            assertEquals(true, measured[2]?.available)
+            assertNotNull(measured[2]?.elapsedMs)
+            assertEquals(false, measured[3]?.available)
+            assertNull(measured[3]?.elapsedMs)
+            repo.player(PlayerRequest(page = jpPage))
+            assertEquals(1, probes.count { it == "/jp.m3u8" },
+                "Playback and measurements must reuse the same successful prefix")
+        } finally { repo.close() }
+    }
+
+    @Test fun categoryRowsPreserveSourceIdentityBadgesAndScoreFloor() {
+        val body = """{"code":1,"data":[
+            {"id":11,"title":"高分剧","score":"8.8","path":"/cover.jpg","mask":"第20集(全)"},
+            {"id":12,"title":"低分剧","score":"7.9"},
+            {"id":13,"title":"未评分","score":"0.0"},
+            {"id":"bad","title":"错误身份","score":"9.5"},
+            {"id":14,"title":"预告片","score":"9.5"},
+            {"id":11,"title":"重复","score":"8.8"}]}"""
+        val item = JianpianSource.catalog(body, "tv", "https://images.test").single()
+        assertEquals(JianpianSource.address("11"), item.url)
+        assertEquals(item.url, item.playbackPageUrl)
+        assertEquals("https://images.test/cover.jpg", item.cover)
+        assertEquals("第20集(全)", item.remark)
+        assertTrue(item.year.isEmpty() && item.countries.isEmpty())
+        assertEquals(true, item.isSeries)
+        assertFailsWith<ApiError> { JianpianSource.catalog("""{"code":1,"data":{}}""", "tv", null) }
+        val episode = JianpianSource.episodes(jpDetail().replace(
+            "\"source_list\":[", "\"name\":\"高速蓝光\",\"source_list\":["), jpPage).first().first
+        assertEquals("高速蓝光", episode.lineName)
+    }
+
+    @Test fun homepageUsesVerifiedCategoryAndUpdateParametersWithIndependentCursor() = runTest {
+        val paths = mutableListOf<Url>()
+        val client = JianpianClient(fetch = { address, _, _ ->
+            val url = Url(address)
+            when {
+                url.encodedPath.endsWith("/init") -> """{"code":1,"data":{"secret":"s"}}"""
+                url.encodedPath.endsWith("/resourceDomainConfig") -> """{"code":1,"data":{"imgDomain":"images.test"}}"""
+                else -> {
+                    paths += url
+                    """{"code":1,"data":[{"id":11,"title":"高分剧","score":"8.8","path":"/cover.jpg"}]}"""
+                }
+            }
+        }, clock = { testScheduler.currentTime })
+        client.catalog("animation", 24, "update")
+        val url = paths.single()
+        assertEquals("/api/crumb/list", url.encodedPath)
+        assertEquals("3", url.parameters["category_id"])
+        assertEquals("2", url.parameters["page"])
+        assertEquals("update", url.parameters["sort"])
+        assertEquals("24", url.parameters["limit"])
+    }
+
+    @Test fun hotCategoriesKeepProviderOrderUnratedRowsAndRawPagination() = runTest {
+        val paths = mutableListOf<Url>()
+        val client = JianpianClient(fetch = { address, _, _ ->
+            val url = Url(address)
+            when {
+                url.encodedPath.endsWith("/init") -> """{"code":1,"data":{"secret":"s"}}"""
+                url.encodedPath.endsWith("/resourceDomainConfig") -> """{"code":1,"data":{"imgDomain":"images.test"}}"""
+                else -> {
+                    paths += url
+                    """{"code":1,"data":[${(1..24).joinToString(",") {
+                        """{"id":$it,"title":"${if (it == 24) "预告" else "新片$it"}","score":"${if (it == 1) "7.9" else "0"}"}"""
+                    }}]}"""
+                }
+            }
+        }, clock = { testScheduler.currentTime })
+        for ((kind, category) in listOf("movie" to "1", "tv" to "2", "animation" to "3",
+            "variety" to "4", "documentary" to "50")) {
+            val page = client.catalog(kind, 24, "hot")
+            val url = paths.last()
+            assertEquals(category, url.parameters["category_id"])
+            assertEquals("hot", url.parameters["sort"])
+            assertEquals("2", url.parameters["page"])
+            assertEquals(23, page.items.size)
+            assertEquals(7.9, page.items.first().rating)
+            assertNull(page.items[1].rating)
+            assertEquals((1..23).map { JianpianSource.address(it.toString()) }, page.items.map { it.url })
+            assertEquals(48, page.nextStart())
+            assertTrue(page.hasMore, "Filtered display rows must not alter the provider cursor")
+        }
+        assertFailsWith<IllegalArgumentException> { client.catalog("movie", 20, "hot") }
+    }
+
+    @Test fun sourceDetailsAreSharedAcrossConcurrentResourceChecksAndPlayback() = runTest {
+        var details = 0
+        val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+            when {
+                request.url.encodedPath.endsWith("/init") -> respond("""{"code":1,"data":{"secret":"s"}}""")
+                request.url.host == "media.test" -> respond("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\na.ts\n#EXT-X-ENDLIST")
+                else -> { details++; delay(50); respond(jpDetail()) }
+            }
+        }))
+        try {
+            val item = CatalogItem("测试电影", jpPage, playbackPageUrl = jpPage)
+            coroutineScope { List(3) { async { repo.playbackMatch(item) } }.awaitAll() }
+            repo.player(PlayerRequest(page = jpPage))
+            assertEquals(1, details, "Catalog checks and player must reuse one validated detail response")
+        } finally { repo.close() }
+    }
+
+    @Test fun nativeOnlyDetailIsHiddenButNetworkFailureRetainsSourceCatalogRow() = runTest {
+        for (offline in listOf(false, true)) {
+            val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+                when {
+                    request.url.encodedPath.endsWith("/init") -> respond("""{"code":1,"data":{"secret":"s"}}""")
+                    offline -> respond("", HttpStatusCode.ServiceUnavailable)
+                    else -> respond("""{"code":1,"data":{"source_list_source":[{"source_list":[{"source_name":"正片","url":"ftp://native/movie.mp4"}]}]}}""")
+                }
+            }))
+            try {
+                val item = CatalogItem("原生资源", jpPage)
+                val missing = mutableListOf<CatalogItem>()
+                repo.inspectCatalog(listOf(item)) { missing += it }
+                assertEquals(if (offline) emptyList() else listOf(item), missing)
+            } finally { repo.close() }
+        }
+    }
+
     @Test fun posterHostComesFromResourceConfigurationAndIsReused() = runTest {
         var configurations = 0
         val client = JianpianClient(fetch = { address, _, _ ->
@@ -151,13 +341,13 @@ class JianpianSourceTest {
         assertEquals(listOf("pv2026.zxfmj.com", "pv2026.zxfmj.com", "japi.zxfmj.com"), requests)
     }
 
-    @Test fun slowerPomoSearchWinsWithoutStartingJianpian() = runTest {
+    @Test fun searchIncludesJianpianEvenWhenPomoHasResultsAndPrefersDirectRelease() = runTest {
         var backupRequests = 0
         val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
             when {
                 request.url.host == "pomo.mom" -> {
                     delay(500)
-                    respond(pomoSearch(pomoRow("测试电影")))
+                    respond(pomoSearch(pomoRow("其他电影")))
                 }
                 request.url.encodedPath.endsWith("/init") -> {
                     backupRequests++
@@ -167,8 +357,35 @@ class JianpianSourceTest {
             }
         }))
         try {
-            assertEquals(pomoPage, repo.search("测试电影", "movie").results.single().detailUrl)
-            assertEquals(0, backupRequests, "Response speed must not override the preferred provider")
+            val result = repo.search("测试电影", "movie")
+            assertEquals(setOf(jpPage, pomoPage), result.results.map { it.detailUrl }.toSet())
+            assertTrue(backupRequests > 0, "A successful Pomo search must not suppress Jianpian")
+            assertFalse(result.stale)
+        } finally { repo.close() }
+    }
+
+    @Test fun catalogPrefersVerifiedJianpianAndRetainsEveryDirectLine() = runTest {
+        var pomoDetails = 0
+        val body = """{"code":1,"data":{"title":"测试电影","year":"2020","source_list_source":[
+            {"name":"蓝光","source_list":[{"source_name":"正片","url":"https://media.test/one.m3u8"}]},
+            {"name":"备用","source_list":[{"source_name":"正片","url":"https://media.test/two.mp4"}]}]}}"""
+        val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+            when {
+                request.url.host == "pomo.mom" -> {
+                    if (request.url.parameters["type"] == "auto_search") respond(pomoSearch(pomoRow("测试电影")))
+                    else { pomoDetails++; respond(pomoDetailFixture) }
+                }
+                request.url.host == "media.test" -> respond("#EXTM3U\n#EXTINF:6,\na.ts\n#EXT-X-ENDLIST")
+                request.url.encodedPath.endsWith("/init") -> respond("""{"code":1,"data":{"secret":"s"}}""")
+                request.url.encodedPath.contains("/search/") -> respond(jpSearch)
+                else -> respond(body)
+            }
+        }))
+        try {
+            assertEquals(jpPage, repo.resolve(CatalogItem("测试电影", "", "2020")).pageUrl)
+            val info = repo.player(PlayerRequest(page = jpPage))
+            assertEquals(listOf("蓝光", "备用"), info.episodes.map { it.lineName })
+            assertEquals(0, pomoDetails)
         } finally { repo.close() }
     }
 

@@ -237,7 +237,8 @@ class SkipPlaybackTest {
         val session = PlaybackSession({ info(it.episode ?: "a1") }, host, backgroundScope, skipDurations = { SkipDurations(10, 20) })
         session.load(PlayerRequest()); runCurrent()
         host.tick(0); runCurrent()
-        session.seekTo(105_000); runCurrent()
+        host.pause(); host.tick(110_000); runCurrent()
+        session.seekTo(105_000); host.play(); runCurrent()
         host.tick(106_000); runCurrent()
         assertFalse(session.state.value.ended)
         session.selectLine(2); runCurrent()
@@ -246,6 +247,38 @@ class SkipPlaybackTest {
         assertFalse(session.state.value.ended)
         session.seekTo(0); runCurrent()
         assertEquals(0L, host.state.value.position)
+        session.close()
+    }
+
+    @Test fun forwardSeekIntoCreditsAdvancesButPausedSeekWaitsForPlay() = runTest {
+        for (paused in listOf(false, true)) {
+            val host = Host()
+            val session = PlaybackSession({ info(it.episode ?: "a1") }, host, backgroundScope,
+                skipDurations = { SkipDurations(10, 20) })
+            session.load(PlayerRequest()); runCurrent()
+            host.tick(0); runCurrent()
+            if (paused) host.pause()
+            session.seekTo(105_000); runCurrent()
+            if (paused) {
+                assertEquals("a1", session.state.value.info?.selected)
+                host.play(); runCurrent()
+            }
+            assertEquals("a2", session.state.value.info?.selected)
+            assertEquals(2, host.loads.size)
+            assertTrue(host.state.value.wantsPlay)
+            session.close()
+        }
+    }
+
+    @Test fun seekingBeforeDurationArrivesDoesNotDisableLaterOutro() = runTest {
+        val host = Host()
+        val session = PlaybackSession({ info(it.episode ?: "a1") }, host, backgroundScope,
+            skipDurations = { SkipDurations(10, 20) })
+        session.load(PlayerRequest()); runCurrent()
+        session.seekTo(45_000); runCurrent()
+        host.tick(45_000); runCurrent()
+        host.tick(100_000); runCurrent()
+        assertEquals("a2", session.state.value.info?.selected)
         session.close()
     }
 

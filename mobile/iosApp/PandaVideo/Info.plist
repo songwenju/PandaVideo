@@ -12,6 +12,7 @@
     <key>UIBackgroundModes</key><array><string>audio</string></array>
     <key>CADisableMinimumFrameDurationOnPhone</key><true/>
     <key>NSLocalNetworkUsageDescription</key><string>搜索并连接同一 Wi-Fi 下的智能电视，将当前影片投屏播放。</string>
+    <key>NSBonjourServices</key><array><string>_pandacast._tcp</string></array>
     <key>NSAppTransportSecurity</key><dict>
         <key>NSAllowsArbitraryLoads</key><true/>
         <key>NSAllowsLocalNetworking</key><true/>

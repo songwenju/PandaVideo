@@ -44,6 +44,7 @@ import dev.pandavideo.app.AppState
 import dev.pandavideo.core.model.CatalogItem
 import dev.pandavideo.core.model.Episode
 import dev.pandavideo.core.model.nextEpisode
+import dev.pandavideo.core.model.visiblePlaybackLines
 import dev.pandavideo.core.platform.PlatformServices
 import dev.pandavideo.core.platform.PlayerSurface
 import dev.pandavideo.core.platform.PlayerOverlayBackHandler
@@ -74,6 +75,11 @@ import kotlin.math.roundToInt
 /** Window before the end in which the quick "next episode" pill appears. */
 internal const val NEAR_END_WINDOW_MS = 20_000L
 
+private data class RemoteEpisodeHandoff(
+    val device: dev.pandavideo.core.player.DlnaDevice,
+    val mediaId: Long, val playing: Boolean, val position: Long? = null,
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ModernPlayerScreen(
@@ -81,15 +87,48 @@ internal fun ModernPlayerScreen(
     search: (String) -> Unit, back: () -> Unit,
     home: () -> Unit = back,
 ) {
-    val state by session.state.collectAsState()
-    val casting = remember(session, platform) { DlnaCasting(platform, session.controller) }
+    val state by session.state.collectPlaybackState()
+    val adMarks by model.lineAds.marks.collectAsState()
+    val adMarkedLines = remember(state.info?.pageUrl, state.info?.episodes, adMarks) {
+        state.info?.let { info ->
+            info.episodes.filter { model.lineAds.hasAds(info.pageUrl, it) }.map { it.line }.toSet()
+        }.orEmpty()
+    }
+    var adMarkTarget by remember(state.info?.pageUrl) { mutableStateOf<Episode?>(null) }
+    adMarkTarget?.let { episode ->
+        state.info?.let { info ->
+            LineAdMarkDialog(model.lineAds, info.pageUrl, episode,
+                onDismiss = { adMarkTarget = null },
+                onSaved = session::invalidateLinePreload,
+                onFailure = { model.emitMessage("广告标记保存失败，请重试") })
+        }
+    }
+    // Keep measurements alive across inline/fullscreen/casting layouts, and discard stale
+    // results at the session boundary when a newer episode has superseded this request.
+    LaunchedEffect(session, state.info?.pageUrl, state.info?.selected, state.info?.episodes, state.loading) {
+        val info = state.info
+        if (info != null && !state.loading) {
+            try {
+                session.updateLineProbes(info, model.probeLines(info) { measured ->
+                    session.updateLineProbes(info, measured)
+                })
+            }
+            catch (error: kotlinx.coroutines.CancellationException) { throw error }
+            catch (_: Exception) { /* Optional line measurements never interrupt playback. */ }
+        }
+    }
+    val casting = remember(session, platform) {
+        // The resolved session identifies the source even before Android's async
+        // MediaController connects. Casting must not wait for the phone decoder.
+        DlnaCasting(platform, session.controller, currentMediaId = { session.state.value.mediaId })
+    }
     DisposableEffect(casting) { onDispose { casting.close() } }
     LaunchedEffect(state.mediaId) { casting.mediaChanged(state.mediaId) }
     DisposableEffect(session) {
         model.restorePlayerLevels()
         onDispose { model.minimizePlayer(session) }
     }
-    val player by session.controller.state.collectAsState()
+    val player by session.controller.state.collectPlaybackState()
     val discover by model.discover.collectAsState()
     val browse by model.browse.collectAsState()
     val hot by model.hot.collectAsState()
@@ -109,20 +148,28 @@ internal fun ModernPlayerScreen(
     val artwork = model.playingCatalog ?: catalog.find { it.title == state.info?.title }
     val cover = artwork?.let(model::poster) ?: model.playingSearch?.let(model::poster) ?: results.result?.results
         ?.find { it.detailUrl == state.info?.pageUrl }?.let(model::poster) ?: model.playingCover
-    // Catalog sessions keep the exact list that opened them, including region, genre, year
-    // and score constraints. Never fill a short filtered list with unrelated global titles.
-    // Search/history sessions without a catalog scope use same-type suggestions from the pool.
-    val playingKind = artwork?.kind
-        ?: if ((state.info?.episodes?.size ?: 0) > 1) "tv" else "movie"
-    val related = (model.playingRecommendations ?: catalog)
-        .filter { it.url != artwork?.url && it.kind == playingKind }.take(6)
+    val recommendationScope = dev.pandavideo.data.repository.playerRecommendationScope(
+        artwork, model.playingSearch, state.info)
+    val originating = model.playingRecommendations
+    val candidates = originating ?: catalog
+    var fetchedRelated by remember(session, recommendationScope, originating) {
+        mutableStateOf<List<CatalogItem>>(emptyList())
+    }
+    // Region/type changes invalidate the old rail immediately; late responses from a previous
+    // title cannot repaint it. Metadata arrives independently and never delays playback.
+    LaunchedEffect(session, recommendationScope, originating, state.loading, state.info?.pageUrl) {
+        if (state.loading || state.info == null) return@LaunchedEffect
+        fetchedRelated = model.playerRecommendations(recommendationScope, candidates, originating) {
+            fetchedRelated = it
+        }
+    }
+    val related = recommendationScope.select(fetchedRelated + candidates, originating)
     val title = state.info?.title ?: artwork?.title ?: model.playingSearch?.title ?: "正在加载影片"
     val detailsBackgroundColor = MaterialTheme.colorScheme.surface
     LaunchedEffect(fullscreen) {
         platform.fullscreen(fullscreen)
         if (!fullscreen) episodePickerRequested = false
     }
-    PlayerOverlayBackHandler(enabled = fullscreen && episodePickerRequested) { episodePickerRequested = false }
     // Audio mode changes the output, not the presentation. Keep the inline/fullscreen choice
     // until the user explicitly toggles it; PiP exit must not expand an inline audio session.
     // Entering picture-in-picture must leave immersive fullscreen first, otherwise the app
@@ -138,6 +185,75 @@ internal fun ModernPlayerScreen(
         }
     }
     DisposableEffect(Unit) { onDispose { platform.fullscreen(false) } }
+    var remoteEpisodeTarget by remember(session) {
+        mutableStateOf<RemoteEpisodeHandoff?>(null)
+    }
+    // Selecting an episode replaces the local media ID and closes its old remote session.
+    // Wait for the new source to finish resolving before handing it back to the same receiver.
+    LaunchedEffect(state.mediaId, state.loading, player.mediaId, remoteEpisodeTarget) {
+        val pending = remoteEpisodeTarget ?: return@LaunchedEffect
+        if (state.mediaId != pending.mediaId && !state.loading && state.error != null) {
+            remoteEpisodeTarget = null
+        } else if (state.mediaId != pending.mediaId && !state.loading && player.mediaId == state.mediaId) {
+            remoteEpisodeTarget = null
+            session.controller.pause()
+            state.info?.let { info ->
+                casting.connect(pending.device, MediaSource(state.mediaId, info.url, info.kind, info.title,
+                    episodeLabel = info.episodes.find { it.path == info.selected }?.label.orEmpty()),
+                    wantsPlay = pending.playing, startPosition = pending.position ?: player.position)
+                casting.picker = true
+            }
+        }
+    }
+    if (casting.connectingDevice != null && !pipActive) {
+        PlayerOverlayBackHandler(enabled = true, onBack = casting::cancelConnection)
+        DlnaCastStatusScreen(casting.connectingDevice?.name.orEmpty(), connecting = true,
+            onAction = casting::cancelConnection, back = casting::cancelConnection)
+        return
+    }
+    if (casting.endedDevice != null && !pipActive) {
+        PlayerOverlayBackHandler(enabled = true, onBack = casting::dismissEnded)
+        DlnaCastStatusScreen(casting.endedDevice?.name.orEmpty(), connecting = false,
+            onAction = { casting.dismissEnded(); casting.picker = true; casting.search() },
+            back = casting::dismissEnded)
+        return
+    }
+    if (casting.device != null && !pipActive) {
+        PlayerOverlayBackHandler(enabled = episodePickerRequested) { episodePickerRequested = false }
+        Box(Modifier.fillMaxSize()) {
+            DlnaRemoteScreen(casting, title,
+                state.info?.let { info -> info.episodes.find { it.path == info.selected }?.label }.orEmpty(),
+                cover = cover,
+                canSelectEpisode = (state.info?.episodes?.size ?: 0) > 1,
+                onEpisodes = { episodePickerRequested = true }, back = back)
+            FullscreenEpisodeDrawer(episodePickerRequested, state,
+                adMarkedLines = adMarkedLines,
+                onLineLongPress = { target ->
+                    adMarkTarget = state.info?.episodes?.firstOrNull { it.line == target }
+                },
+                onDismiss = { episodePickerRequested = false },
+                onLineSelected = {
+                    val info = state.info
+                    val currentLine = info?.episodes?.find { episode -> episode.path == info.selected }?.line
+                    if (it != currentLine) {
+                        remoteEpisodeTarget = casting.device?.let { device ->
+                            RemoteEpisodeHandoff(device, state.mediaId, casting.playing, casting.position)
+                        }
+                        session.selectLine(it)
+                    }
+                },
+                onEpisodeSelected = {
+                    if (it.path != state.info?.selected) {
+                        remoteEpisodeTarget = casting.device?.let { device ->
+                            RemoteEpisodeHandoff(device, state.mediaId, casting.playing)
+                        }
+                        session.select(it)
+                    }
+                    episodePickerRequested = false
+                })
+        }
+        return
+    }
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
     val landscape = maxWidth > maxHeight
     LaunchedEffect(landscape) { fullscreenLayout.windowChanged(landscape) }
@@ -157,6 +273,12 @@ internal fun ModernPlayerScreen(
     fun changeFullscreen(enabled: Boolean) {
         if (!enabled) episodePickerRequested = false
         fullscreenLayout.request(enabled, landscape)
+    }
+    // System back follows the same window restoration path as the fullscreen button.
+    // Register the episode overlay afterwards so it dismisses before fullscreen exits.
+    PlayerOverlayBackHandler(enabled = fullscreenLayout.requested) { changeFullscreen(false) }
+    PlayerOverlayBackHandler(enabled = fullscreen && episodePickerRequested) {
+        episodePickerRequested = false
     }
     val density = LocalDensity.current
     var inlineVideoHeight by remember(session) { mutableStateOf(0.dp) }
@@ -229,6 +351,10 @@ internal fun ModernPlayerScreen(
         FullscreenEpisodeDrawer(
             visible = fullscreenLayout.requested && !pipActive && episodePickerRequested,
             state = state,
+            adMarkedLines = adMarkedLines,
+            onLineLongPress = { target ->
+                adMarkTarget = state.info?.episodes?.firstOrNull { it.line == target }
+            },
             onDismiss = { episodePickerRequested = false },
             onLineSelected = session::selectLine,
             onEpisodeSelected = {
@@ -250,12 +376,12 @@ internal fun ModernPlayerScreen(
                 }
             }
         }
+        if (!pipActive) DlnaDevicePicker(casting, state.info?.takeUnless { state.loading }?.let {
+            MediaSource(state.mediaId, it.url, it.kind, it.title,
+                episodeLabel = it.episodes.find { episode -> episode.path == it.selected }?.label.orEmpty())
+        }, platform, modifier = actorViewport)
     }
     }
-    DlnaDevicePicker(casting, state.info?.takeUnless { state.loading }?.let {
-        MediaSource(state.mediaId, it.url, it.kind, it.title,
-            episodeLabel = it.episodes.find { episode -> episode.path == it.selected }?.label.orEmpty())
-    }, platform)
 }
 
 @Composable
@@ -269,15 +395,18 @@ private fun PlayerDetails(
 ) {
     val info = state.info
     val favorites by model.user.favorites.collectAsState()
+    val adMarks by model.lineAds.marks.collectAsState()
+    var adMarkTarget by remember(info?.pageUrl) { mutableStateOf<Episode?>(null) }
     var cachePickerVisible by remember(info?.pageUrl) { mutableStateOf(false) }
     val canCache = info != null && model.downloads.supports(info.kind)
     val favoriteUrl = info?.pageUrl ?: model.playingSearch?.detailUrl.orEmpty()
     val saved = favoriteUrl.isNotBlank() && favorites.any { it.pageUrl == favoriteUrl }
     var synopsisExpanded by remember(info?.title) { mutableStateOf(false) }
-    var synopsisOverflows by remember(info?.synopsis) { mutableStateOf(false) }
     // Only changes to the episode list invalidate grouping; progress and download updates
     // must not allocate a new map and line lists on every recomposition.
     val lines = remember(info?.episodes) { info?.episodes?.groupBy { it.line }.orEmpty() }
+    val lineProbes = info?.lineProbes.orEmpty()
+    val visibleLines = remember(lines, lineProbes) { visiblePlaybackLines(lines.keys, lineProbes) }
     var selectedLine by remember(info?.pageUrl) { mutableStateOf<Int?>(null) }
     var episodeRange by remember(info?.pageUrl) { mutableStateOf(0) }
     LaunchedEffect(info?.selected) {
@@ -293,19 +422,20 @@ private fun PlayerDetails(
     val bodySize = 12.5.sp
     val supportingSize = 11.sp
     val listState = rememberLazyListState()
+    val resourceListState = rememberLazyListState()
+    LaunchedEffect(visibleLines) {
+        resourceListState.scrollToItem(0)
+    }
     val actorNames = artwork?.casts?.takeIf { it.isNotEmpty() }
         ?: model.playingSearch?.cast.orEmpty().split(Regex("[/、,，]"))
-    val panelActors = panel && actorNames.any(String::isNotBlank)
     // Playback sources such as Pomo often omit the plot, so prefer their text when present
     // and fall back to the catalog subject synopsis resolved after the episode list loads.
     val synopsis = info?.synopsis?.takeIf(String::isNotBlank) ?: artwork?.synopsis.orEmpty()
     LaunchedEffect(scrollToEpisodes, info, panel) {
         if (scrollToEpisodes && lines.isNotEmpty()) {
-            // The picker follows the header (including expanded synopsis) and recommendation rail. Exiting
-            // fullscreen creates this list again, so scroll only after it enters composition.
-            val headingIndex = (if (!panel) 1 else 0) +
-                (if (panelActors) 1 else 0) +
-                (if (!panel && related.isNotEmpty()) 1 else 0)
+            // Resource cards follow the compact header. Cast/recommendations are below
+            // episodes, so fullscreen's picker request must not scroll past the controls.
+            val headingIndex = if (!panel) 1 else 0
             listState.scrollToItem(headingIndex)
             onEpisodesShown()
         }
@@ -345,14 +475,23 @@ private fun PlayerDetails(
                             tint = MaterialTheme.colorScheme.onSurface,
                             )
                     }
-                    IconButton(
+                }
+                if (synopsis.isNotBlank()) Text(synopsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = bodySize, lineHeight = 20.sp,
+                    maxLines = if (synopsisExpanded) Int.MAX_VALUE else 2,
+                    overflow = TextOverflow.Ellipsis)
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
                         onClick = {
                             val savedNow = model.toggleFavorite(
                                 headerTitle, favoriteUrl, cover, artwork?.year.orEmpty(),
                             )
                             if (savedNow) model.platform.haptics.success() else model.platform.haptics.tick()
                         },
-                        enabled = favoriteUrl.isNotBlank(), modifier = Modifier.size(44.dp),
+                        enabled = favoriteUrl.isNotBlank(),
+                        contentPadding = CompactActionButtonPadding,
                     ) {
                         Icon(
                             if (saved) NavigationIcons.HeartFilled else NavigationIcons.Heart,
@@ -360,27 +499,11 @@ private fun PlayerDetails(
                             tint = if (saved) Accent else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp),
                         )
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (saved) "已收藏" else "收藏", fontSize = 12.sp,
+                            color = if (saved) Accent else MaterialTheme.colorScheme.onSurface)
                     }
-                }
-                if (info != null && synopsisExpanded) {
-                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        Text("剧情简介", fontSize = sectionTitleSize, lineHeight = 22.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            synopsis.ifBlank { "暂无简介" },
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = bodySize, lineHeight = 20.sp,
-                            maxLines = if (synopsisExpanded) Int.MAX_VALUE else 3,
-                            overflow = TextOverflow.Ellipsis,
-                            onTextLayout = { if (!synopsisExpanded) synopsisOverflows = it.hasVisualOverflow },
-                        )
-                        if (synopsisOverflows || synopsisExpanded) Text(
-                            if (synopsisExpanded) "收起" else "展开",
-                            fontSize = supportingSize, color = Accent,
-                            modifier = Modifier.clip(RoundedCornerShape(8.dp))
-                                .clickable(role = Role.Button) { synopsisExpanded = !synopsisExpanded }
-                                .padding(horizontal = 8.dp, vertical = 8.dp),
-                        )
-                    }
+                    if (canCache) PlayerCacheButton(enabled = !state.loading) { cachePickerVisible = true }
                 }
                 // Use only available metadata. Search results may supply region/genre while
                 // catalog results supply rating and cast; never invent awards or series.
@@ -390,43 +513,55 @@ private fun PlayerDetails(
                         ?: model.playingSearch?.year?.takeIf(String::isNotBlank))?.let(::add)
                 }.distinct()
                 val extraMetadata = listOfNotNull(
-                    model.playingSearch?.region?.takeIf(String::isNotBlank),
+                    info?.region?.takeIf(String::isNotBlank) ?: model.playingSearch?.region?.takeIf(String::isNotBlank),
                     model.playingSearch?.genre?.takeIf(String::isNotBlank),
                 ).distinct().filterNot { it in metadata }
-                if (metadata.isNotEmpty() || extraMetadata.isNotEmpty() || canCache) LazyRow(
+                if (metadata.isNotEmpty() || extraMetadata.isNotEmpty()) LazyRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     items(metadata) { text ->
                         PlayerMetadataChip(text)
                     }
-                    if (canCache) item {
-                        PlayerCacheButton(enabled = !state.loading) { cachePickerVisible = true }
-                    }
                     items(extraMetadata) { text -> PlayerMetadataChip(text) }
-                }
-                dev.pandavideo.ui.search.CastRail(model, actorNames, artwork?.url.orEmpty(), openActor)
-            }
-        }
-        if (panelActors) item {
-            dev.pandavideo.ui.search.CastRail(model, actorNames, artwork?.url.orEmpty(), openActor)
-        }
-        if (!panel && related.isNotEmpty()) item {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("相关推荐", fontSize = sectionTitleSize, lineHeight = 22.sp, fontWeight = FontWeight.Bold)
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (cover != null) item {
-                        PlayerRecommendation(cover, artwork?.title ?: info?.title.orEmpty(),
-                            artwork?.rating, playing = true)
-                    }
-                    items(related, key = { it.url }) { item ->
-                        PlayerRecommendation(model.poster(item), item.title, item.rating,
-                            onClick = { model.match(item) {} })
-                    }
                 }
             }
         }
         if (lines.isNotEmpty()) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("播放资源", fontSize = sectionTitleSize, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f))
+                        Text("长按标记广告", fontSize = supportingSize,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    LazyRow(state = resourceListState, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(visibleLines, key = { it }) { target ->
+                            val current = target == line
+                            val probe = lineProbes[target]
+                            val episode = lines[target]?.firstOrNull()
+                            val marked = adMarks.let {
+                                info != null && episode != null && model.lineAds.hasAds(info.pageUrl, episode)
+                            }
+                            PlaybackLineButton(
+                                name = playbackLineName(lines.getValue(target).first(), info?.source.orEmpty()),
+                                probe = probe, selected = current, marked = marked, enabled = !state.loading,
+                                onLongClick = {
+                                    model.platform.haptics.tick()
+                                    adMarkTarget = episode
+                                },
+                                onClick = {
+                                    selectedLine = target
+                                    episodeRange = 0
+                                    model.platform.haptics.tick()
+                                    session.selectLine(target)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("选集", fontSize = sectionTitleSize, lineHeight = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -435,16 +570,6 @@ private fun PlayerDetails(
                         Spacer(Modifier.width(8.dp))
                     }
                     Text("共 ${episodes.size} 集", fontSize = supportingSize, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                if (lines.size > 1) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(lines.keys.toList()) { target ->
-                        DetailChip("线路 $target", target == line) {
-                            selectedLine = target
-                            episodeRange = 0
-                            model.platform.haptics.tick()
-                            session.selectLine(target)
-                        }
-                    }
                 }
             }
             if (ranges.size > 1) item {
@@ -468,10 +593,32 @@ private fun PlayerDetails(
                 )
             }
         }
+        if (actorNames.any(String::isNotBlank)) item {
+            dev.pandavideo.ui.search.CastRail(model, actorNames, artwork?.url.orEmpty(), openActor)
+        }
+        if (!panel && related.isNotEmpty()) item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("相关推荐", fontSize = sectionTitleSize, lineHeight = 22.sp, fontWeight = FontWeight.Bold)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(related, key = { it.url }) { item ->
+                        PlayerRecommendation(model.poster(item), item.title, item.rating,
+                            onClick = { model.match(item) {} })
+                    }
+                }
+            }
+        }
         item { Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.safeDrawing)) }
     }
     if (cachePickerVisible && info != null) {
         EpisodeCacheSheet(info, model, cover) { cachePickerVisible = false }
+    }
+    adMarkTarget?.let { episode ->
+        info?.let {
+            LineAdMarkDialog(model.lineAds, it.pageUrl, episode,
+                onDismiss = { adMarkTarget = null },
+                onSaved = session::invalidateLinePreload,
+                onFailure = { model.emitMessage("广告标记保存失败，请重试") })
+        }
     }
 }
 
@@ -597,10 +744,6 @@ private fun VideoFrame(
     casting: DlnaCasting,
     pipMode: Boolean = false,
 ) {
-    if (casting.device != null) {
-        DlnaRemoteFrame(casting, title, modifier, back)
-        return
-    }
     var skipSettingsRequested by remember(session) { mutableStateOf(false) }
     if (skipSettingsRequested) state.info?.let { info ->
         // Pomo details carry no area label, so a result tapped from search supplies it.
@@ -669,7 +812,8 @@ private fun VideoFrame(
     // Cover the video until the new item paints its first frame so a switch never shows the
     // previous episode; mid-playback rebuffering keeps its last frame because it is already rendered.
     val frameVisibility = remember(session) { VideoFrameVisibility() }
-    val coverStaleFrame = frameVisibility.cover(player, state.loading, state.audioOnly, error)
+    val coverStaleFrame = frameVisibility.cover(player, state.loading, state.audioOnly, error,
+        requestedMediaId = state.mediaId)
     val next = state.info?.let { nextEpisode(it) }
     val hasMultipleEpisodes = state.info?.episodes.orEmpty()
         .groupingBy { it.line }.eachCount().values.any { it > 1 }
@@ -901,7 +1045,11 @@ private fun VideoFrame(
         )
         if (busy) Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
             CircularProgressIndicator(Modifier.size(30.dp), color = Accent, strokeWidth = 2.dp)
-            Text(if (state.loading) "正在解析视频…" else if (player.phase == PlayerPhase.Buffering) "缓冲中…" else "准备播放…",
+            val sourcePage = model.playingCatalog?.playbackPageUrl?.ifBlank { model.playingCatalog?.url.orEmpty() }
+                ?: model.playingSearch?.detailUrl ?: state.info?.pageUrl.orEmpty()
+            val directSource = dev.pandavideo.data.repository.JianpianSource.owns(sourcePage)
+            Text(if (state.loading && directSource) "正在读取线路…" else if (state.loading) "正在解析视频…"
+                else if (player.phase == PlayerPhase.Buffering) "缓冲中…" else "准备播放…",
                 color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
         }
         // AppState owns the single retry dialog after automatic recovery finishes.
@@ -1071,8 +1219,6 @@ private fun VideoFrame(
                 }, Modifier.size(44.dp)) {
                     Icon(NavigationIcons.Cast, "投屏到电视", Modifier.size(22.dp), tint = Color.White)
                 }
-                if (!state.audioOnly && !platform.dlnaSupported && platform.nativeCastingSupported)
-                    platform.CastingButton(Modifier.size(44.dp))
                 if (session.controller.capabilities.playbackRate) PlayerRateControl(
                     rate = player.rate,
                     expanded = rateMenu,

@@ -41,6 +41,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 
 @Composable
 private fun ActorAvatar(actor: ActorRef, modifier: Modifier) {
@@ -171,7 +172,10 @@ internal fun ActorScreen(
     val profile by produceState(actor to true, actor.id, attempt) {
         value = value.first to true
         try {
-            val result = model.actorProfile(actor)
+            val result = model.actorProfile(actor) { cached ->
+                ensureActive()
+                value = cached to false
+            }
             ensureActive()
             value = result to false
         } catch (error: CancellationException) { throw error }
@@ -180,7 +184,10 @@ internal fun ActorScreen(
     val state by produceState(ActorPageState(), actor.id, attempt) {
         value = value.copy(loading = true, error = false)
         try {
-            val result = model.actorWorks(actor)
+            val result = model.actorWorks(actor) { cached ->
+                ensureActive()
+                value = ActorPageState(cached, loading = true)
+            }
             ensureActive()
             value = ActorPageState(result, loading = false)
         } catch (error: CancellationException) { throw error }
@@ -191,45 +198,57 @@ internal fun ActorScreen(
         state.snapshot?.works.orEmpty().filter { kind == "all" || it.kind == kind }
     }
     val page = remember(filtered, count) { filtered.take(count) }
-    var enriched by remember(actor.id, state.snapshot, attempt) { mutableStateOf(emptyMap<String, ActorWork>()) }
-    var hidden by remember(actor.id, kind, state.snapshot, attempt) { mutableStateOf(emptySet<String>()) }
+    var enriched by remember(actor.id, attempt) { mutableStateOf(emptyMap<String, ActorWork>()) }
+    var hidden by remember(actor.id, attempt) { mutableStateOf(emptySet<String>()) }
     var checking by remember(actor.id, kind, state.snapshot) { mutableStateOf(false) }
     var checkFailed by remember(actor.id, kind, state.snapshot, attempt) { mutableStateOf(false) }
     val visibleWorks = remember(page, enriched, hidden) {
         actorPlaybackWorks(page.map { enriched[it.id] ?: it }, hidden)
     }
+    // Count the same verified, non-missing credits that can actually appear in the grid.
+    // Provider totals can include untranslated entries and multiple dubbed editions.
+    val visibleCount = remember(state.snapshot, enriched, hidden) {
+        actorPlaybackWorks(state.snapshot?.works.orEmpty().map { enriched[it.id] ?: it }, hidden).size
+    }
     LaunchedEffect(page, kind, state.snapshot, attempt) {
         checking = true
         try {
-            page.chunked(4).forEach { wave ->
-                val results = coroutineScope {
-                    wave.map { work -> async {
-                        enriched[work.id] ?: try { model.actorCatalogWork(work) }
-                        catch (error: CancellationException) { throw error }
-                        catch (_: Exception) { checkFailed = true; work }
-                    } }.awaitAll()
+            coroutineScope {
+                val pageScope = this
+                val checks = kotlinx.coroutines.sync.Semaphore(4)
+                page.chunked(4).forEach { wave ->
+                    coroutineScope {
+                        wave.map { work -> async {
+                            val result = enriched[work.id] ?: try { model.actorCatalogWork(work) }
+                            catch (error: CancellationException) { throw error }
+                            catch (_: Exception) { checkFailed = true; work }
+                            val mapped = actorPlaybackWorks(listOf(result), emptySet()).map { it.catalog() }
+                            val visible = model.visibleActorWorks(mapped).map { it.url }.toSet()
+                            hidden = hidden + mapped.filter { it.url !in visible }.map { it.url }
+                            ensureActive()
+                            // Publish each resolved credit before slow fresh resource checks.
+                            // Persisted misses are already excluded; network uncertainty keeps rows.
+                            enriched = enriched + (work.id to result)
+                            // Fresh checks must not hold up resolution of the next credit wave.
+                            // Launch into the page scope, retaining bounded concurrency and cancellation.
+                            pageScope.launch {
+                                checks.acquire()
+                                try { model.inspectActorWorks(mapped) { missing -> hidden = hidden + missing.url } }
+                                finally { checks.release() }
+                            }
+                        } }.awaitAll()
+                    }
                 }
-                val mapped = actorPlaybackWorks(results, emptySet()).map { it.catalog() }
-                val visible = model.visibleActorWorks(mapped).map { it.url }.toSet()
-                hidden = hidden + mapped.filter { it.url !in visible }.map { it.url }
-                // Check each small wave before publishing it. Both persisted misses and fresh
-                // misses use the translated catalog identity that the playback button opens.
-                // A timeout remains Unknown; it never becomes a permanent "missing" record.
-                model.inspectActorWorks(mapped) { missing -> hidden = hidden + missing.url }
-                ensureActive()
-                enriched = enriched + results.associateBy { it.id }
             }
         } finally { checking = false }
     }
-    val works = state.snapshot?.works.orEmpty()
-
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         LazyColumn(Modifier.fillMaxSize(), state = list,
             contentPadding = PaddingValues(bottom =
                 WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 24.dp)) {
             if (!compact) item { ActorHero(profile.first) }
-            item { ActorProfileHeader(profile.first, works.size) }
-            item { ActorTabs(tab, works.size) { tab = it } }
+            item { ActorProfileHeader(profile.first, visibleCount) }
+            item { ActorTabs(tab, visibleCount) { tab = it } }
             if (tab == ACTOR_ABOUT) {
                 item { ActorAbout(profile.first, profile.second) }
             } else {
@@ -240,7 +259,7 @@ internal fun ActorScreen(
                         }
                     }
                 }
-                if (state.loading || checking && visibleWorks.isEmpty()) {
+                if ((state.loading || checking) && visibleWorks.isEmpty()) {
                     items(2) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -286,6 +305,12 @@ internal fun ActorScreen(
                         }
                         if (row.size == 1) Spacer(Modifier.weight(1f))
                     }
+                }
+                if ((state.loading || checking) && visibleWorks.isNotEmpty()) item {
+                    LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
+                }
+                if (!checking && checkFailed && visibleWorks.isNotEmpty()) item {
+                    TextButton({ attempt++ }, Modifier.padding(horizontal = 16.dp)) { Text("重试加载其余作品") }
                 }
                 if (count < filtered.size) item {
                     LaunchedEffect(filtered, count) { count += 20 }

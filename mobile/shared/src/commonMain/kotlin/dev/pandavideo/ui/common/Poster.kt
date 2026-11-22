@@ -40,6 +40,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import dev.pandavideo.data.repository.isWebUrl
 import dev.pandavideo.resources.Res
+import io.ktor.http.Url
 import org.jetbrains.compose.resources.MissingResourceException
 
 internal val LocalPosterImageLoader = staticCompositionLocalOf<ImageLoader?> { null }
@@ -59,16 +60,29 @@ internal suspend fun prefetchPosters(loader: ImageLoader, context: coil3.Platfor
     }
 }
 
+/** Selects the poster owner's referrer; Bilibili rejects unrelated film-site referrers. */
+internal fun posterReferrer(url: String?): String {
+    val host = try { url?.let { Url(it).host } } catch (_: Exception) { null }
+    return when {
+        host == "hdslb.com" || host?.endsWith(".hdslb.com") == true -> "https://www.bilibili.com/"
+        url?.contains("doubanio.com") == true -> "https://movie.douban.com/"
+        else -> "$OnlineOrigin/"
+    }
+}
+
 private fun posterRequest(context: coil3.PlatformContext, url: String?, data: Any?): ImageRequest =
     ImageRequest.Builder(context).data(data).memoryCacheKey(url).diskCacheKey(url).httpHeaders(
         NetworkHeaders.Builder().set("User-Agent", "Mozilla/5.0")
-            .set("Referer", if (url?.contains("doubanio.com") == true) "https://movie.douban.com/" else "$OnlineOrigin/")
+            .set("Referer", posterReferrer(url))
             .build(),
     ).build()
 
 /** Builds one app-owned loader with an expendable, bounded disk cache for original posters. */
-internal fun posterImageLoader(context: coil3.PlatformContext, directory: String?): ImageLoader =
+internal fun posterImageLoader(
+    context: coil3.PlatformContext, directory: String?, client: io.ktor.client.HttpClient? = null,
+): ImageLoader =
     ImageLoader.Builder(context).apply {
+        if (client != null) components { add(coil3.network.ktor3.KtorNetworkFetcherFactory(client)) }
         if (directory != null) diskCache {
             DiskCache.Builder().directory(directory.toPath()).maxSizeBytes(256L * 1024 * 1024).build()
         }

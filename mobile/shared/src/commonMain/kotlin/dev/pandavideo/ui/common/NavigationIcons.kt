@@ -108,6 +108,19 @@ internal object NavigationIcons {
         lineTo(10.7f, 10.7f)
         close()
     }
+    val Featured = outline("Featured") {
+        moveTo(10f, 3f)
+        lineTo(12.5f, 9.5f)
+        lineTo(19f, 12f)
+        lineTo(12.5f, 14.5f)
+        lineTo(10f, 21f)
+        lineTo(7.5f, 14.5f)
+        lineTo(1f, 12f)
+        lineTo(7.5f, 9.5f)
+        close()
+        moveTo(19f, 2f); lineTo(19f, 6f)
+        moveTo(17f, 4f); lineTo(21f, 4f)
+    }
     val Browse = outline("Browse") {
         tile(3f, 3f)
         tile(14f, 3f)
@@ -215,7 +228,7 @@ internal object NavigationIcons {
     }
 
     fun forRoute(route: String): ImageVector = when (route) {
-        "discover" -> Discover
+        "discover" -> Featured
         "browse" -> Browse
         "hot" -> Hot
         "profile" -> Profile

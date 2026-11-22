@@ -4,7 +4,6 @@ package dev.pandavideo.core.platform
 
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.viewinterop.UIKitInteropProperties
 import androidx.compose.ui.viewinterop.UIKitView
 import androidx.compose.ui.window.ComposeUIViewController
@@ -31,11 +30,13 @@ import io.ktor.http.isSuccess
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.channels.awaitClose
+import platform.Network.*
+import platform.darwin.dispatch_get_main_queue
 import platform.AVFAudio.*
 import platform.AVFoundation.*
 import platform.AVKit.AVPictureInPictureController
 import platform.AVKit.AVPictureInPictureControllerDelegateProtocol
-import platform.AVKit.AVRoutePickerView
 import platform.CoreGraphics.CGRectMake
 import platform.CoreGraphics.CGRectZero
 import platform.CoreGraphics.CGSizeMake
@@ -55,6 +56,20 @@ fun MainViewController(): UIViewController = ComposeUIViewController {
 }
 
 class IosPlatform : PlatformServices {
+    override fun downloadNetwork(): Flow<DownloadNetwork> = callbackFlow {
+        val monitor = nw_path_monitor_create()
+        nw_path_monitor_set_update_handler(monitor) { path ->
+            trySend(when {
+                nw_path_get_status(path) != nw_path_status_satisfied -> DownloadNetwork.Offline
+                nw_path_uses_interface_type(path, nw_interface_type_wifi) && !nw_path_is_expensive(path) ->
+                    DownloadNetwork.Wifi
+                else -> DownloadNetwork.Other
+            })
+        }
+        nw_path_monitor_set_queue(monitor, dispatch_get_main_queue())
+        nw_path_monitor_start(monitor)
+        awaitClose { nw_path_monitor_cancel(monitor) }
+    }.distinctUntilChanged()
     private val douban by lazy { IosDoubanSession() }
     override fun doubanSession(): DoubanSession = douban
     private val offline by lazy { IosOfflineEngine() }
@@ -68,33 +83,7 @@ class IosPlatform : PlatformServices {
             NSFileManager.defaultManager.removeItemAtPath(avatarDirectory() + "/" + filename, null)
     }
     override val dlnaSupported: Boolean = true
-    override val nativeCastingSupported: Boolean = true
     override suspend fun discoverDlnaLocations(host: String?): List<String> = discoverIosDlna(host)
-    @Composable
-    override fun CastingButton(modifier: Modifier, tint: Color) {
-        UIKitView(
-            factory = {
-                AVRoutePickerView(frame = CGRectZero.readValue()).apply {
-                    // UIKit interop views are composited above the Compose dialog layer. Without
-                    // an opaque backdrop the page behind the sheet showed through the transparent
-                    // route button, which looked like a stray portrait during discovery.
-                    backgroundColor = UIColor.secondarySystemBackgroundColor
-                    tintColor = UIColor(red = tint.red.toDouble(), green = tint.green.toDouble(),
-                        blue = tint.blue.toDouble(), alpha = tint.alpha.toDouble())
-                    activeTintColor = tintColor
-                    prioritizesVideoDevices = true
-                    accessibilityLabel = "AirPlay 投屏"
-                }
-            },
-            modifier = modifier,
-            update = { view ->
-                view.tintColor = UIColor(red = tint.red.toDouble(), green = tint.green.toDouble(),
-                    blue = tint.blue.toDouble(), alpha = tint.alpha.toDouble())
-                view.activeTintColor = view.tintColor
-            },
-            properties = UIKitInteropProperties(isNativeAccessibilityEnabled = true),
-        )
-    }
     private var originalBrightness: Double? = null
     private var activePlayer: IosPlayer? = null
     private val pipMutable = MutableStateFlow(false)
@@ -212,7 +201,10 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
      * The only AVPlayer for this session. It stays bound to [PlayerContainerView.videoLayer] and
      * the PiP controller; preloaded media is adopted as an item, never as another player instance.
      */
-    val native: AVPlayer = AVPlayer()
+    val native: AVPlayer = AVQueuePlayer()
+    private var segmented: dev.pandavideo.core.player.SegmentedTimeline? = null
+    private var queueItems: List<Pair<Int, AVPlayerItem>> = emptyList()
+    private var segmentSeekJob: Job? = null
     private data class Prepared(
         val source: MediaSource, val item: AVPlayerItem, var ready: Boolean = false,
     )
@@ -230,6 +222,17 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
     private var previewGenerator: AVAssetImageGenerator? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var released = false
+    private val bootstrapClient = HttpClient(Darwin) {
+        followRedirects = false
+        engine { configureRequest { setHTTPShouldHandleCookies(false) } }
+    }
+    private val bootstrapCache = dev.pandavideo.core.player.HlsBootstrapCache(bootstrapClient, scope, ::currentEpochMillis)
+    private var bootstrapLoad: Job? = null
+    private var resolvingSource: MediaSource? = null
+    private var bootstrapServer: IosHlsBootstrapServer? = null
+    private var activeBootstrapServer: IosHlsBootstrapServer? = null
+    private var bootstrapAddress: String? = null
+    private var bootstrapValue: dev.pandavideo.core.player.HlsBootstrap? = null
     private var endObserver: NSObjectProtocol? = null
     private var remoteNext: (() -> Unit)? = null
     private var currentTitle = ""
@@ -254,11 +257,13 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
         scope.launch {
             while (isActive) {
                 delay(if (!mutable.value.firstFrameRendered && mutable.value.wantsPlay) 50 else 250)
+                if (resolvingSource != null) continue
                 val item = native.currentItem ?: continue
                 // HLS tracks can arrive after load. Apply the current mode when they become
                 // available as well, without replacing the item or disturbing its timeline.
                 applyAudioOnly(item)
-                val duration = CMTimeGetSeconds(item.duration).takeIf { it.isFinite() && it > 0 } ?: 0.0
+                val duration = segmented?.duration?.div(1000.0) ?:
+                    (CMTimeGetSeconds(item.duration).takeIf { it.isFinite() && it > 0 } ?: 0.0)
                 // Keep autoplay behind the single history/intro seek. Publishing a Playing
                 // sample first used to paint the opening and immediately show loading again.
                 val startup = startupSource
@@ -266,7 +271,8 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
                     val target = startup.startupPosition((duration * 1000).toLong())
                     if (target > 0) {
                         startupSeeking = true
-                        native.seekToTime(CMTimeMakeWithSeconds(target / 1000.0, 600),
+                        val localTarget = segmented?.locate(target)?.local ?: target
+                        native.seekToTime(CMTimeMakeWithSeconds(localTarget / 1000.0, 600),
                             toleranceBefore = CMTimeMake(0, 1), toleranceAfter = CMTimeMake(0, 1),
                             completionHandler = { _ ->
                                 scope.launch {
@@ -285,7 +291,8 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
                 val position = CMTimeGetSeconds(native.currentTime()).takeIf { it.isFinite() && it > 0 } ?: 0.0
                 val previous = mutable.value
                 val seeking = pendingSeek.active(previous.mediaId)
-                val displayedPosition = pendingSeek.position(previous.mediaId, (position * 1000).toLong())
+                val displayedPosition = pendingSeek.position(previous.mediaId,
+                    currentSegmentOffset(item) + (position * 1000).toLong())
                 val phase = when {
                     item.status == AVPlayerItemStatusFailed -> PlayerPhase.Error
                     startupSource != null -> PlayerPhase.Preparing
@@ -417,6 +424,40 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
 
     override fun load(source: MediaSource) {
         if (released) return
+        bootstrapLoad?.cancel()
+        resolvingSource = source
+        native.pause()
+        mutable.value = PlayerState(mediaId = source.id, phase = PlayerPhase.Preparing, wantsPlay = source.autoplay, rate = mutable.value.rate)
+        bootstrapLoad = scope.launch {
+            val cached = bootstrapCache.await(source)
+            val current = resolvingSource ?: return@launch
+            val server = cached?.let { publishBootstrap(source.url, it) }
+            resolvingSource = null
+            val previous = activeBootstrapServer
+            activeBootstrapServer = server
+            loadNative(if (server != null) current.copy(url = server.url) else current, server != null)
+            if (previous != server && previous != bootstrapServer) previous?.close()
+        }
+    }
+
+    private fun publishBootstrap(address: String, cached: dev.pandavideo.core.player.HlsBootstrap): IosHlsBootstrapServer? {
+        if (bootstrapAddress == address && bootstrapValue === cached) bootstrapServer?.let { return it }
+        return try {
+            val server = IosHlsBootstrapServer.create(cached, scope)
+            if (bootstrapServer != activeBootstrapServer) bootstrapServer?.close()
+            bootstrapServer = server
+            bootstrapAddress = address
+            bootstrapValue = cached
+            server
+        } catch (_: Exception) { null }
+    }
+
+    private fun loadNative(source: MediaSource, bootstrapHit: Boolean) {
+        segmentSeekJob?.cancel()
+        segmented = source.segments.takeIf { it.isNotEmpty() }
+            ?.let { dev.pandavideo.core.player.SegmentedTimeline(it) }
+        native.actionAtItemEnd = if (segmented == null) AVPlayerActionAtItemEndPause else AVPlayerActionAtItemEndAdvance
+        queueItems = emptyList()
         pendingSeek.clear()
         startupSource = source.takeIf { it.startPosition > 0 || it.startupSkip.introSeconds > 0 }
         startupSeeking = false
@@ -424,7 +465,7 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
         native.pause()
         removeEndObserver()
         val url = NSURL.URLWithString(source.url) ?: return
-        val upcoming = prepared?.takeIf { it.ready && it.source.url == source.url &&
+        val upcoming = prepared?.takeIf { segmented == null && it.ready && it.source.url == source.url &&
             it.source.kind == source.kind && source.startPosition == 0L &&
             pipController?.isPictureInPictureActive() != true }
         val item: AVPlayerItem
@@ -434,25 +475,38 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
             prepareJob = null
             item = upcoming.item
         } else {
-            preload(null)
+            prepareJob?.cancel()
+            prepareJob = null
+            prepared = null
             item = playbackItem(url, source.url)
         }
-        native.replaceCurrentItemWithPlayerItem(item)
+        val timeline = segmented
+        val initial = timeline?.locate(source.startupPosition(timeline.duration))
+        if (initial == null) {
+            (native as AVQueuePlayer).removeAllItems()
+            native.replaceCurrentItemWithPlayerItem(item)
+        } else {
+            rebuildQueue(initial.index)
+        }
         currentTitle = source.title
         currentEpisode = source.episodeLabel
         nowPlayingPhase = null
         mutable.value = PlayerState(mediaId = source.id, phase = PlayerPhase.Preparing,
-            wantsPlay = source.autoplay, dataPreloadHit = upcoming != null)
+            wantsPlay = source.autoplay, dataPreloadHit = bootstrapHit || upcoming != null, rate = mutable.value.rate)
         loadArtwork(source)
         endObserver = NSNotificationCenter.defaultCenter.addObserverForName(
-            AVPlayerItemDidPlayToEndTimeNotification, item, NSOperationQueue.mainQueue,
-        ) {
-            if (!released && mutable.value.mediaId == source.id && native.currentItem == item) {
-                mutable.value = mutable.value.copy(phase = PlayerPhase.Ended, wantsPlay = false)
+            AVPlayerItemDidPlayToEndTimeNotification, null, NSOperationQueue.mainQueue,
+        ) { notification ->
+            // AVQueuePlayer removes finished items automatically. Only the current queue's last
+            // asset completes the program; intermediate notifications must not advance episodes.
+            val last = queueItems.lastOrNull()?.second ?: item
+            if (!released && mutable.value.mediaId == source.id && notification?.`object` == last) {
+                mutable.value = mutable.value.copy(phase = PlayerPhase.Ended, wantsPlay = false,
+                    position = mutable.value.duration)
             }
         }
         applyAudioOnly(item)
-        if (source.autoplay && startupSource == null) native.play()
+        if (source.autoplay && startupSource == null) native.playImmediatelyAtRate(mutable.value.rate)
     }
     /**
      * Warms one upcoming item without audio output or Now Playing changes.
@@ -461,17 +515,20 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
      */
     override fun preload(source: MediaSource?) {
         if (released) return
-        if (source != null && prepared?.source?.url == source.url &&
-            prepared?.source?.kind == source.kind) return
+        bootstrapCache.preload(source)
+        if (source != null && prepareJob?.isActive == true && bootstrapAddress == source.url) return
         prepareJob?.cancel()
         prepareJob = null
         prepared = null
-        if (source == null || !isWebUrl(source.url)) return
-        val url = NSURL.URLWithString(source.url) ?: return
-        val item = playbackItem(url, source.url).apply { preferredForwardBufferDuration = 3.0 }
-        val candidate = Prepared(source, item)
-        prepared = candidate
+        if (source == null || source.segments.isNotEmpty() || !isWebUrl(source.url)) return
         prepareJob = scope.launch {
+            val cached = bootstrapCache.await(source)
+            val server = cached?.let { publishBootstrap(source.url, it) }
+            val resolved = if (server != null) source.copy(url = server.url) else source
+            val url = NSURL.URLWithString(resolved.url) ?: return@launch
+            val item = playbackItem(url, resolved.url).apply { preferredForwardBufferDuration = 3.0 }
+            val candidate = Prepared(resolved, item)
+            prepared = candidate
             // An AVPlayerItem can belong to only one AVPlayer, so the candidate is never attached
             // to a standby player. Loading the asset keys warms the playlist and transport while
             // leaving the item free to be adopted by the single session player on load.
@@ -498,6 +555,23 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
             uRL = url, options = mapOf(AVURLAssetHTTPUserAgentKey to dev.pandavideo.core.player.BilibiliMedia.userAgent)))
         else AVPlayerItem(uRL = url)
 
+    /** Rebuilds the suffix when seeking backwards to an item already consumed by AVQueuePlayer. */
+    private fun rebuildQueue(index: Int) {
+        val timeline = segmented ?: return
+        val queue = native as AVQueuePlayer
+        queue.pause()
+        queue.removeAllItems()
+        queueItems = timeline.segments.mapIndexedNotNull { i, segment ->
+            if (i < index) null else i to playbackItem(requireNotNull(NSURL.URLWithString(segment.url)), segment.url)
+        }
+        queueItems.forEach { (_, item) -> applyAudioOnly(item); queue.insertItem(item, afterItem = null) }
+    }
+
+    private fun currentSegmentOffset(item: AVPlayerItem): Long {
+        val index = queueItems.firstOrNull { it.second == item }?.first ?: return 0
+        return segmented?.offset(index) ?: 0
+    }
+
     /** Disables video tracks on the existing AVPlayerItem while retaining audio and time. */
     override fun setAudioOnly(enabled: Boolean) {
         if (released) return
@@ -512,56 +586,91 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
         }
     }
     override fun play() {
+        resolvingSource = resolvingSource?.copy(autoplay = true)
         if (!released) {
             mutable.value = mutable.value.copy(wantsPlay = true)
-            if (startupSource == null) native.playImmediatelyAtRate(mutable.value.rate)
+            if (startupSource == null && !pendingSeek.active(mutable.value.mediaId))
+                native.playImmediatelyAtRate(mutable.value.rate)
         }
     }
     override fun pause() {
+        resolvingSource = resolvingSource?.copy(autoplay = false)
         if (!released) { native.pause(); mutable.value = mutable.value.copy(wantsPlay = false, phase = PlayerPhase.Paused) }
     }
     override fun seekTo(position: Long) {
         val player = native
-        val item = player.currentItem ?: return
+        var item = player.currentItem
         val previous = mutable.value
-        if (released || previous.duration <= 0 || item.seekableTimeRanges.isEmpty()) return
+        if (released || previous.duration <= 0 ||
+            (segmented == null && (item == null || item.seekableTimeRanges.isEmpty()))) return
         val wasStarting = startupSource != null
         if (wasStarting) {
             // An explicit scrub overrides the opening policy even while its native seek
             // is pending. Its obsolete completion must not restore autoplay or position.
             startupSource = null
             startupSeeking = false
-            item.cancelPendingSeeks()
+            item?.cancelPendingSeeks()
         }
         val target = position.coerceIn(0, previous.duration)
+        val mapped = segmented?.locate(target)
+        segmentSeekJob?.cancel()
+        if (mapped != null && queueItems.firstOrNull { it.second == item }?.first != mapped.index) {
+            item?.cancelPendingSeeks()
+            rebuildQueue(mapped.index)
+            item = player.currentItem
+        }
+        val seekItem = item ?: return
         val request = pendingSeek.begin(previous.mediaId, target)
         // Release the drag preview into an optimistic timeline, rather than a stale native
         // sample. AVPlayer temporarily pauses/waits during seek; preserve explicit play intent.
         mutable.value = previous.copy(position = target,
             phase = if (previous.wantsPlay) PlayerPhase.Buffering else PlayerPhase.Paused)
-        player.seekToTime(CMTimeMakeWithSeconds(target.toDouble() / 1000, 600),
+        segmentSeekJob = scope.launch {
+            // Newly queued assets need readiness before a reliable local seek. PendingSeek keeps
+            // the global target and explicit play intent visible while this preparation runs.
+            val ready = withTimeoutOrNull(20_000) {
+                while (seekItem.status == AVPlayerItemStatusUnknown) delay(50)
+                seekItem.status == AVPlayerItemStatusReadyToPlay
+            } == true
+            if (!ready) {
+                if (pendingSeek.complete(request)) mutable.value = mutable.value.copy(
+                    phase = PlayerPhase.Error, wantsPlay = false, error = "视频无法播放，请重试")
+                return@launch
+            }
+            player.seekToTime(CMTimeMakeWithSeconds((mapped?.local ?: target).toDouble() / 1000, 600),
             // kCMTimeZero bridges as a plain struct here, so build a CValue<CMTime> explicitly.
             toleranceBefore = CMTimeMake(0, 1), toleranceAfter = CMTimeMake(0, 1),
             completionHandler = { finished ->
                 scope.launch {
-                    if (released || native !== player || player.currentItem != item ||
+                    if (released || native !== player || player.currentItem != seekItem ||
                         mutable.value.mediaId != request.mediaId || !pendingSeek.complete(request)) return@launch
                     val seconds = CMTimeGetSeconds(player.currentTime())
                     val actual = seconds.takeIf { it.isFinite() && it >= 0 }
-                        ?.let { (it * 1000).toLong() } ?: if (finished) target else previous.position
+                        ?.let { currentSegmentOffset(seekItem) + (it * 1000).toLong() }
+                        ?: if (finished) target else previous.position
                     mutable.value = mutable.value.copy(position = actual.coerceIn(0, mutable.value.duration))
-                    if (wasStarting && mutable.value.wantsPlay) player.playImmediatelyAtRate(mutable.value.rate)
+                    // Play can arrive while any asynchronous seek is pending, including a
+                    // paused single asset after completion. Resume from the latest intent;
+                    // play() deliberately waits for this seek to finish before starting.
+                    if (mutable.value.wantsPlay)
+                        player.playImmediatelyAtRate(mutable.value.rate)
                 }
             })
+        }
     }
     override suspend fun previewFrame(position: Long): PreviewFrame? = withContext(Dispatchers.Main) {
         val item = native.currentItem ?: return@withContext null
         val id = mutable.value.mediaId
         if (released || mutable.value.duration <= 0) return@withContext null
         cancelPreview()
+        val mapped = segmented?.locate(position)
+        val asset = mapped?.let {
+            val segment = segmented!!.segments[it.index]
+            playbackItem(requireNotNull(NSURL.URLWithString(segment.url)), segment.url).asset
+        } ?: item.asset
         // Reuse the current asset's transport configuration. A separate image generator never
         // seeks AVPlayer, so scrubbing cannot change playback position or interrupt PiP/audio.
-        val generator = AVAssetImageGenerator(asset = item.asset).apply {
+        val generator = AVAssetImageGenerator(asset = asset).apply {
             appliesPreferredTrackTransform = true
             maximumSize = CGSizeMake(320.0, 180.0)
             requestedTimeToleranceBefore = CMTimeMakeWithSeconds(1.0, 600)
@@ -571,7 +680,7 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
         try {
             suspendCancellableCoroutine { continuation ->
                 continuation.invokeOnCancellation { generator.cancelAllCGImageGeneration() }
-                val time = CMTimeMakeWithSeconds(position / 1000.0, 600)
+                val time = CMTimeMakeWithSeconds((mapped?.local ?: position) / 1000.0, 600)
                 generator.generateCGImagesAsynchronouslyForTimes(listOf(NSValue.valueWithCMTime(time))) {
                         _, image, actualTime, result, _ ->
                     if (continuation.isActive) {
@@ -583,7 +692,8 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
                                 if (bytes.isNotEmpty()) bytes.usePinned { pinned ->
                                     it.getBytes(pinned.addressOf(0), it.length)
                                 }
-                                PreviewFrame(id, (CMTimeGetSeconds(actualTime) * 1000).toLong(), bytes)
+                                PreviewFrame(id, (mapped?.offset ?: 0) +
+                                    (CMTimeGetSeconds(actualTime) * 1000).toLong(), bytes)
                             }
                         } else null
                         continuation.resumeWith(Result.success(frame))
@@ -603,7 +713,8 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
     override fun setPlaybackRate(rate: Float) {
         if (!released && rate in 0.5f..2f) {
             mutable.value = mutable.value.copy(rate = rate)
-            if (mutable.value.wantsPlay && startupSource == null) native.playImmediatelyAtRate(rate)
+            if (mutable.value.wantsPlay && startupSource == null && !pendingSeek.active(mutable.value.mediaId))
+                native.playImmediatelyAtRate(rate)
         }
     }
     override fun setRemoteEpisodeActions(onNext: (() -> Unit)?, onPrevious: (() -> Unit)?) {
@@ -636,7 +747,13 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
     }
     override fun stop() {
         if (released) return
+        bootstrapLoad?.cancel()
+        resolvingSource = null
         pendingSeek.clear()
+        segmentSeekJob?.cancel()
+        segmentSeekJob = null
+        segmented = null
+        queueItems = emptyList()
         startupSource = null
         startupSeeking = false
         cancelPreview()
@@ -647,13 +764,17 @@ class IosPlayer(private val onPipChanged: (Boolean) -> Unit = {}) : PlayerContro
         currentEpisode = ""
         nowPlayingPhase = null
         MPNowPlayingInfoCenter.defaultCenter().nowPlayingInfo = null
-        native.pause(); removeEndObserver(); native.replaceCurrentItemWithPlayerItem(null)
+        native.pause(); removeEndObserver(); (native as AVQueuePlayer).removeAllItems()
         mutable.value = mutable.value.copy(phase = PlayerPhase.Idle, wantsPlay = false, error = null)
     }
     override fun close() {
         if (released) return
         preload(null)
         stop(); released = true; scope.cancel()
+        bootstrapCache.close()
+        bootstrapClient.close()
+        bootstrapServer?.close()
+        if (activeBootstrapServer != bootstrapServer) activeBootstrapServer?.close()
         artworkClient.close()
         remoteTokens.forEach { (command, token) -> command.removeTarget(token) }
         remoteTokens.clear()

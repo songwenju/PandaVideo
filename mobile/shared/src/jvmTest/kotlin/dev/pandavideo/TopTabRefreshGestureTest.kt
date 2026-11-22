@@ -1,6 +1,7 @@
 package dev.pandavideo
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -29,6 +32,10 @@ import androidx.compose.ui.scene.CanvasLayersComposeScene
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import dev.pandavideo.ui.common.TopTabPager
+import dev.pandavideo.ui.catalog.collectCatalogPageState
+import dev.pandavideo.app.CatalogState
+import dev.pandavideo.core.model.CatalogItem
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -40,6 +47,68 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalComposeUiApi::class, InternalComposeUiApi::class,
     ExperimentalCoroutinesApi::class, ExperimentalMaterial3Api::class)
 class TopTabRefreshGestureTest {
+    @Test fun changingCatalogSubscriptionKeepsEachPagesOwnRowsOnItsFirstFrame() = runTest {
+        var selected by mutableStateOf(0)
+        val red = CatalogState(items = listOf(CatalogItem("red", "red")))
+        val blue = CatalogState(items = listOf(CatalogItem("blue", "blue")))
+        val active = MutableStateFlow(red)
+        val snapshots = listOf(MutableStateFlow(red), MutableStateFlow(blue))
+        val image = ImageBitmap(390, 640)
+        val scene = CanvasLayersComposeScene(size = IntSize(390, 640), coroutineContext = coroutineContext)
+        val canvas = Canvas(image)
+        var frame = 0L
+        fun draw() {
+            Snapshot.sendApplyNotifications()
+            runCurrent()
+            scene.render(canvas, frame++ * 16_000_000L)
+        }
+        try {
+            scene.setContent {
+                TopTabPager(selected, 2, { selected = it }) { index ->
+                    val source = if (index == selected) active else snapshots[index]
+                    val state by source.collectCatalogPageState()
+                    Box(Modifier.fillMaxSize().background(
+                        if (state.items.first().title == "red") Color.Red else Color.Blue))
+                }
+            }
+            repeat(6) { draw(); runCurrent() }
+            selected = 1
+            active.value = blue
+            draw()
+            assertEquals(Color.Red, image.toPixelMap()[10, 200],
+                "The outgoing page must use its own snapshot as soon as its subscription changes")
+            repeat(30) { draw(); runCurrent() }
+            assertEquals(Color.Blue, image.toPixelMap()[10, 200])
+        } finally { scene.close() }
+    }
+
+    @Test fun categoryTapNeverDrawsSettledContentBeforeItsArrivalAnimation() = runTest {
+        var selected by mutableStateOf(0)
+        val image = ImageBitmap(390, 640)
+        val scene = CanvasLayersComposeScene(size = IntSize(390, 640), coroutineContext = coroutineContext)
+        val canvas = Canvas(image)
+        var frame = 0L
+        fun draw() {
+            Snapshot.sendApplyNotifications()
+            runCurrent()
+            scene.render(canvas, frame++ * 16_000_000L)
+        }
+        try {
+            scene.setContent {
+                TopTabPager(selected, 2, { selected = it }) { index ->
+                    Box(Modifier.fillMaxSize().background(if (index == 0) Color.Red else Color.Blue))
+                }
+            }
+            repeat(6) { draw(); runCurrent() }
+            selected = 1
+            draw()
+            assertEquals(Color.Red, image.toPixelMap()[10, 200],
+                "The first destination frame must already have its arrival offset")
+            repeat(30) { draw(); runCurrent() }
+            assertEquals(Color.Blue, image.toPixelMap()[10, 200])
+        } finally { scene.close() }
+    }
+
     @Test fun diagonalLeftSwipeDoesNotRefresh() =
         verifyDrag(Offset(340f, 120f), Offset(40f, 370f), 0, 1, 0)
 

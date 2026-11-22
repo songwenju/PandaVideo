@@ -215,9 +215,16 @@ internal class DlnaClient(client: HttpClient) {
         fun field(tag: String) = xml.descendants().firstOrNull { it.tag == tag }?.value.orEmpty()
         return DlnaPosition(parseDlnaTime(field("reltime")), parseDlnaTime(field("trackduration")))
     }
+    suspend fun transportState(device: DlnaDevice): String {
+        val fields = DlnaXml.parse(command(device, "GetTransportInfo")).descendants().toList()
+        // A URI can be accepted before Media3 discovers a load/decoder failure. Surface
+        // the renderer's real error status instead of silently treating it as a pause.
+        if (fields.firstOrNull { it.tag == "currenttransportstatus" }?.value == "ERROR_OCCURRED")
+            throw DlnaException("电视播放失败，请在电视重试或更换播放线路")
+        return fields.firstOrNull { it.tag == "currenttransportstate" }?.value.orEmpty()
+    }
     suspend fun playing(device: DlnaDevice): Boolean =
-        DlnaXml.parse(command(device, "GetTransportInfo")).descendants()
-            .firstOrNull { it.tag == "currenttransportstate" }?.value == "PLAYING"
+        transportState(device) in setOf("PLAYING", "TRANSITIONING")
 
     fun close() { http.close() }
 }

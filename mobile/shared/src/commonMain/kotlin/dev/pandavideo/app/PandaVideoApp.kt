@@ -46,11 +46,13 @@ import dev.pandavideo.core.model.PlayerRequest
 import dev.pandavideo.core.platform.PlatformServices
 import dev.pandavideo.data.user.ThemeMode
 import dev.pandavideo.ui.catalog.CatalogContent
+import dev.pandavideo.ui.catalog.collectCatalogPageState
 import dev.pandavideo.ui.catalog.HomeCategories
 import dev.pandavideo.ui.catalog.BrowseFilterPanel
 import dev.pandavideo.ui.catalog.homeHistoryFor
 import io.ktor.util.date.GMTDate
 import dev.pandavideo.ui.common.Accent
+import dev.pandavideo.ui.common.ChoiceRow
 import dev.pandavideo.ui.common.DarkColors
 import dev.pandavideo.ui.common.LightColors
 import dev.pandavideo.ui.common.LocalDarkTheme
@@ -69,7 +71,7 @@ import dev.pandavideo.ui.search.SearchPage
 /** Bottom navigation destinations in display order; ids match the NavHost routes. */
 internal val BottomTabs: List<Pair<String, String>> = listOf(
     "hot" to "最近热播",
-    "discover" to "发现",
+    "discover" to "精选",
     "browse" to "分类",
     "profile" to "我的",
 )
@@ -219,6 +221,7 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
         )
     }
     var query by rememberSaveable { mutableStateOf("") }
+    var searchType by rememberSaveable { mutableStateOf("all") }
     var showingSearch by rememberSaveable { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     fun submitSearch() {
@@ -226,10 +229,11 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
         query = query.trim()
         focus.clearFocus()
         showingSearch = true
-        model.search(query, "all")
+        if (dev.pandavideo.data.repository.BilibiliSource.reference(query) != null) searchType = "bilibili"
+        model.search(query, searchType)
     }
     fun openSearch() {
-        query = ""; showingSearch = false; model.clearSearch()
+        query = ""; searchType = "all"; showingSearch = false; model.clearSearch()
         navigation.navigate("search") { launchSingleTop = true }
     }
     fun openActor(actor: ActorRef) {
@@ -286,7 +290,7 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
         }?.let { prompt ->
             RetryDialog(prompt.title, prompt.message,
                 retry = { model.retryPrompts.retry(prompt.id) },
-                dismiss = { model.retryPrompts.dismiss(prompt.id) })
+                dismiss = { model.retryPrompts.dismiss(prompt.id) }, confirmLabel = prompt.confirmLabel)
         }
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
@@ -330,23 +334,30 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
                         CompositionLocalProvider(LocalNavAnimatedVisibilityScope provides this) {
                         run {
                             var selected by rememberSaveable { mutableStateOf(model.kind) }
-                            LaunchedEffect(selected) {
-                                if (model.kind != selected || model.discoverCountry != "all")
-                                    model.loadDiscover(selected, country = "all")
+                            var country by rememberSaveable { mutableStateOf(model.discoverCountry) }
+                            LaunchedEffect(selected, country) {
+                                if (model.kind != selected || model.discoverCountry != country)
+                                    model.loadDiscover(selected, country = country)
                             }
                             Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                                 SearchEntry(::openSearch)
                                 HomeCategories(selected) {
-                                    selected = it; model.loadDiscover(it, country = "all")
+                                    selected = it; model.loadDiscover(it, country = country)
+                                }
+                                ChoiceRow(BrowseCountryOptions, country, tab = true) {
+                                    country = it; model.loadDiscover(selected, country = it)
                                 }
                                 TopTabPager(HomeCategoryOptions.indexOfFirst { it.first == selected }, HomeCategoryOptions.size, onSelect = { index ->
                                         selected = HomeCategoryOptions[index].first
-                                        model.loadDiscover(selected, country = "all")
+                                        model.loadDiscover(selected, country = country)
                                     }) { index ->
                                     val type = HomeCategoryOptions[index].first
-                                    val page by remember(model, type, selected) { model.discoverPage(type, "all") }.collectAsState()
-                                    CatalogContent(page, model, { model.loadDiscover(type, country = "all", refresh = true) },
-                                        { model.loadDiscover(type, true, "all") },
+                                    val page by (if (type == selected) model.discover
+                                        else remember(model, type, selected, country) {
+                                            model.discoverPage(type, country)
+                                        }).collectCatalogPageState()
+                                    CatalogContent(page, model, { model.loadDiscover(type, country = country, refresh = true) },
+                                        { model.loadDiscover(type, true, country) },
                                         { item -> model.match(item, page.items) { navigation.navigate("player") } },
                                         home = true, active = type == selected,
                                         recent = homeHistoryFor(themeMode.tabOrder, "discover", history, index),
@@ -362,6 +373,12 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
                         CompositionLocalProvider(LocalNavAnimatedVisibilityScope provides this) {
                             SearchPage(
                                 model = model, query = query, showingResults = showingSearch,
+                                sourceType = searchType, onSourceChange = {
+                                    searchType = it
+                                    model.clearSearch()
+                                    showingSearch = false
+                                    if (query.isNotBlank()) submitSearch()
+                                },
                                 onQueryChange = {
                                     query = it
                                     showingSearch = false
@@ -426,7 +443,7 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
                                     val page by (if (pageFilters == current) model.browse
                                         else remember(model, pageFilters, current) {
                                             model.browsePage(pageFilters)
-                                        }).collectAsState()
+                                        }).collectCatalogPageState()
                                     CatalogContent(page, model, { model.loadBrowse(pageFilters, refresh = true) }, { model.loadBrowse(pageFilters, true) },
                                         { item -> model.match(item, page.items) { navigation.navigate("player") } },
                                         active = pageFilters == current,
@@ -452,10 +469,10 @@ private fun PandaVideoContent(platform: PlatformServices, model: AppState) {
                                     model.loadHot(selected)
                                 }) { index ->
                                 val type = HotTypeOptions[index].first
-                                val page by remember(model, type, selected) { model.hotPage(type) }.collectAsState()
+                                val page by remember(model, type, selected) { model.hotPage(type) }.collectCatalogPageState()
                                 CatalogContent(page, model, { model.loadHot(type, refresh = true) }, { model.loadHot(type, more = true) },
                                     { item -> model.match(item, page.items) { navigation.navigate("player") } },
-                                    showHeading = false, active = type == selected,
+                                    showHeading = false, active = type == selected, showLoadedCount = false,
                                     recent = homeHistoryFor(themeMode.tabOrder, "hot", history, index),
                                     onResume = ::resumeHome)
                             }

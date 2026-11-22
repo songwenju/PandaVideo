@@ -15,4 +15,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "PandaVideo"
-include(":app", ":shared", ":desktop")
+include(":app", ":shared", ":desktop", ":tv")

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -71,20 +72,24 @@ internal fun MiniPlayerBar(model: AppState, onOpen: () -> Unit) {
                 .clip(MaterialTheme.shapes.small)
                 .clickable(role = Role.Button, onClick = onOpen)
                 .padding(start = 12.dp, end = 4.dp)
-                .height(54.dp),
+                // Two text lines must also fit when the system font scale is enlarged.
+                .heightIn(min = 54.dp)
+                .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Poster(cover, title, Modifier.width(38.dp).height(50.dp))
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    title, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    title, fontSize = 13.sp, lineHeight = 17.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 if (!episode.isNullOrBlank() || playback.audioOnly) Text(
                     if (playback.audioOnly) listOfNotNull("音频模式", episode?.takeIf { it.isNotBlank() }).joinToString(" · ")
                     else episode.orEmpty(),
-                    fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    fontSize = 11.sp, lineHeight = 15.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
                 )

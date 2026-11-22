@@ -21,7 +21,10 @@ import androidx.compose.ui.semantics.SemanticsOwner
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.text.TextLayoutResult
 import dev.pandavideo.core.model.Episode
+import dev.pandavideo.core.model.LineProbe
 import dev.pandavideo.core.model.PlaybackInfo
 import dev.pandavideo.core.player.PlaybackState
 import dev.pandavideo.ui.player.FullscreenEpisodeDrawer
@@ -53,12 +56,14 @@ val context = object : PlatformContext by PlatformContext.Empty() {
             coroutineContext = coroutineContext, platformContext = context)
         val bitmap = ImageBitmap(844, 390)
         val canvas = Canvas(bitmap)
-        val episodes = (1..2).flatMap { line ->
-            (1..100).map { Episode("$line-$it", "$it", line) }
+        val episodes = (1..4).flatMap { line ->
+            (1..100).map { Episode("$line-$it", "$it", line, "线路 $line") }
         }
         val visible = mutableStateOf(true)
         val state = mutableStateOf(PlaybackState(info = PlaybackInfo(
-            "固定剧集", "", "hls", episodes, "1-75", "https://fixture.test")))
+            "固定剧集", "", "hls", episodes, "1-75", "https://fixture.test",
+            lineProbes = mapOf(1 to LineProbe(300, true), 2 to LineProbe(10, true),
+                3 to LineProbe(available = false), 4 to LineProbe()))))
         var requestedLine: Int? = null
         var requestedEpisode: Episode? = null
         var frame = 0L
@@ -79,7 +84,11 @@ val context = object : PlatformContext by PlatformContext.Empty() {
             it.config.getOrNull(SemanticsProperties.Text)?.any { text -> text.text == value } == true
         }
         fun click(node: SemanticsNode) {
-            assertTrue(assertNotNull(node.config.getOrNull(SemanticsActions.OnClick)?.action).invoke())
+            val clickable = nodes().filter {
+                it.config.getOrNull(SemanticsActions.OnClick) != null &&
+                    it.boundsInRoot.contains(node.boundsInRoot.center)
+            }.minByOrNull { it.boundsInRoot.width * it.boundsInRoot.height }
+            assertTrue(assertNotNull(clickable?.config?.getOrNull(SemanticsActions.OnClick)?.action).invoke())
             render()
         }
         try {
@@ -94,6 +103,13 @@ val context = object : PlatformContext by PlatformContext.Empty() {
                 }
             }
             render()
+            assertTrue(assertNotNull(text("线路 2")).boundsInRoot.left <
+                assertNotNull(text("线路 1")).boundsInRoot.left, "Fastest route must render first")
+            assertFalse(text("线路 3") != null, "Confirmed failures must not render")
+            assertNotNull(text("线路 4"), "Uncertain routes remain selectable")
+            assertNotNull(text("10ms"), "Fullscreen must show the same measured latency as details")
+            assertNotNull(text("300ms"))
+            assertNotNull(text("待测速"))
             val selected = assertNotNull(text("75"))
             assertTrue(selected.config.getOrNull(SemanticsProperties.Selected) == true)
             assertTrue(selected.boundsInRoot.top >= 0 && selected.boundsInRoot.bottom <= 390)
@@ -182,5 +198,61 @@ val context = object : PlatformContext by PlatformContext.Empty() {
                 "A quality-style episode name must span two grid cells instead of being truncated " +
                     "(long=${longCell.boundsInRoot.width}, short=${shortCell.boundsInRoot.width})")
         } finally { scene.close() }
+    }
+
+    @Test fun narrowLandscapeAndLargeFontsShowCompleteEpisodeLabelsAndSourceNames() = runTest {
+        for (label in listOf("HD中字", "第十二集：漫长的旅途与重新启程（高清完整版）")) {
+            val owners = mutableListOf<SemanticsOwner>()
+            val context = object : PlatformContext by PlatformContext.Empty() {
+                override val semanticsOwnerListener = object : PlatformContext.SemanticsOwnerListener {
+                    override fun onSemanticsOwnerAppended(semanticsOwner: SemanticsOwner) { owners += semanticsOwner }
+                    override fun onSemanticsOwnerRemoved(semanticsOwner: SemanticsOwner) { owners -= semanticsOwner }
+                    override fun onSemanticsChange(semanticsOwner: SemanticsOwner) = Unit
+                    override fun onLayoutChange(semanticsOwner: SemanticsOwner, semanticsNodeId: Int) = Unit
+                }
+            }
+            val size = IntSize(640, 320)
+            val scene = CanvasLayersComposeScene(size = size, density = Density(1f, 1.5f),
+                coroutineContext = coroutineContext, platformContext = context)
+            val canvas = Canvas(ImageBitmap(size.width, size.height))
+            var frame = 0L
+            fun nodes(): List<SemanticsNode> {
+                fun descendants(node: SemanticsNode): List<SemanticsNode> =
+                    listOf(node) + node.children.flatMap(::descendants)
+                return owners.flatMap { descendants(it.rootSemanticsNode) }
+            }
+            fun text(value: String) = nodes().firstOrNull {
+                it.config.getOrNull(SemanticsProperties.Text)?.any { text -> text.text == value } == true
+            }
+            try {
+                scene.setContent {
+                    MaterialTheme {
+                        FullscreenEpisodeDrawer(true, PlaybackState(info = PlaybackInfo(
+                            "测试", "", "hls", listOf(Episode("a", label, 1)), "a", "https://fixture.test",
+                            source = "Pomo · 示例来源", lineProbes = mapOf(1 to LineProbe(42, true)))),
+                            onDismiss = {}, onLineSelected = {}, onEpisodeSelected = {})
+                    }
+                }
+                repeat(20) {
+                    Snapshot.sendApplyNotifications()
+                    runCurrent()
+                    scene.render(canvas, frame++ * 16_000_000L)
+                    runCurrent()
+                }
+                assertNotNull(text("示例来源 · 线路 1"), "Fallback source identity must match details")
+                assertNotNull(text("42ms"))
+                val episode = assertNotNull(text(label))
+                val layouts = mutableListOf<TextLayoutResult>()
+                assertTrue(assertNotNull(episode.config.getOrNull(SemanticsActions.GetTextLayoutResult)?.action).invoke(layouts))
+                assertFalse(layouts.single().hasVisualOverflow,
+                    "Episode label '$label' overflows: size=${layouts.single().size}, " +
+                        "lines=${layouts.single().lineCount}, width=${layouts.single().didOverflowWidth}, " +
+                        "height=${layouts.single().didOverflowHeight}, " +
+                        "fontScale=${layouts.single().layoutInput.density.fontScale}, " +
+                        "constraints=${layouts.single().layoutInput.constraints}")
+                assertTrue(episode.boundsInRoot.top >= 0 && episode.boundsInRoot.bottom <= size.height)
+                if (label.length > 5) assertTrue(layouts.single().lineCount > 1, "Long labels must wrap")
+            } finally { scene.close() }
+        }
     }
 }

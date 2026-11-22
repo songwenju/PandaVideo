@@ -2,6 +2,9 @@ package dev.pandavideo
 
 import dev.pandavideo.core.model.PlayerRequest
 import dev.pandavideo.core.model.CatalogItem
+import dev.pandavideo.core.model.ActorRef
+import dev.pandavideo.core.model.actorPlaybackWorks
+import dev.pandavideo.core.model.withCatalogCredits
 import dev.pandavideo.core.platform.DesktopPlatform
 import dev.pandavideo.data.repository.*
 import io.ktor.client.request.*
@@ -17,6 +20,45 @@ import kotlin.time.TimeSource
 
 /** Opt-in network smoke check; normal unit tests never depend on public source availability. */
 class LiveSourceProbeTest {
+    @Test fun selectedCatalogAndSearchIncludeRealJianpianSources() = runBlocking {
+        assumeTrue(System.getenv("PANDAVIDEO_LIVE_SOURCES") == "1")
+        val repo = ContentRepository(DesktopPlatform().httpClient())
+        try {
+            withTimeout(120_000) {
+                val first = repo.list("movie")
+                val source = first.items.filter { JianpianSource.owns(it.url) }
+                assertTrue(source.isNotEmpty())
+                assertTrue(first.items.all { (it.rating ?: 0.0) >= 8.0 })
+                assertTrue(first.nextStart() == 20 && first.hasMore)
+                val next = repo.list("movie", first.nextStart())
+                assertTrue(next.items.any { JianpianSource.owns(it.url) && it.url !in source.map { row -> row.url } })
+                val search = repo.search("肖申克的救赎", "movie")
+                assertTrue(search.results.any { JianpianSource.owns(it.detailUrl) })
+                println("HOME_SEARCH_SOURCE_PROBE first_rows=${first.items.size} jianpian_rows=${source.size} next_rows=${next.items.size} score_floor=true search_jianpian=true")
+            }
+        } finally { repo.close() }
+    }
+
+    @Test fun aamirFilmographyIncludesKnownHomeFilmsAndCountsCatalogEditionsOnce() = runBlocking {
+        assumeTrue(System.getenv("PANDAVIDEO_LIVE_SOURCES") == "1")
+        val file = java.io.File.createTempFile("pandavideo-live-actor-", ".db")
+        val repo = ContentRepository(DesktopPlatform().httpClient(),
+            CatalogDatabase(file.absolutePath, initializeFromBundle = true))
+        try {
+            withTimeout(30_000) {
+                val actor = repo.searchActors("阿米尔·汗").actors.single { it.name == "阿米尔·汗" }
+                assertTrue(actor.id == "iqiyi:214466505")
+                val snapshot = repo.actorWorks(actor).withCatalogCredits(actor, repo.actorCatalogSnapshot())
+                val displayed = actorPlaybackWorks(snapshot.works, emptySet())
+                assertTrue(displayed.any { it.title == "三傻大闹宝莱坞" })
+                val dad = displayed.filter { it.title == "摔跤吧！爸爸" }
+                assertTrue(dad.size == 1 && dad.single().year == "2016")
+                assertTrue(displayed.size == displayed.map { it.catalog().url }.distinct().size)
+                println("ACTOR_CATALOG_PROBE actor=阿米尔·汗 displayed=${displayed.size} home_films=true duplicate_editions=false corrected_year=2016")
+            }
+        } finally { repo.close(); file.delete() }
+    }
+
     @Test fun journeyToWestSearchMergesLiveMirrorsAndLoadsVerifiedRatings() = runBlocking {
         assumeTrue(System.getenv("PANDAVIDEO_LIVE_SOURCES") == "1")
         val file = java.io.File.createTempFile("pandavideo-live-search-", ".db")

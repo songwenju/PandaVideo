@@ -2,12 +2,15 @@ package dev.pandavideo.core.platform
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import dev.pandavideo.core.player.PlayerController
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flowOf
+
+/** Effective download connection; unknown paths must not authorize media transfers. */
+enum class DownloadNetwork { Unknown, Offline, Wifi, Other }
 
 /** Small string key-value store backed by platform preferences. */
 interface KeyValueStorage {
@@ -17,6 +20,8 @@ interface KeyValueStorage {
 }
 
 interface PlatformServices {
+    /** Observes the effective network and releases native callbacks when collection ends. */
+    fun downloadNetwork(): Flow<DownloadNetwork> = flowOf(DownloadNetwork.Wifi)
     /** Persistent official Douban browser session for catalog requests. */
     fun doubanSession(): DoubanSession = UnsupportedDoubanSession
     /** Native offline-media adapter, retained across screen changes. */
@@ -36,19 +41,9 @@ interface PlatformServices {
      * Finds UPnP renderer descriptor URLs within a bounded search window.
      *
      * @param host Optional television IPv4 address for unicast discovery.
-     * @return Distinct device description URLs advertised by SSDP.
+     * @return Distinct device description URLs advertised by SSDP or Bonjour.
      */
     suspend fun discoverDlnaLocations(host: String? = null): List<String> = emptyList()
-    /** Whether this host offers a native video route picker in addition to DLNA. */
-    val nativeCastingSupported: Boolean get() = false
-    /**
-     * Renders the native video route picker.
-     *
-     * @param modifier Layout and sizing for the picker.
-     * @param tint Icon color matching the surrounding controls.
-     */
-    @Composable
-    fun CastingButton(modifier: Modifier, tint: Color = Color.White) {}
     /** Keeps playback controls visible for hosts primarily operated with a mouse. */
     val persistentPlayerControls: Boolean get() = false
     /** Absolute persistent SQLite path, or null for hosts without local catalog storage. */

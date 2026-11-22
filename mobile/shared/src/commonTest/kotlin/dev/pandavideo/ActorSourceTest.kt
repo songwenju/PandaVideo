@@ -11,6 +11,49 @@ import kotlin.test.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ActorSourceTest {
+    @Test fun catalogCreditsRepairPremiereYearsAndIncludeKnownFilmsWithoutDuplicatingDubs() {
+        val actor = ActorRef("iqiyi:214466505", "阿米尔·汗")
+        val dad = CatalogItem("摔跤吧！爸爸", "https://movie.douban.com/subject/26387939/", "2016",
+            cover = "https://images.example/dad.jpg", casts = listOf(actor.name))
+        val idiots = CatalogItem("三傻大闹宝莱坞", "https://movie.douban.com/subject/3793023/", "2009",
+            casts = listOf(actor.name))
+        val originals = ActorFilmography(listOf(
+            ActorWork("iqiyi:1", dad.title, "movie", "2017"),
+            ActorWork("iqiyi:2", "${dad.title}（普通话）", "movie", "2017"),
+        ))
+        val merged = originals.withCatalogCredits(actor, listOf(dad.copy(year = ""), dad, idiots, idiots))
+        assertEquals(2, merged.works.size)
+        val fixed = merged.works.first { it.title == dad.title }
+        assertEquals("2016", fixed.year)
+        assertEquals("iqiyi:1", fixed.id)
+        assertEquals(dad.url, fixed.catalog().url)
+        assertEquals(dad.cover, fixed.cover)
+        assertEquals(merged, merged.withCatalogCredits(actor, listOf(dad, idiots)))
+        assertEquals(2, actorPlaybackWorks(merged.works, emptySet()).size)
+        assertEquals(1, actorPlaybackWorks(merged.works, setOf(dad.url)).size)
+    }
+
+    @Test fun catalogCreditsRequireExactCastTokensAndNeverMergeAmbiguousRemakes() {
+        val actor = ActorRef("iqiyi:123", "演员")
+        val older = CatalogItem("同名", "https://movie.douban.com/subject/1/", "1980", casts = listOf("演员"))
+        val newer = older.copy(url = "https://movie.douban.com/subject/2/", year = "2020")
+        val unknown = ActorWork("iqiyi:7", "同名", "movie")
+        val snapshot = ActorFilmography(listOf(unknown))
+        val merged = snapshot.withCatalogCredits(actor, listOf(older, newer,
+            older.copy(title = "无出演", url = "https://movie.douban.com/subject/3/", casts = listOf("演员客串")),
+            older.copy(title = "导演作品", url = "https://movie.douban.com/subject/4/", casts = emptyList())))
+        assertEquals(3, merged.works.size)
+        assertEquals(unknown, merged.works.first { it.id == unknown.id })
+        assertEquals(setOf("1980", "2020"), actorPlaybackWorks(merged.works, emptySet()).map { it.year }.toSet())
+    }
+
+    @Test fun translatedDubbedCreditsCountAsOneDisplayedCatalogWork() {
+        val original = ActorWork("iqiyi:1", "影片", "movie", "2020", subjectId = "123", verifiedCatalog = true)
+        assertEquals(listOf(original), actorPlaybackWorks(listOf(original, original.copy(id = "iqiyi:2")), emptySet()))
+        assertEquals(actorCreditTitle("摔跤吧！爸爸"), actorCreditTitle("摔跤吧！爸爸（普通话）"))
+        assertNotEquals(actorCreditTitle("作品1"), actorCreditTitle("作品2"))
+    }
+
     @Test fun playingCreditSupplementsPartialFilmographyWithoutMergingRemakesOrSubstringNames() {
         val actor = ActorRef("iqiyi:214761605", "倪大红")
         val info = PlaybackInfo("都挺好", "https://media/episode.m3u8", "hls",

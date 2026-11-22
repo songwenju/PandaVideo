@@ -93,16 +93,19 @@ internal object SearchPresentation {
                 genre = selected.genre.ifBlank { rows.firstOrNull { it.genre.isNotBlank() }?.genre.orEmpty() },
                 cast = selected.cast.ifBlank { rows.firstOrNull { it.cast.isNotBlank() }?.cast.orEmpty() },
             )
-        }.sortedWith(compareByDescending<SearchItem> { rating(it.rating) ?: -1.0 }
-            .thenBy {
-                val title = title(it)
-                when {
-                    title == target -> 0
-                    title.startsWith(target) -> 1
-                    target in title -> 2
-                    else -> 3
-                }
-            }.thenByDescending { year(it).toIntOrNull() ?: 0 })
+        // Relevance owns the first position, even while optional ratings arrive later.
+        // A high-scoring sequel must never displace an unrated exact title.
+        }.sortedWith(compareBy<SearchItem> {
+            val title = title(it)
+            when {
+                target.isBlank() -> 0
+                title == target -> 0
+                title.startsWith(target) -> 1
+                target in title -> 2
+                else -> 3
+            }
+            }.thenByDescending { rating(it.rating) ?: -1.0 }
+            .thenByDescending { year(it).toIntOrNull() ?: 0 })
         return result.copy(results = items,
             sources = result.sources.map { it.copy(count = items.count { item -> item.source == it.name }) })
     }

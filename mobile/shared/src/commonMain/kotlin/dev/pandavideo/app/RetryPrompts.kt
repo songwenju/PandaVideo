@@ -35,6 +35,7 @@ internal data class RetryPrompt(
     val destination: String?,
     val available: () -> Boolean,
     val action: () -> Unit,
+    val confirmLabel: String = "重试",
 )
 
 /** Keeps one prompt per operation and lets the host display only one dialog at a time. */
@@ -45,11 +46,11 @@ internal class RetryPrompts {
 
     fun offer(
         key: String, title: String, message: String, destination: String? = null,
-        available: () -> Boolean = { true }, action: () -> Unit,
+        available: () -> Boolean = { true }, confirmLabel: String = "重试", action: () -> Unit,
     ) {
         discardUnavailable()
         if (pending.value.any { it.key == key }) return
-        mutable.value += RetryPrompt(++nextId, key, title, message, destination, available, action)
+        mutable.value += RetryPrompt(++nextId, key, title, message, destination, available, action, confirmLabel)
     }
 
     /** Starting a replacement request invalidates every prompt belonging to its old attempt. */

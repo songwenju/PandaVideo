@@ -408,7 +408,7 @@ private fun DownloadPosterCard(
         DownloadStatus.Completed -> "已缓存"
         DownloadStatus.Queued -> "等待缓存"
         DownloadStatus.Downloading -> entry.progress?.let { "缓存中 ${(it.coerceIn(0f, 1f) * 100).toInt()}%" } ?: "缓存中"
-        DownloadStatus.Paused -> "已暂停"
+        DownloadStatus.Paused -> entry.error.ifBlank { "已暂停" }
         DownloadStatus.Failed -> "缓存失败"
     }
     Column(Modifier.fillMaxWidth()) {

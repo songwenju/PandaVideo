@@ -1,0 +1,12 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape>
+            <!-- Match the catalog backdrop without a separate loading Activity. -->
+            <gradient android:angle="270" android:startColor="#202840"
+                android:centerColor="#151726" android:endColor="#10131A" />
+        </shape>
+    </item>
+    <item android:drawable="@drawable/ic_tv_startup_logo" android:gravity="center" />
+    <item android:drawable="@drawable/launch_slogan" android:gravity="bottom|center_horizontal"
+        android:width="200dp" android:height="80dp" android:bottom="24dp" />
+</layer-list>

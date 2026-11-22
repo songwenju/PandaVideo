@@ -23,6 +23,61 @@ import kotlin.test.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PlaybackTest {
+    @Test fun cachedPlaybackStartsBeforeDiscoveryAndAppendPreservesPausedManualLine() = runTest {
+        val discovered = CompletableDeferred<PlaybackInfo>()
+        val requests = mutableListOf<PlayerRequest>()
+        val player = FakePlayer()
+        val initial = info().copy(episodes = listOf(episodes.first()))
+        val session = PlaybackSession({ requests += it; initial }, player, backgroundScope,
+            supplement = { discovered.await() })
+        session.load(PlayerRequest(page = initial.pageUrl))
+        runCurrent()
+        assertEquals(1, player.loads.size)
+        assertFalse(requests.single().preferFastestLine)
+        assertTrue(requests.single().reuseSourceInfo)
+        session.selectLine(1)
+        player.pause()
+        runCurrent()
+        val before = player.state.value.copy(position = 45_000)
+        player.state.value = before
+        discovered.complete(initial.copy(episodes = episodes))
+        runCurrent()
+        assertEquals(episodes, session.state.value.info?.episodes)
+        assertEquals("a1", session.state.value.info?.selected)
+        assertEquals(1, player.loads.size)
+        assertEquals(before, player.state.value)
+        session.selectLine(2)
+        runCurrent()
+        assertFalse(requests.last().allowLineFallback)
+        assertEquals(45_000L, player.loads.last().startPosition)
+        session.close()
+    }
+
+    @Test fun staleDiscoveryCannotPublishAfterEpisodeChangeOrClose() = runTest {
+        val gates = mutableListOf<CompletableDeferred<PlaybackInfo>>()
+        val cancelled = mutableListOf<String>()
+        val player = FakePlayer()
+        val session = PlaybackSession({ info(it.episode ?: "a1") }, player, backgroundScope,
+            supplement = { current ->
+                val gate = CompletableDeferred<PlaybackInfo>()
+                gates += gate
+                try { gate.await() }
+                finally { cancelled += current.selected }
+            })
+        session.load(PlayerRequest(page = "https://page"))
+        runCurrent()
+        session.select(episodes[2])
+        runCurrent()
+        assertTrue("a1" in cancelled)
+        gates.first().complete(info().copy(episodes = listOf(Episode("wrong", "wrong", 99))))
+        runCurrent()
+        assertEquals("a2", session.state.value.info?.selected)
+        assertEquals(episodes, session.state.value.info?.episodes)
+        session.close()
+        runCurrent()
+        assertTrue("a2" in cancelled)
+    }
+
     private val episodes = listOf(Episode("a1", "1", 1), Episode("b1", "1", 2), Episode("a2", "2", 1), Episode("b2", "2", 2))
     private fun info(selected: String = "a1") = PlaybackInfo("测试", "https://media/video.mp4", "video", episodes, selected, "https://page")
     private class FakePlayer(audioSupported: Boolean = true) : PlayerController {
@@ -47,6 +102,262 @@ class PlaybackTest {
         assertNull(nextEpisode(info("a2")))
         assertNull(nextEpisode(info("missing")))
     }
+    @Test fun segmentedFailureRetainsProgramIdentityAndRecoversCompleteFallbackAtSamePosition() = runTest {
+        val requests = mutableListOf<PlayerRequest>()
+        val player = FakePlayer()
+        val segments = listOf(dev.pandavideo.core.model.MediaSegment("https://media/one.mp4", 120_000),
+            dev.pandavideo.core.model.MediaSegment("https://media/two.mp4", 120_000))
+        val program = PlaybackInfo("Program", "https://media/full.m3u8", "hls",
+            listOf(Episode("pid", "正片", 0)), "pid", "https://page", segments = segments)
+        val session = PlaybackSession({
+            requests += it
+            if (it.rejectedMedia.isEmpty()) program else program.copy(segments = emptyList())
+        }, player, backgroundScope)
+        session.load(PlayerRequest(page = program.pageUrl))
+        runCurrent()
+        assertEquals(segments, player.loads.last().segments)
+        player.state.value = player.state.value.copy(position = 125_000, duration = 240_000,
+            phase = PlayerPhase.Error)
+        runCurrent()
+        val recovered = requests.last()
+        assertEquals("pid", recovered.episode)
+        assertTrue(recovered.rejectedEpisodes.isEmpty())
+        assertEquals(segments.map { it.url }.toSet(), recovered.rejectedMedia)
+        assertTrue(player.loads.last().segments.isEmpty())
+        assertEquals(program.url, player.loads.last().url)
+        assertEquals(125_000L, player.loads.last().startPosition)
+        player.state.value = player.state.value.copy(duration = 240_000)
+        runCurrent()
+        assertTrue(125_000L in player.seeks)
+        session.close()
+    }
+    @Test fun episodeNavigationReusesCurrentSourceButRetryResolvesFreshMedia() = runTest {
+        val requests = mutableListOf<PlayerRequest>()
+        val session = PlaybackSession({
+            requests += it
+            info(it.episode ?: "a1")
+        }, FakePlayer(), backgroundScope)
+        session.load(PlayerRequest(page = "https://page")); runCurrent()
+        assertTrue(requests.last().reuseSourceInfo, "Next episode preload shares source metadata")
+        assertFalse(requests.last().preferFastestLine)
+        session.select(episodes.first { it.path == "a2" }); runCurrent()
+        session.select(episodes.first { it.path == "a1" }); runCurrent()
+        val selected = requests.last { it.episode == "a1" }
+        assertTrue(selected.reuseSourceInfo)
+        assertFalse(selected.preferFastestLine)
+        assertTrue(selected.allowLineFallback)
+        session.retry(); runCurrent()
+        assertFalse(requests.last { it.episode == "a1" }.reuseSourceInfo)
+        session.close()
+    }
+    @Test fun automaticEntryPrefersCacheButMeasurementsNeverInterruptHealthyPlayback() = runTest {
+        val player = FakePlayer()
+        val requests = mutableListOf<PlayerRequest>()
+        val session = PlaybackSession({
+            requests += it
+            info(it.episode ?: "a1")
+        }, player, backgroundScope)
+        session.load(PlayerRequest(page = "https://page")); runCurrent()
+        assertTrue(requests.first().preferFastestLine)
+        session.updateLineProbes(session.state.value.info!!,
+            mapOf(2 to dev.pandavideo.core.model.LineProbe(1, true)))
+        runCurrent()
+        assertEquals(1, player.loads.size)
+        assertEquals("a1", session.state.value.info?.selected)
+        session.selectLine(1) // Even tapping the active line expresses a route preference.
+        session.refresh(); runCurrent()
+        assertFalse(requests.last { it.episode == "a1" }.allowLineFallback)
+        session.select(episodes.first { it.path == "a2" }); runCurrent()
+        assertFalse(requests.last().preferFastestLine)
+        assertFalse(requests.last().allowLineFallback)
+        session.close()
+    }
+    @Test fun explicitEntryKeepsUserLineAheadOfFastestThroughRetryAndNextEpisode() = runTest {
+        val requests = mutableListOf<PlayerRequest>()
+        val variants = episodes + Episode("b2", "2", 2)
+        val player = FakePlayer()
+        val session = PlaybackSession({
+            requests += it
+            info(it.episode ?: "a1").copy(episodes = variants)
+        }, player, backgroundScope)
+        session.load(PlayerRequest(page = "https://page", episode = "b1", allowLineFallback = false))
+        runCurrent()
+        assertFalse(requests.first().preferFastestLine)
+        assertFalse(requests.first().allowLineFallback)
+        session.updateLineProbes(session.state.value.info!!,
+            mapOf(1 to dev.pandavideo.core.model.LineProbe(1, true),
+                2 to dev.pandavideo.core.model.LineProbe(500, true)))
+        session.retry()
+        runCurrent()
+        session.select(variants.first { it.path == "b2" })
+        runCurrent()
+        assertEquals("b2", session.state.value.info?.selected)
+        assertTrue(requests.all { !it.preferFastestLine && !it.allowLineFallback })
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Error, error = "线路失败")
+        runCurrent()
+        assertEquals("b2", session.state.value.info?.selected)
+        assertEquals("线路失败", session.state.value.error)
+        session.close()
+    }
+    @Test fun nativeFailureChoosesFastestMeasuredCorrespondingEpisodeAndKeepsPause() = runTest {
+        val variants = episodes + Episode("c2", "2", 3) + Episode("d1", "1", 4)
+        val player = FakePlayer()
+        val requests = mutableListOf<PlayerRequest>()
+        val session = PlaybackSession({
+            requests += it
+            info(it.episode ?: "a2").copy(episodes = variants, url = "https://media/${it.episode ?: "a2"}.mp4")
+        }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a2")); runCurrent()
+        session.updateLineProbes(session.state.value.info!!, mapOf(
+            2 to dev.pandavideo.core.model.LineProbe(80, true),
+            3 to dev.pandavideo.core.model.LineProbe(20, true),
+            4 to dev.pandavideo.core.model.LineProbe(1, true)))
+        player.state.value = player.state.value.copy(position = 35_000, duration = 120_000, wantsPlay = false)
+        runCurrent()
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Error)
+        runCurrent()
+        assertEquals("c2", requests.last().episode, "Never pick an unrelated first episode even if faster")
+        assertFalse(player.loads.last().autoplay)
+        player.state.value = player.state.value.copy(duration = 120_000); runCurrent()
+        assertEquals(35_000L, player.seeks.last())
+        session.close()
+    }
+    @Test fun newAdvertisingReportInvalidatesNextEpisodePreloadWithoutReloadingCurrentMedia() = runTest {
+        val player = FakePlayer()
+        var marked = false
+        var successorResolutions = 0
+        val session = PlaybackSession({
+            if (it.episode == "a2") successorResolutions++
+            info(if (marked && it.episode == "a2") "b2" else it.episode ?: "a1")
+        }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a1")); runCurrent()
+        assertEquals(1, successorResolutions, "The successor was already resolved speculatively")
+        marked = true
+        session.invalidateLinePreload()
+        runCurrent()
+        assertEquals(1, player.loads.size, "Changing a report must not interrupt healthy playback")
+        session.select(episodes.first { it.path == "a2" }); runCurrent()
+        assertEquals(2, successorResolutions, "Do not consume a route chosen before the report")
+        assertEquals("b2", session.state.value.info?.selected)
+        session.close()
+    }
+    @Test fun recoveryPrefersUnmarkedMeasuredLineAndKeepsCurrentEpisodeAndProgress() = runTest {
+        val player = FakePlayer()
+        val variants = episodes + Episode("c2", "2", 3) + Episode("d1", "1", 4)
+        val session = PlaybackSession({
+            info(it.episode ?: "a2").copy(episodes = variants,
+                url = "https://media/${it.episode ?: "a2"}.mp4")
+        }, player, backgroundScope, lineHasAds = { _, episode -> episode.line == 2 })
+        session.load(PlayerRequest(episode = "a2")); runCurrent()
+        session.updateLineProbes(session.state.value.info!!, mapOf(
+            2 to dev.pandavideo.core.model.LineProbe(1, true),
+            3 to dev.pandavideo.core.model.LineProbe(80, true),
+            4 to dev.pandavideo.core.model.LineProbe(0, true)))
+        player.state.value = player.state.value.copy(position = 35_000, duration = 120_000, wantsPlay = false)
+        runCurrent()
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Error); runCurrent()
+        assertEquals("c2", session.state.value.info?.selected)
+        assertFalse(player.loads.last().autoplay)
+        player.state.value = player.state.value.copy(duration = 120_000); runCurrent()
+        assertEquals(35_000L, player.seeks.last())
+        session.close()
+    }
+    @Test fun continuousBufferingSwitchesOnceWhileProgressUpdatesDoNotRestartDeadline() = runTest {
+        val player = FakePlayer()
+        val session = PlaybackSession({
+            info(it.episode ?: "a2").copy(url = "https://media/${it.episode ?: "a2"}.mp4")
+        }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a2")); runCurrent()
+        session.updateLineProbes(session.state.value.info!!,
+            mapOf(2 to dev.pandavideo.core.model.LineProbe(20, true)))
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Buffering, position = 35_000, duration = 120_000)
+        runCurrent()
+        advanceTimeBy(10_000); runCurrent()
+        player.state.value = player.state.value.copy(duration = 121_000); runCurrent()
+        advanceTimeBy(4_999); runCurrent()
+        assertEquals(1, player.loads.size)
+        advanceTimeBy(1); runCurrent()
+        assertEquals("b2", session.state.value.info?.selected)
+        assertEquals(2, player.loads.size)
+        player.state.value = player.state.value.copy(duration = 120_000); runCurrent()
+        assertEquals(35_000L, player.seeks.last())
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(2, player.loads.size)
+        session.close()
+    }
+    @Test fun bufferingDeadlineIsCancelledByPauseRecoveryManualChoiceAndClose() = runTest {
+        for (action in listOf("pause", "ready", "manual", "close", "episode", "hidden")) {
+            val player = FakePlayer()
+            val session = PlaybackSession({ info(it.episode ?: "a1") }, player, backgroundScope)
+            session.load(PlayerRequest(episode = "a1")); runCurrent()
+            player.state.value = player.state.value.copy(phase = PlayerPhase.Buffering); runCurrent()
+            advanceTimeBy(10_000); runCurrent()
+            when (action) {
+                "pause" -> player.pause()
+                "ready" -> player.state.value = player.state.value.copy(phase = PlayerPhase.Playing)
+                "manual" -> session.selectLine(1)
+                "close" -> session.close()
+                "episode" -> session.select(episodes.first { it.path == "a2" })
+                "hidden" -> session.setPlaybackVisible(false)
+            }
+            runCurrent()
+            val loadCount = player.loads.size
+            advanceTimeBy(20_000); runCurrent()
+            assertEquals(loadCount, player.loads.size, action)
+            session.close()
+        }
+    }
+    @Test fun manualRouteIsNotOverriddenOnErrorButNewTitleEnablesAutomaticRecovery() = runTest {
+        val player = FakePlayer()
+        val session = PlaybackSession({
+            info(it.episode ?: "a1").copy(url = "https://media/${it.rejectedMedia.size}.mp4")
+        }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a1")); runCurrent()
+        session.selectLine(2); runCurrent()
+        val count = player.loads.size
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Error); runCurrent()
+        assertEquals(count, player.loads.size)
+        assertNotNull(session.state.value.error)
+        session.load(PlayerRequest(episode = "a1")); runCurrent()
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Error); runCurrent()
+        assertEquals(count + 2, player.loads.size)
+        session.close()
+    }
+    @Test fun failedMeasuredBackupResolutionTriesRemainingRouteWithoutRepeatingIt() = runTest {
+        val variants = episodes + Episode("c2", "2", 3)
+        val player = FakePlayer()
+        val requests = mutableListOf<PlayerRequest>()
+        val session = PlaybackSession({
+            requests += it
+            if (it.episode == "b2") error("offline")
+            info(it.episode ?: "a2").copy(episodes = variants, url = "https://media/${it.episode ?: "a2"}.mp4")
+        }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a2")); runCurrent()
+        session.updateLineProbes(session.state.value.info!!, mapOf(
+            2 to dev.pandavideo.core.model.LineProbe(10, true),
+            3 to dev.pandavideo.core.model.LineProbe(20, true)))
+        player.state.value = player.state.value.copy(position = 35_000, duration = 120_000)
+        runCurrent()
+        player.state.value = player.state.value.copy(phase = PlayerPhase.Error); runCurrent()
+        assertEquals(listOf("a2", "b2", "c2"), requests.map { it.episode })
+        assertEquals("c2", session.state.value.info?.selected)
+        assertNull(session.state.value.error)
+        player.state.value = player.state.value.copy(duration = 120_000); runCurrent()
+        assertEquals(35_000L, player.seeks.last())
+        session.close()
+    }
+    @Test fun staleLineMeasurementsCannotReplaceNewEpisodeState() = runTest {
+        val player = FakePlayer()
+        val session = PlaybackSession({ info(it.episode ?: "a1") }, player, backgroundScope)
+        session.load(PlayerRequest(episode = "a1")); runCurrent()
+        val previous = assertNotNull(session.state.value.info)
+        session.select(episodes.first { it.path == "a2" }); runCurrent()
+        session.updateLineProbes(previous, mapOf(2 to dev.pandavideo.core.model.LineProbe(available = false)))
+        assertTrue(session.state.value.info!!.lineProbes.isEmpty())
+        session.updateLineProbes(session.state.value.info!!, mapOf(2 to dev.pandavideo.core.model.LineProbe(20, true)))
+        assertEquals(20L, session.state.value.info!!.lineProbes[2]?.elapsedMs)
+        session.close()
+    }
     @Test fun lineSelectionImmediatelyLoadsSameEpisodeAndPreservesPausedPosition() = runTest {
         val player = FakePlayer()
         val session = PlaybackSession({
@@ -60,7 +371,7 @@ class PlaybackTest {
         runCurrent()
         assertEquals("b2", session.state.value.info?.selected)
         assertEquals("https://media/b2.mp4", player.loads.last().url)
-        assertFalse(player.loads.last().autoplay)
+        assertTrue(player.loads.last().autoplay, "A manual line switch must resume paused playback")
         player.state.value = player.state.value.copy(duration = 120_000); runCurrent()
         assertEquals(35_000L, player.seeks.last())
         session.selectLine(2); session.selectLine(99); runCurrent()
@@ -551,11 +862,11 @@ class PlaybackTest {
         assertEquals(0L, quickSeekPosition(5_000L, 120_000L, forward = false))
         assertEquals(120_000L, quickSeekPosition(115_000L, 120_000L, forward = true))
     }
-    @Test fun fiveSecondSeekClampsToMediaBounds() {
-        assertEquals(25_000L, quickSeekPosition(20_000L, 120_000L, forward = true, distanceMs = 5_000L))
-        assertEquals(15_000L, quickSeekPosition(20_000L, 120_000L, forward = false, distanceMs = 5_000L))
-        assertEquals(0L, quickSeekPosition(2_000L, 120_000L, forward = false, distanceMs = 5_000L))
-        assertEquals(120_000L, quickSeekPosition(118_000L, 120_000L, forward = true, distanceMs = 5_000L))
+    @Test fun fullscreenTenSecondSeekClampsToMediaBounds() {
+        assertEquals(30_000L, quickSeekPosition(20_000L, 120_000L, forward = true, distanceMs = 10_000L))
+        assertEquals(10_000L, quickSeekPosition(20_000L, 120_000L, forward = false, distanceMs = 10_000L))
+        assertEquals(0L, quickSeekPosition(2_000L, 120_000L, forward = false, distanceMs = 10_000L))
+        assertEquals(120_000L, quickSeekPosition(118_000L, 120_000L, forward = true, distanceMs = 10_000L))
     }
     @Test fun horizontalDragSeekScalesWithFrameWidthAndClamps() {
         val duration = 100_000L

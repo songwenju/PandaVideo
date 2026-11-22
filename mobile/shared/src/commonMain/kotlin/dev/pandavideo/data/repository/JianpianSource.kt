@@ -1,6 +1,12 @@
 package dev.pandavideo.data.repository
 
 import dev.pandavideo.core.model.Episode
+import dev.pandavideo.core.model.CatalogItem
+import dev.pandavideo.core.model.CatalogPage
+import dev.pandavideo.core.model.BrowseFilters
+import dev.pandavideo.core.model.BrowseCountries
+import dev.pandavideo.core.model.HomeMinimumRating
+import dev.pandavideo.core.model.isTelevisionDrama
 import dev.pandavideo.core.model.SearchItem
 import dev.pandavideo.core.model.SearchResult
 import dev.pandavideo.core.model.SourceCount
@@ -66,6 +72,27 @@ internal object JianpianSource {
         return SearchResult(items, listOf(SourceCount("荐片", items.size, "可在线播放")))
     }
 
+    fun catalog(
+        body: String, kind: String, imageOrigin: String?, minimumRating: Double? = HomeMinimumRating,
+    ): List<CatalogItem> {
+        val rows = data(body) as? JsonArray ?: throw ApiError("荐片分类结果格式异常")
+        return rows.take(100).mapNotNull { entry ->
+            val row = entry as? JsonObject ?: return@mapNotNull null
+            val id = row.text("id")
+            val title = row.text("title").trim().take(160)
+            val score = row.text("score").toDoubleOrNull()?.takeIf { it in 0.1..10.0 }
+            if (!id.matches(Regex("[1-9]\\d{0,11}")) || title.isBlank() ||
+                minimumRating != null && (score == null || score < minimumRating) ||
+                Regex("解说|预告|花絮|片段").containsMatchIn(title + row.text("mask")))
+                return@mapNotNull null
+            CatalogItem(title, address(id), rating = score,
+                cover = posterUrl(row.text("path").ifBlank { row.text("tvimg") }, imageOrigin),
+                kind = kind, playbackPageUrl = address(id),
+                isSeries = if (kind == "tv" || kind == "variety") true else if (kind == "movie") false else null,
+                remark = row.text("mask").take(80))
+        }.distinctBy { it.url }.filter { kind != "tv" || it.isTelevisionDrama() }
+    }
+
     private fun posterUrl(cover: String, imageOrigin: String?): String {
         if (isWebUrl(cover)) {
             if (imageOrigin == null) return cover
@@ -79,6 +106,39 @@ internal object JianpianSource {
         }
         return if (imageOrigin != null && cover.startsWith("/") && !cover.startsWith("//"))
             imageOrigin + cover else ""
+    }
+
+    /** Adds release metadata omitted by crumb/list without changing the source identity. */
+    fun catalogMetadata(body: String, item: CatalogItem): CatalogItem {
+        val detail = data(body) as? JsonObject ?: throw ApiError("荐片详情格式异常")
+        fun names(key: String) = (detail[key] as? JsonArray).orEmpty().mapNotNull {
+            (it as? JsonObject)?.text("name") ?: (it as? JsonPrimitive)?.contentOrNull
+        }.filter(String::isNotBlank)
+        return item.copy(
+            year = detail.text("year"),
+            countries = detail.text("area").split(Regex("[、,，/\\s]+")).filter(String::isNotBlank),
+            genres = (names("types") + names("tags")).distinct(),
+            casts = names("actors"),
+        )
+    }
+
+    /** Requires explicit source metadata for every selected scope. */
+    fun matchesFilters(item: CatalogItem, filters: BrowseFilters): Boolean {
+        if (filters.type == "tv" && !item.isTelevisionDrama()) return false
+        fun region(value: String) = when (value) {
+            "中国", "大陆", "内地" -> "中国大陆"
+            "香港" -> "中国香港"
+            "台湾" -> "中国台湾"
+            else -> value
+        }
+        if (filters.country != "all" &&
+            BrowseCountries[filters.country] !in item.countries.map(::region)) return false
+        val genre = mapOf("drama" to "剧情", "comedy" to "喜剧", "action" to "动作",
+            "romance" to "爱情", "scifi" to "科幻", "mystery" to "悬疑", "finance" to "金融",
+            "nature" to "自然", "biography" to "传记", "war" to "战争")
+        if (filters.genre == "hollywood")
+            return "大片" in item.genres && (filters.country != "all" || "美国" in item.countries)
+        return filters.genre == "all" || genre[filters.genre] in item.genres
     }
 
     fun episodes(body: String, page: String): List<Pair<Episode, String>> {
@@ -96,7 +156,10 @@ internal object JianpianSource {
             // Provider aggregation can mix the 1986 series with a single animated film,
             // or the 1965 cartoon with the 2021 live-action film. Exclude explicit film
             // lines only when this detail also contains positive numbered-series evidence.
-            val rows = ((entry as? JsonObject)?.get("source_list") as? JsonArray).orEmpty()
+            val route = entry as? JsonObject
+            val rows = (route?.get("source_list") as? JsonArray).orEmpty()
+            val lineName = route?.text("name").orEmpty()
+                .ifBlank { route?.text("source_name").orEmpty() }.take(80)
             if (hasSeries && rows.size == 1 &&
                 ContentParsers.movieOnlyEpisodes(listOf(Episode(
                     "", (rows.single() as? JsonObject)?.text("source_name").orEmpty(), line + 1,
@@ -106,7 +169,7 @@ internal object JianpianSource {
                     val row = value as? JsonObject ?: return@mapIndexedNotNull null
                     val media = row.text("url").takeIf { mediaKind(it) != null } ?: return@mapIndexedNotNull null
                     Episode("$page#${line + 1}-$index",
-                        row.text("source_name").take(80).ifBlank { "播放" }, line + 1) to media
+                        row.text("source_name").take(80).ifBlank { "播放" }, line + 1, lineName) to media
                 }
         }
     }
@@ -157,6 +220,22 @@ internal class JianpianClient(
 
     suspend fun detail(page: String): String =
         request("/video/detailv2?id=${Url(JianpianSource.page(page)).parameters["id"]}")
+
+    suspend fun catalog(kind: String, start: Int, sort: String): CatalogPage {
+        val category = when (kind) {
+            "movie" -> 1; "tv" -> 2; "animation" -> 3; "variety" -> 4; "documentary" -> 50
+            else -> throw ApiError("无效的分类")
+        }
+        require(start in 0..9_984 && start % 24 == 0 && sort in listOf("rating", "update", "hot"))
+        val body = request("/crumb/list?area=0&category_id=$category&page=${start / 24 + 1}" +
+            "&type=0&limit=24&sort=$sort&year=0")
+        val rows = JianpianSource.data(body) as? JsonArray ?: throw ApiError("荐片分类结果格式异常")
+        // The live service caps pages at 15 despite limit=24 and supplies no total.
+        // Advance until a raw empty page; score/genre filtering must not end pagination.
+        return CatalogPage(JianpianSource.catalog(body, kind, loadImageOrigin(),
+            minimumRating = if (sort == "hot") null else HomeMinimumRating), start, 24,
+            rows.isNotEmpty() && start < 9_984)
+    }
 
     private fun signedHeaders(server: Server): Map<String, String> {
         val timestamp = (clock() / 1000).toString()
@@ -267,7 +346,7 @@ internal class JianpianClient(
                     val started = clock()
                     val body = fetch("${server.origin}/api$path", 5_000, signedHeaders(server))
                     val data = JianpianSource.data(body)
-                    if (path.startsWith("/v2/search/") && data !is JsonArray ||
+                    if ((path.startsWith("/v2/search/") || path.startsWith("/crumb/list")) && data !is JsonArray ||
                         path.startsWith("/video/detailv2") && data !is JsonObject)
                         throw ApiError("荐片接口返回格式异常")
                     mutex.withLock { server.latency = (server.latency + (clock() - started).coerceAtLeast(0)) / 2 }

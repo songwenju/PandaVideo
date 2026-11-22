@@ -55,10 +55,10 @@ internal fun Modifier.topTabSwipe(
         // its destination before selecting it, so it owns the complete exit/entry animation.
         if (selectedIndex != animatedIndex) {
             val direction = if (selectedIndex > animatedIndex) 1 else -1
+            offset = direction * width * 0.18f
             animatedIndex = selectedIndex
             animation?.cancel()
             animation = scope.launch {
-                offset = direction * width * 0.18f
                 animate(offset, 0f, animationSpec = tween(220)) { value, _ -> offset = value }
             }
         }
@@ -125,7 +125,15 @@ internal fun Modifier.topTabSwipe(
                 }
             }
         }
-    }.graphicsLayer { translationX = offset }
+    }.graphicsLayer {
+        // Effects start after composition's first draw. Apply a pending tap's arrival
+        // position synchronously, otherwise the new page appears settled for one frame
+        // before jumping sideways. A committed swipe already updates animatedIndex,
+        // so rebasing the dragged strip does not start another arrival animation.
+        translationX = if (selectedIndex != animatedIndex) {
+            (if (selectedIndex > animatedIndex) 1 else -1) * width * 0.18f
+        } else offset
+    }
 }
 
 /**

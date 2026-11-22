@@ -31,7 +31,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
@@ -55,6 +58,35 @@ import dev.pandavideo.ui.common.SkeletonBox
 import dev.pandavideo.ui.common.posterSharedTransition
 import dev.pandavideo.ui.common.rememberSkeletonAlpha
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.StateFlow
+
+/**
+ * Starts a changed catalog subscription with that channel's current snapshot.
+ *
+ * A page swaps between the active channel and its own preview during tab selection.
+ * collectAsState otherwise remembers the previous channel's value until collection
+ * restarts, briefly drawing another category. Key only the subscription so the grid's
+ * scroll position and poster composition survive promotion to the active page.
+ */
+@Composable
+internal fun StateFlow<CatalogState>.collectCatalogPageState(): State<CatalogState> =
+    key(this) { collectAsState() }
+
+/** Uses visible rows for the threshold and the source page for the next offset. */
+internal fun catalogAutoLoadStart(
+    state: CatalogState, active: Boolean, lastVisible: Int, displayCount: Int,
+    prefetchAtHalfway: Boolean = false,
+): Int? {
+    val page = state.page ?: return null
+    val threshold = if (prefetchAtHalfway) (displayCount - 1).coerceAtLeast(0) / 2
+        else (displayCount - 6).coerceAtLeast(0)
+    // Expiration requests revalidation; it must not strand a usable cached list at its
+    // footer. Next pages have their own cache/fetch path, and real errors stop this flow.
+    return page.nextStart().takeIf {
+        active && !state.loading && !state.loadingMore && state.error == null && page.hasMore &&
+            (state.items.isEmpty() || lastVisible >= threshold)
+    }
+}
 
 @Composable
 internal fun HomeCategories(
@@ -90,7 +122,7 @@ internal fun HomeCategories(
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-internal fun CatalogContent(state: CatalogState, model: AppState, refresh: () -> Unit, more: () -> Unit, play: (CatalogItem) -> Unit, home: Boolean = false, modifier: Modifier = Modifier, showHeading: Boolean = !home, active: Boolean = true, recent: HistoryTitle? = null, onResume: (HistoryTitle) -> Unit = {}) {
+internal fun CatalogContent(state: CatalogState, model: AppState, refresh: () -> Unit, more: () -> Unit, play: (CatalogItem) -> Unit, home: Boolean = false, modifier: Modifier = Modifier, showHeading: Boolean = !home, active: Boolean = true, recent: HistoryTitle? = null, onResume: (HistoryTitle) -> Unit = {}, showLoadedCount: Boolean = true) {
     val grid = rememberLazyGridState()
     // Only display identity/metadata can change this projection; exit checkpoints must
     // not rebuild the catalog's item list.
@@ -109,14 +141,9 @@ internal fun CatalogContent(state: CatalogState, model: AppState, refresh: () ->
     val isActive by rememberUpdatedState(active)
     LaunchedEffect(grid) {
         snapshotFlow {
-            val current = latestState
             if (!isActive) return@snapshotFlow null
-            val page = current.page ?: return@snapshotFlow null
             val lastVisible = grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            page.nextStart().takeIf {
-                !current.loading && current.error == null && page.hasMore && !page.stale &&
-                    (current.items.isEmpty() || lastVisible >= (displayCount - 6).coerceAtLeast(0))
-            }
+            catalogAutoLoadStart(latestState, isActive, lastVisible, displayCount)
         }.distinctUntilChanged().collect { next -> if (next != null) loadMore() }
     }
     PullToRefreshBox(
@@ -131,7 +158,7 @@ internal fun CatalogContent(state: CatalogState, model: AppState, refresh: () ->
                 fontWeight = FontWeight.Bold,
             )
         }
-        if (state.loading && state.items.isEmpty() && state.error == null && recent == null) {
+        if (awaitingInitialCatalog(state)) {
             CatalogSkeleton(Modifier.weight(1f).fillMaxWidth(), home)
         } else BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
         LazyVerticalGrid(state = grid, modifier = Modifier.fillMaxSize(), columns = if (home) GridCells.Fixed(if (maxWidth < 600.dp) 2 else if (maxWidth < 840.dp) 3 else 4) else GridCells.Adaptive(120.dp), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 100.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -147,7 +174,7 @@ internal fun CatalogContent(state: CatalogState, model: AppState, refresh: () ->
                 if (state.loadingMore || state.loading && state.items.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
                 else if (!state.loading && displayCount == 0 && state.error == null) Text("暂无影视条目")
                 else if (state.page?.hasMore == true) OutlinedButton(more, Modifier.fillMaxWidth(), enabled = !state.loading) { Text("加载更多") }
-                else if (displayCount > 0) Text("已加载全部 $displayCount 部")
+                else if (showLoadedCount && displayCount > 0) Text("已加载全部 $displayCount 部")
             }
         }
         }
@@ -161,23 +188,25 @@ private fun CatalogPosterCard(item: CatalogItem, model: AppState, home: Boolean,
     Column {
         // Neighbor categories can contain the same title. Only the selected page
         // owns its navigation shared element, avoiding duplicate poster matches.
-        // Mixed resume/catalog rows share one portrait-height slot. Landscape artwork keeps
-        // its source ratio and centers inside it, rather than pulling its caption upward.
-        Box(Modifier.fillMaxWidth().aspectRatio(0.7f), contentAlignment = Alignment.Center) {
-            Box(Modifier.fillMaxWidth().aspectRatio(if (item.kind == "xiaopin") 16f / 9f else 0.7f)
-                .clip(RoundedCornerShape(8.dp)).clickable(onClick = play)) {
+        // Fill the shared portrait slot directly. A centered landscape box inside this
+        // slot leaves large blank bands and separates sketch artwork from its caption.
+        Box(Modifier.fillMaxWidth().aspectRatio(0.7f)
+            .clip(RoundedCornerShape(8.dp)).clickable(onClick = play)) {
                 Poster(model.poster(item), item.title, Modifier.fillMaxSize().posterSharedTransition(if (active) item.url else null))
+                if (item.remark.isNotBlank()) Text(item.remark, color = Color.White,
+                    fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(5.dp)
+                        .background(Color.Black.copy(alpha = .65f), RoundedCornerShape(4.dp)).padding(4.dp))
                 if (continuePlayback) {
                     Text("继续播放", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
                         modifier = Modifier.align(Alignment.BottomStart).padding(8.dp)
                             .background(Accent, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 4.dp))
                 }
-            }
         }
         // Reserve the same caption space for a two-line sketch title and a film's title/score.
         // A minimum height still lets larger accessibility fonts expand without clipping.
         Column(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(top = 7.dp),
-            verticalArrangement = Arrangement.Bottom) {
+            verticalArrangement = Arrangement.Top) {
             Text(item.title, color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = if (item.kind == "xiaopin") 2 else 1,
                 overflow = TextOverflow.Ellipsis)

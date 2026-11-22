@@ -20,11 +20,12 @@ import androidx.media3.exoplayer.source.preload.TargetPreloadStatusControl
  */
 @UnstableApi
 internal class AndroidPlaybackPreloader(context: Context) {
+    private val sourceFactory = OfflineMediaSourceFactory(context)
     private val builder = DefaultPreloadManager.Builder(context,
         TargetPreloadStatusControl<Int, DefaultPreloadManager.PreloadStatus> {
             DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(PRELOAD_MS)
         })
-        .setMediaSourceFactory(OfflineMediaSourceFactory(context))
+        .setMediaSourceFactory(sourceFactory)
         .setLoadControl(DefaultLoadControl.Builder()
             .setPlayerTargetBufferBytes("preload", 8 * 1024 * 1024).build())
     private val manager = builder.build()
@@ -65,7 +66,7 @@ internal class AndroidPlaybackPreloader(context: Context) {
         candidate?.let(manager::remove)
         candidate = null
         completed = false
-        if (item == null || item.localConfiguration?.uri?.scheme !in setOf("https", "http")) return
+        if (item == null || item.localConfiguration?.uri?.scheme !in setOf("https", "http", "file")) return
         candidate = item
         manager.add(item, 1)
         manager.invalidate()
@@ -83,17 +84,20 @@ internal class AndroidPlaybackPreloader(context: Context) {
     }
 
     fun load(item: MediaItem, startPosition: Long, autoplay: Boolean,
-        startupSkip: SkipDurations = SkipDurations()): Boolean {
+        startupSkip: SkipDurations = SkipDurations(),
+        segments: List<dev.pandavideo.core.model.MediaSegment> = emptyList()): Boolean {
         val upcoming = candidate
         val source = upcoming?.takeIf {
-            startPosition == 0L && it.localConfiguration?.uri == item.localConfiguration?.uri &&
+            segments.isEmpty() && startPosition == 0L && it.localConfiguration?.uri == item.localConfiguration?.uri &&
                 it.localConfiguration?.mimeType == item.localConfiguration?.mimeType
         }?.let(manager::getMediaSource)
         val reusable = source?.takeIf { it.canUpdateMediaItem(item) }
         val hit = reusable != null && completed
         consumed?.let(manager::remove)
         consumed = null
-        player.playWhenReady = autoplay
+        // Autoplay must apply only to the replacement. Setting it while the previous
+        // item is still READY briefly restarts its audio before setMediaItem buffers.
+        player.pause()
         if (reusable != null) {
             reusable.updateMediaItem(item)
             consumed = upcoming
@@ -102,13 +106,25 @@ internal class AndroidPlaybackPreloader(context: Context) {
             player.setMediaSource(reusable, startPosition)
         } else {
             preload(null)
-            player.setMediaItem(item, startPosition)
+            if (segments.isEmpty()) player.setMediaItem(item, startPosition)
+            else {
+                // One window keeps ExoPlayer/MediaSession seeks, duration and completion global.
+                // Explicit placeholder durations allow history seeks before later MP4s are loaded.
+                val concatenation = androidx.media3.exoplayer.source.ConcatenatingMediaSource2.Builder()
+                    .setMediaSourceFactory(sourceFactory).setMediaItem(item)
+                segments.forEach { segment ->
+                    concatenation.add(MediaItem.Builder().setUri(segment.url)
+                        .setMimeType(androidx.media3.common.MimeTypes.VIDEO_MP4).build(), segment.durationMs)
+                }
+                player.setMediaSource(concatenation.build(), startPosition)
+            }
         }
         // setMediaItem may emit IDLE while replacing the old source. Install the new
         // policy afterwards so that transition cannot discard its opening target.
         startupSource = MediaSource(item.mediaId.toLong(), "", "", "", startPosition = startPosition,
             startupSkip = startupSkip)
         applyStartupPosition()
+        player.playWhenReady = autoplay
         player.prepare()
         return hit
     }

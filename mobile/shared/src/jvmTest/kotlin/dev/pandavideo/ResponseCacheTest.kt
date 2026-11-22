@@ -165,7 +165,9 @@ class ResponseCacheTest {
             try {
                 var snapshot: dev.pandavideo.core.model.CatalogPage? = null
                 val page = repo.list("tv", onCached = { snapshot = it })
-                assertEquals(page, snapshot)
+                assertEquals(page.items, snapshot?.items)
+                assertTrue(snapshot!!.stale)
+                assertFalse(snapshot.hasMore, "Legacy publication cannot page past pending source merging")
                 assertEquals("高分剧", snapshot!!.items.single().title)
                 assertEquals("tv", snapshot.items.single().kind)
             } finally { repo.close() }
@@ -202,7 +204,15 @@ class ResponseCacheTest {
     @Test fun normalizedSearchPersistsAndTypesRemainSeparate() = runTest {
         database { path ->
             var requests = 0
-            fun repo() = ContentRepository(HttpClient(mockEngine { requests++; respond(pomoSearchFixture) }), CatalogDatabase(path))
+            fun repo() = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+                when {
+                    request.url.host == "pomo.mom" -> { requests++; respond(pomoSearchFixture) }
+                    request.url.encodedPath.endsWith("/init") -> respond("""{"code":1,"data":{"secret":"s"}}""")
+                    request.url.encodedPath.endsWith("/resourceDomainConfig") ->
+                        respond("""{"code":1,"data":{"imgDomain":"images.test"}}""")
+                    else -> respond("""{"code":1,"data":[]}""")
+                }
+            }), CatalogDatabase(path))
             val first = repo()
             val expected = try { first.search("《测试 电 影》", "all") } finally { first.close() }
             val second = repo()

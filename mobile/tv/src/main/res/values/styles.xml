@@ -1,0 +1,14 @@
+<resources>
+    <style name="TvTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">#101116</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:colorAccent">#FF6740</item>
+    </style>
+    <!-- The system starting window remains branded while Compose initializes.
+         Scope this to the library Activity so casting keeps its own black window. -->
+    <style name="TvLaunchTheme" parent="TvTheme">
+        <item name="android:windowBackground">@drawable/tv_startup_background</item>
+    </style>
+</resources>

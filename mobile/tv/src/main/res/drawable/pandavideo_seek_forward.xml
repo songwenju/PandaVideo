@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Center the 30dp PandaVideo glyph inside the native 64dp seek button. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:insetLeft="17dp" android:insetRight="17dp"
+    android:insetTop="17dp" android:insetBottom="17dp"
+    android:drawable="@drawable/pandavideo_forward" />

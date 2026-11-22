@@ -1,0 +1,2617 @@
+{
+  "schemaVersion": 1,
+  "kind": "pandavideo-capability-contract",
+  "updated": "2026-11-13",
+  "summary": "PandaVideo 能力契约。capabilities.json 是机器可读的单一来源，CAPABILITIES.md 是人工阅读镜像。修改受保护能力时必须同步更新本文件、守护测试，并用 --accept 显式重新签名。",
+  "capabilities": [
+    {
+      "id": "episode-playback-source-cache",
+      "title": "同影片切集复用源信息与成功媒体地址",
+      "platform_alignment": "Android手机内嵌/全屏、iOS内嵌/全屏、Android电视详情/全屏及DLNA投屏遥控选集统一通过AppState拥有的PlaybackSession.select/selectLine，不另建端侧解析器或播放器。共享源及媒体缓存、失效重试、对应集和手动线路规则一致。",
+      "requirement": "同影片切集、手动切线和下一集预加载复用已解析的线路、剧集、元数据，自动换集优先当前线路且保留广告避让和同集故障回退，不再批量测速后才加载。最多保留48个影片源、每源128个成功媒体结果，媒体按影片页面、剧集路径和原始地址隔离，5分钟有效，命中不延长有效期。仅成功验证写缓存，失败及被拒绝媒体不复用；重试、主动刷新、故障恢复及临近片尾刷新绕过媒体缓存。源正文变化替换缓存，清目录缓存一并清除源与媒体缓存。首次自动进入仍实时测速选择最快线路。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/AndroidTvApp.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvDetail.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": ["session = PlaybackSession({ value ->", "else active.player(value)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": ["RemoteEpisodeHandoff(device, state.mediaId, casting.playing)", "session.select(it)", "onLineSelected = session::selectLine"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/AndroidTvApp.kt",
+          "contains": ["session.selectLine(line)", "session.select(ep)"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvDetail.kt",
+          "contains": ["session?.selectLine(value)", "session?.select(ep)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+          "contains": ["val reuseSourceInfo: Boolean = false"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": [
+            "allowLineFallback = !manualLine, reuseSourceInfo = true",
+            "allowLineFallback = false, reuseSourceInfo = true",
+            "preloadNext(it, reuseSourceInfo = false)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": [
+            "private suspend fun playbackSource(",
+            "private suspend fun cachePlaybackMedia(",
+            "source.media[episode.path to address]",
+            "playbackCacheNowMs() - it.at in 0 until 5 * 60_000L",
+            "if (source.media.size > 128)",
+            "if (playbackSources.size > 48)",
+            "if (cached == null) cachePlaybackMedia(",
+            "recentDetails.clear(); playbackSources.clear()"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackSourceCacheTest.kt",
+          "contains": [
+            "@Test fun episodeNavigationReusesSourceAndValidatedUrlsWithoutCrossingPagesOrLines()",
+            "@Test fun sharedAppSessionReusesEpisodeCacheForLocalTvAndCastingNavigation()",
+            "@Test fun automaticMeasurementsCacheSuccessfulAlternatesButNeverRejectedMedia()",
+            "@Test fun retriesFailuresAndExpiredMediaRequireFreshValidationWithoutExtendingTtl()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": ["@Test fun episodeNavigationReusesCurrentSourceButRetryResolvesFreshMedia()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackPreloadTest.kt",
+          "contains": ["Near-end refresh must bypass the media cache", "Freshly prepared URL must still match the episode navigation request"]
+        },
+        {
+          "file": "mobile/iosApp/PandaVideoUITests/FullscreenTests.swift",
+          "contains": ["func testNextEpisodePreloadKeepsVideo()", "episode-1-return", "Returning to the cached first episode rendered no video"]
+        }
+      ]
+    },
+    {
+      "id": "manual-playback-line-ad-reports",
+      "title": "播放线路手动广告标记与自动避让",
+      "status": "active",
+      "notes": "用户明确授权实现。标记独立于测速缓存，已有其他窗口的契约签名和全屏5/10秒及搜索评分守护差异未对账，保留签名。",
+      "requirement": "手机内嵌详情、全屏及投屏选集的线路按钮长按可确认标记有插播广告，再次长按可取消；显示有广告标签，长按不得切线或关闭选集，不中断健康播放。标记保存到独立本地偏好，无测速TTL，重启及清目录缓存保留。具名线路按来源主机及Pomo上游site和线路名隔离，跨集、同来源其他影片及线路顺序变化沿用；空名称或纯线路编号仅同影片同编号沿用，防止其他影片串标。未标记仅表示未知。自动进入及换集在解析前先按未标记优先、再按有效测速耗时排序；故障恢复同样在已测可用对应集中优先未标记线路并保留进度与暂停意图。手动选择仍优先，不覆盖用户选择；有广告是偏好不是禁止播放，只有已标记线路可用时仍允许播放。此能力扩展persistent-fastest-playback-lines的自动选路优先级，测速展示和有效期保持原规则。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/LineAdStore.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/LineAdMarkDialog.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/FullscreenEpisodeDrawer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/LineAdStore.kt",
+          "contains": ["class LineAdStore", "fun setHasAds(", "manual_line_ads_v1", "val site = if (url.host == \"pomo.mom\")", "storage.putString(KEY, payload)", "mutable.value = next"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": ["长按标记广告", "onLongClick = {", "adMarkTarget = episode", "LineAdMarkDialog(model.lineAds"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/FullscreenEpisodeDrawer.kt",
+          "contains": ["adMarkedLines: Set<Int>", "onLongClick = { onLineLongPress(target) }", "PlaybackLineButton("]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PlaybackLineButton.kt",
+          "contains": ["onLongClickLabel = if (marked) \"取消广告标记\" else \"标记插播广告\"", "Text(speed + if (marked) \" · 有广告\" else \"\""]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["candidates.sortedWith(compareBy<Pair<Episode, String>>", "lineHasAds(page, it.first)", "}.thenBy {"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": [".minWithOrNull(compareBy<Episode> { lineHasAds(info, it) }", "fun invalidateLinePreload()"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/LineAdStoreTest.kt",
+          "contains": ["fun namedReportsSurviveRestartEpisodeTitleAndLineOrderChanges()", "fun unnamedAndOrdinalReportsStayWithinTheirTitleAndLine()", "fun cancellingReportPersistsWithoutChangingOtherLines()", "fun failedPersistenceNeverPublishesAnUnstoredReport()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/LineAdSelectionTest.kt",
+          "contains": ["fun automaticSelectionAvoidsReportsButManualChoiceAndLastResortRemainPlayable()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": ["fun recoveryPrefersUnmarkedMeasuredLineAndKeepsCurrentEpisodeAndProgress()", "fun newAdvertisingReportInvalidatesNextEpisodePreloadWithoutReloadingCurrentMedia()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/LineAdMarkUiTest.kt",
+          "contains": ["fun longPressMarksAndCancelsWithoutSwitchingLineOrClosingDrawer()"]
+        }
+      ]
+    },
+    {
+      "id": "cctv-public-vod-playback",
+      "title": "央视公开栏目节目库与点播",
+      "status": "active",
+      "notes": "2026-11-22：按用户要求以官方频道归属替换题材分类：CCTV-1综合、2财经、3综艺、10科教、12社会与法、13新闻；已核验双频道的焦点访谈保留两处归属，同频道不重复栏目。保留官方 d 年/月筛选及按范围隔离缓存；关键词/日期/拼音搜索每批最多10页，可继续检索且显示覆盖期数。卡片和详情标题显示本期主题，完整原标题继续用于搜索。详情显示原始播出日、时长、四行简介与完整简介弹窗，同栏目节目用各自 PID 跳转；返回保留筛选和焦点。同步守护与镜像；已有签名和手机5/10秒锚点冲突未对账，不覆盖签名。",
+      "requirement": "TV 首页保留一个央视点播入口，提供24个已核验官方栏目整期列表：今日说法、开讲啦、新闻联播、焦点访谈、百家讲坛、经济半小时、探索·发现、地理·中国、动物世界、人与自然、健康之路、新闻调查、面对面、新闻1+1、天网、一线、道德观察、第一时间、星光大道、越战越勇、读书、走近科学、生财有道、消费主张。栏目栏支持遥控器横向滚动和离屏焦点恢复，按播出时间分页加载，按栏目缓存并保留返回焦点，加载失败可重试或取消；旧栏目可提供历史回看，不保证持续更新。点击节目按 GUID 从正式 HTTPS 接口重新解析；Android/iOS本地优先完整公开chapters4再chapters3 MP4分段，验证官方HTTPS主机、非空独立地址、正有限时长及整期总长，统一整期时间轴、自动续播、跨段快进快退、历史/片头定位及预览。缺段或失败档位回退，不重建缺失地址。完整hls_url保留给普通播放回退、下载和单URL投屏，离线回放不携带在线分段。历史和选集使用稳定节目身份，不保存 CDN 地址。无效节目、试看、纯音频、加密备用字段、伪造来源和已经失败的媒体不得回退为公开视频；不依赖登录、付费或动态插件，不承诺直播或完整央视目录。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CctvSource.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvLibrary.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvCctvLibrary.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvDetail.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/SegmentedTimeline.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlaybackPreloader.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/PlaybackMediaSessionService.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidSeekPreview.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/OfflineDownloads.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CctvSource.kt",
+          "contains": [
+            "internal object CctvSource",
+            "val channels = linkedMapOf(",
+            "val media = text(\"hls_url\")",
+            "media in request.rejectedMedia",
+            "selected = page, pageUrl = page, source = \"央视\"",
+            "private fun publicSegments",
+            "listOf(\"chapters4\", \"chapters3\")",
+            "segments.size == chapters.size"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlaybackPreloader.kt",
+          "contains": ["ConcatenatingMediaSource2.Builder()", "concatenation.add(", "player.setMediaSource(concatenation.build(), startPosition)"]
+        },
+        {
+          "file": "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt",
+          "contains": ["val native: AVPlayer = AVQueuePlayer()", "private fun rebuildQueue(index: Int)", "currentSegmentOffset(seekItem)", "val mapped = segmented?.locate(target)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["return CctvSource.resolve(request)"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvLibrary.kt",
+          "contains": ["internal val TvMainTabOptions = listOf(", "\"央视\" to \"央视点播\"", "navigation.selectMainTab(target)", "TvCctvLibrary(model, navigation, open, Modifier.weight(1f), mainTabsFocused)"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvCctvLibrary.kt",
+          "contains": ["model.televisionCctvPrograms(column, next, period)", "navigation.cctvFocused[focusKey]", "LazyRow(state = columnTabs", "columnTabs.scrollToItem(selectedIndex)", "\"加载更多节目\" else \"继续搜索更早节目\"", "TvAction(\"重试\")", "TvAction(\"取消\")", "TvChoice(\"频道\"", "TvChoice(\"年份\"", "TvChoice(\"月份\"", "tvCctvMatches(page!!.items, query)", "internal fun tvCctvProgramTitle"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvDetail.kt",
+          "contains": ["internal fun tvRelatedSelection", "PlayerRequest(page = item.url, title = item.title)", "selection.catalog?.broadcastDate", "TvAction(\"完整简介\"", "\"同栏目节目\""]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/CctvSourceTest.kt",
+          "contains": [
+            "@Test fun repositoryRefreshesVideoFromStableProgramIdWithoutMovieFallback()",
+            "@Test fun rejectsNonVideoProtectedInvalidAndFailedRoutes()",
+            "@Test fun canonicalProgramReferencesRejectSpoofedHostsAndAmbiguousIds()",
+            "@Test fun fullProgramListsFilterClipsAndKeepStablePagedIdentities()",
+            "@Test fun columnSelectionResolvesTheChosenProgramWithoutMovieSearch()",
+            "@Test fun dateFiltersAndBroadcastMetadataStaySeparateFromMovieYear()",
+            "@Test fun completePublicHdTiersKeepFullProgramFallbackAndStableIdentity()",
+            "@Test fun missingProtectedSpoofedDuplicateAndInvalidChaptersCannotTruncateProgram()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/SegmentedTimelineTest.kt",
+          "contains": ["@Test fun wholeProgramBoundsAndBothDirectionsCrossSegmentEdges()", "@Test fun invalidAndOverflowingTimelinesAreRejected()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": ["@Test fun segmentedFailureRetainsProgramIdentityAndRecoversCompleteFallbackAtSamePosition()"]
+        },
+        {
+          "file": "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/SegmentedPlaybackDeviceTest.kt",
+          "contains": ["@Test fun publicMp4ContinuousPlaybackAndBidirectionalSeekPreserveWholeProgramState()"]
+        },
+        {
+          "file": "mobile/shared/src/iosTest/kotlin/dev/pandavideo/IosSegmentedPlaybackTest.kt",
+          "contains": ["@Test fun publicMp4ContinuousPlaybackAndBidirectionalSeekPreserveWholeProgramState()"]
+        },
+        {
+          "file": "mobile/shared/src/androidHostTest/kotlin/dev/pandavideo/TvCctvSearchTest.kt",
+          "contains": ["@Test fun keywordDatesAndRemoteInitialsKeepProgramIdentity()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/CctvCacheTest.kt",
+          "contains": ["@Test fun columnMonthAndPageCachesRemainIsolatedAfterRestart()"]
+        }
+      ]
+    },
+    {
+      "id": "persistent-fastest-playback-lines",
+      "title": "线路测速排序、自动择线与手动切线即播",
+      "status": "active",
+      "entry_measurement_revision": "2026-11-22 最新授权：先复用已有源信息和成功媒体缓存开播，不等待全部线路测速；开播后后台搜索荐片及Pomo的同片同年镜像，追加稳定原站剧集身份并继续测速，不加载媒体、不切线、不改变播放进度及暂停意图。手动择线仍优先；换集和退出取消过期发现。首次无映射仍先严格匹配一个可播放来源。同影片换集和预加载复用源信息，新集只解析目标线路，失败才回退对应集。重试/故障恢复/片尾刷新绕过媒体缓存。",
+      "notes": "自动进入先缓存开播，后台搜索补充同片同年线路并测速，健康播放只更新列表与排序；非手动换集复用当前源信息，失败才回退同集。原生错误或连续15秒缓冲时优先最快已测可用对应集，保留进度、暂停、倍速与音频状态，最多两次且排除失败身份；没有测量时沿用同集解析恢复。用户点击有效线路后本会话不自动覆盖，重新打开影片重置；暂停、恢复正常、切集、隐藏与退出取消计时。",
+      "requirement": "内嵌详情与全屏线路按真实解析及媒体前缀耗时升序显示。按用户新要求补测所有对应当前剧集的待测速线路，不限制16条或共享6秒截止；每次最多3条并发，每条尝试有10秒预算，网络异常/超时/过载重试一次后仍失败则暂时隐藏，明确无效媒体立即隐藏，完成一条立即更新界面。未知旧结果不能阻止补测，当前成功线路不重复测；取消未完成任务不能误判不可用。测速和可用性写入现有SQLite response_cache，按详情、剧集、线路与媒体地址指纹隔离，成功2分钟、失败30秒后再次进入测量可重测；清缓存可删除测速，保留播放身份。手动切线即使原来暂停也立即播放，尽量保留对应集数和进度；自动恢复与投屏的暂停意图保持原有规则。测速跨内嵌、全屏布局共享，旧影片、旧集数与旧媒体地址的结果不得覆盖当前状态。目录资源检查的网络异常仍不判定无资源。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogDatabase.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/FullscreenEpisodeDrawer.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/AndroidTvApp.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvDetail.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": [
+            "target != info.resumeFromEpisode",
+            "val saved = progressFor(info.pageUrl, info.resumeFromEpisode ?: info.selected)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": [
+            "if (!request.allowLineFallback) throw failure",
+            "val probes = if (request.preferFastestLine && request.allowLineFallback)",
+            "refresh = true, onResolved =",
+            "val media = cached?.media ?: checkedMedia[episode.path]",
+            "val choices = if (!request.allowLineFallback) candidates.filter { it.first.path == selected }"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/AndroidTvApp.kt",
+          "contains": [
+            "LaunchedEffect(active, current.info?.pageUrl, current.info?.selected, current.info?.episodes, current.loading)",
+            "active.updateLineProbes(info, model.probeLines(info) { measured ->",
+            "active.updateLineProbes(info, measured)",
+            "TvAction(tvPlaybackLineLabel(info!!, line), line == currentLine,"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvDetail.kt",
+          "contains": [
+            "internal fun tvPlaybackLineLabel(info: PlaybackInfo, line: Int): String",
+            "val speed = info.lineProbes[line]?.elapsedMs?.let { \"${it}ms\" } ?: \"待测速\"",
+            "TvAction(tvPlaybackLineLabel(detail, value), value == line,"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+          "contains": ["internal fun visiblePlaybackLines(", "lines.filter { probes[it]?.available != false }.sortedBy", "val preferFastestLine: Boolean = false", "val resumeFromEpisode: String? = null", "val allowLineFallback: Boolean = true"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": ["fun updateLineProbes(", "current.info.url != info.url", "loadRequest(value, position, true, reason = \"line\"", "private fun watchBuffering(player: PlayerState)", "private fun recoverSource(player: PlayerState)", "if (manualLine) return false", "const val AUTO_LINE_BUFFER_TIMEOUT_MS = 15_000L"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["\"line-probe:v1:", "address.encodeUtf8().sha256().hex()", "database?.writeResponse(lineProbeKey(", "if (probe.available == true) 2 * 60_000L else 30_000L", "catch (_: MediaUnavailable) { LineProbe(available = false) }", "catch (_: Exception) { LineProbe() }", "results.putAll(info.lineProbes.filterValues { it.available != null })", "onMeasured(mapOf(line to result))", "withTimeoutOrNull(10_000)", "if (attempt > 0) delay(500)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": ["model.probeLines(info) { measured ->", "session.updateLineProbes(info, measured)", "items(visibleLines, key = { it })", "resourceListState.scrollToItem(0)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/FullscreenEpisodeDrawer.kt",
+          "contains": ["visiblePlaybackLines(lines.keys, info?.lineProbes.orEmpty())", "items(visibleLines, key = { it })"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": [
+            "@Test fun cachedPlaybackStartsBeforeDiscoveryAndAppendPreservesPausedManualLine()",
+            "@Test fun staleDiscoveryCannotPublishAfterEpisodeChangeOrClose()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/JianpianSourceTest.kt",
+          "contains": ["@Test fun backgroundMirrorsRetainProviderPathsAndRejectRemakeYears()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/BackgroundPlaybackCacheTest.kt",
+          "contains": ["@Test fun verifiedMirrorListsSurviveRestartAndResolveTheirOriginalEpisodePaths()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/LineAdStoreTest.kt",
+          "contains": ["@Test fun supplementaryMirrorReportsUseOriginalProviderAndLineIdentity()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": [
+            "@Test fun automaticEntryPrefersCacheButMeasurementsNeverInterruptHealthyPlayback()",
+            "@Test fun nativeFailureChoosesFastestMeasuredCorrespondingEpisodeAndKeepsPause()",
+            "@Test fun continuousBufferingSwitchesOnceWhileProgressUpdatesDoNotRestartDeadline()",
+            "@Test fun bufferingDeadlineIsCancelledByPauseRecoveryManualChoiceAndClose()",
+            "@Test fun manualRouteIsNotOverriddenOnErrorButNewTitleEnablesAutomaticRecovery()",
+            "@Test fun failedMeasuredBackupResolutionTriesRemainingRouteWithoutRepeatingIt()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/LineProbePersistenceTest.kt",
+          "contains": ["@Test fun automaticEntryRemeasuresEveryTimeAndIgnoresSavedRankingWhileManualChoiceKeepsPriority()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/LineProbeTest.kt",
+          "contains": ["@Test fun manualRouteResolutionFailureNeverFallsBackToAnotherLineOrProvider()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/AutoLineHistoryTest.kt",
+          "contains": ["@Test fun remeasuredHistoryEntryKeepsSavedPositionAndLoadsOnlyOnce()"]
+        },
+        {
+          "file": "mobile/shared/src/androidHostTest/kotlin/dev/pandavideo/TvLineProbeTest.kt",
+          "contains": [
+            "@Test fun bothTvPickersShowPendingOrMeasuredLatencyWithoutEpisodeCount()",
+            "@Test fun tvUsesPhoneOrderingAndHidesFailedRoutesAsResultsArrive()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/LineProbeTest.kt",
+          "contains": ["@Test fun fastestAvailableLinesLeadAndUnknownLinesRemainVisible()", "@Test fun pendingTimeoutAndOverloadedRoutesRetryThenHideWhileActiveLineRemains()", "@Test fun everyPendingLineIsMeasuredBeyondOldLimitAndPublishesBeforeBatchCompletes()", "@Test fun recoveredRetryStaysVisibleAndCancellationNeverMarksAnUnfinishedLineUnavailable()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/LineProbePersistenceTest.kt",
+          "contains": ["@Test fun measurementsSurviveRestartExpireAndDoNotCrossMediaOrEpisodes()", "@Test fun automaticEntryRemeasuresEveryTimeAndIgnoresSavedRankingWhileManualChoiceKeepsPriority()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": ["@Test fun staleLineMeasurementsCannotReplaceNewEpisodeState()", "assertTrue(player.loads.last().autoplay, \"A manual line switch must resume paused playback\")"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/FullscreenEpisodeDrawerTest.kt",
+          "contains": ["\"Fastest route must render first\"", "\"Confirmed failures must not render\"", "\"Uncertain routes remain selectable\""]
+        }
+      ],
+      "notes": "用户明确要求待测速线路补测、不行隐藏，覆盖旧的超时/断网线路永久保持待测策略；瞬时失败先重试，失败隐藏使用短TTL。全部线路同集优先，缺少对应集时沿用手动切线的序号/首集规则并按实际被测剧集缓存，避免不同标签或稀疏分集线路永久待测。电视端调用同一个AppState.probeLines及session.updateLineProbes，详情预览与全屏共享任务及结果；两处线路共用tvPlaybackLineLabel显示名称、集数、Nms/待测速，共用visiblePlaybackLines排序隐藏。既有签名不匹配及全屏5/10秒冲突未对账，不重新签名覆盖。"
+    },
+    {
+      "id": "jianpian-hot-tabs-source",
+      "title": "最近热播荐片优先并补回改版前列表",
+      "status": "active",
+      "requirement": "最近热播保留现有顶部 Tab、网格、横滑切换、下拉刷新，隐藏已加载全部N部提示。剧集、电影、动漫、综艺、纪录片以荐片sort=hot和稳定详情ID优先，并补回改版前豆瓣sort=U、0到10分列表。荐片每逻辑24槽推进一页，原列表每20槽推进一页，过滤与去重不改变各自游标。荐片接口实际可能只返回15部且无总数，非空热播页必须继续翻页至空页。首屏、翻页、缓存、刷新均荐片优先并按片名、类型及已知年份去重，重拍版本和季数不得误合并，网络失败保留工作来源与缓存，恢复同样列表时复用列表实例。小品沿用现有来源。发现页8分下限保持独立。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/JianpianSource.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/HotCatalog.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/JianpianSource.kt",
+          "contains": ["\"documentary\" -> 50", "if (sort == \"hot\") null else HomeMinimumRating", "rows.isNotEmpty() && start < 9_984"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["internal suspend fun hotCatalog(", "hot:jianpian:v2:$type:$start", "jianpian.catalog(type, start, \"hot\")", "BrowseFilters(type = type, sort = \"hot\")", "start / 24 * 20", "mergeHotCatalog(loaded.flatMap { it.items })", "freshWhen = { !it.stale }"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": ["else api.hotCatalog(type, 0, onCached = publish)", "else api.hotCatalog(type, start, refresh = refresh, onCached = cached)", "api.sketches(start, refresh, onCached = cached)", "mergeHotCatalog(if (more) previous.items + visible.items else visible.items)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/HotCatalog.kt",
+          "contains": ["internal fun mergeHotCatalog(", "JianpianSource.owns(it.playbackPageUrl.ifBlank { it.url })", "if (known.size <= 1) known.singleOrNull().orEmpty() else item.url"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+          "contains": ["showHeading = false, active = type == selected, showLoadedCount = false"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt",
+          "contains": ["else if (showLoadedCount && displayCount > 0)"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/JianpianSourceTest.kt",
+          "contains": ["@Test fun hotCategoriesKeepProviderOrderUnratedRowsAndRawPagination()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": ["@Test fun hotCatalogPagesAndTypeSwitchRemainIndependentOfHomeAndBrowse()", "@Test fun addedHotCategoriesUseTheirOwnTagsAndResetPaging()", "@Test fun confirmedMissingIsRemovedFromAllCatalogsAndCursorIsPreserved()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/HotCatalogTest.kt",
+          "contains": ["@Test fun jianpianWinsDuplicatesAcrossPagesAndOtherOriginalTitlesRemain()", "@Test fun differentRemakesTypesAndSeasonsAreNeverMergedThroughUnknownYears()", "@Test fun fifteenRowProviderPagesRestoreOriginalCatalogAndKeepIndependentOffsets()", "@Test fun primarySnapshotDoesNotCancelSlowSupplementAndFailuresRetainWorkingRows()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/HotCatalogCacheTest.kt",
+          "contains": ["@Test fun partialCachedHotListRevalidatesMissingOriginalRowsAfterRestart()"]
+        }
+      ],
+      "notes": "2026-11-21用户明确补齐改版前列表，同时荐片优先、去重及隐藏数量提示。已确认真实荐片hot第一页与第二页均15条且内容不同；不能将15条误判为全部。既有签名与全屏5/10秒冲突未覆盖。"
+    },
+    {
+      "id": "jianpian-home-source-identity",
+      "daming_multi_line_revision": "2026-11-22：按用户源越多越好的偏好，为豆瓣2210001《大明王朝1566》补充简片13003映射；已通过官方详情核验片名、2007年、豆瓣ID及29条HTTP HLS/MP4候选线路。保留Pomo暴风6186映射，目录自动匹配优先简片，沿用既有非空身份表升级；2007年剧集身份与重启持久化由专项测试守护。候选线路数量不等于可用数量，仍沿用测速过滤和手动线路优先规则。历史显式播放页不在本次映射升级范围。既有并行契约签名差异不覆盖。",
+      "title": "精选网格、紧凑线路耗时与持久播放身份",
+      "status": "active",
+      "requirement": "按用户最终修正恢复精选原有分类、网格与目录分页，保留8分下限、地区与细分题材；热播独立使用荐片。精选Top250逐项以荐片详情豆瓣ID、年份及直接HLS/MP4线路确认身份，确认的荐片映射优先于旧Pomo映射，未确认条目保留原来源。数据库预装已验证的稳定详情地址并持久保存新增匹配，已有非空身份表也升级，保留未涉及的运行时映射与原Pomo资料，按影片身份隔离版本，清普通缓存不删映射。详情播放资源与选集排在演员推荐之前，线路卡片仅显示名称和实际探测耗时/待测速，不显示集数；选集区保留总集数，确认不可用线路隐藏，选中背景高亮。其他线路测速在播放解析后后台进行，成功探测短期复用；并发资源检查和播放共享短期已验证详情。网络失败不判定无资源。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/JianpianSource.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogDatabase.kt",
+        "mobile/shared/src/commonMain/composeResources/files/catalog-playback-identities.json",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/tools/import_jianpian_sources.py"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/composeResources/files/catalog-playback-identities.json",
+          "contains": ["\"2210001\": {", "\"jianpian\": \"13003\"", "\"pomo\": \"暴风:6186\"", "\"additional_jianpian_verification\""]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/JianpianSource.kt",
+          "contains": ["minimumRating: Double? = HomeMinimumRating", "score < minimumRating", "rows.isNotEmpty() && start < 9_984"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["internal suspend fun probeLines(", "private val recentDetails", "if (JianpianSource.owns(item.url))", "database?.pinPlaybackIdentity(original, result.match.pageUrl)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+          "contains": ["\"top250\" to \"精选\", \"tv\" to \"高分剧集\"", "CatalogContent(page, model, { model.loadDiscover(", "home = true, active = type == selected"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogDatabase.kt",
+          "contains": ["CREATE TABLE IF NOT EXISTS playback_identities", "internal suspend fun pinPlaybackIdentity(", "shippedIdentities.subjects.forEach", "val jianpian: String = \"\"", "!importedPlaybackIdentities"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": ["Text(\"播放资源\"", "name = playbackLineName(lines.getValue(target).first(), info?.source.orEmpty())", "PlaybackLineButton(", "Text(\"共 ${episodes.size} 集\""]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PlaybackLineButton.kt",
+          "contains": ["episode.lineName.takeIf(String::isNotBlank)", "\"${probe.elapsedMs}ms\"", "Text(speed + if (marked) \" · 有广告\" else \"\""]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/JianpianSourceTest.kt",
+          "contains": [
+            "@Test fun categoryRowsPreserveSourceIdentityBadgesAndScoreFloor()",
+            "@Test fun homepageUsesVerifiedCategoryAndUpdateParametersWithIndependentCursor()",
+            "@Test fun sourceDetailsAreSharedAcrossConcurrentResourceChecksAndPlayback()",
+            "@Test fun nativeOnlyDetailIsHiddenButNetworkFailureRetainsSourceCatalogRow()",
+            "@Test fun lineMeasurementsUseRealPrefixesAndReuseSelectedProbe()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/CatalogDatabaseTest.kt",
+          "contains": ["@Test fun verifiedDetailIdentitySurvivesRestartAndSkipsTitleSearch()", "@Test fun shippedJianpianSourcesUpgradeNonemptyDatabaseAndPersistOffline()", "@Test fun persistedJianpianPinBypassesTitleSearch()", "@Test fun damingDynastyUpgradesLegacySingleSourceWithoutLosingSeriesIdentity()", "assertEquals(source.isSeries, restored.isSeries)"]
+        }
+      ],
+      "notes": "已有签名未接受及全屏5/10秒锚点冲突待其他窗口对账，本次登记新能力但不覆盖既有签名。"
+    },
+    {
+      "id": "bilibili-public-video-source",
+      "title": "B站公开视频搜索与原生播放",
+      "status": "active",
+      "requirement": "搜索页提供唯一影视/B站切换，B站支持匿名关键词搜索和官方视频链接/BV号，保持源排序，不混入影视评分与演员匹配。官方 HTTPS 页面严格校验身份与分集，公开视频复用原生播放器和现有缓存，稳定视频身份可持久化，每次播放重新解析完整单段 MP4。付费、登录限制、无效身份和多段/DASH返回明确错误，不搜索同名影视兜底。匿名访客 Cookie 仅存在内存并限制同源跳转；不使用账户凭据。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/Poster.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/BilibiliSource.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/SearchScreen.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+          "contains": ["val uploader: String = \"\""]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/Poster.kt",
+          "contains": ["posterReferrer(url)", "\"https://www.bilibili.com/\""]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/BilibiliSource.kt",
+          "contains": ["fun reference(value: String)", "search_type=video", "private var visitorCookie: String? = null", "BilibiliMedia.owns(it) && it !in request.rejectedMedia", "singleOrNull() as? JsonObject", "publicView(it, bvid)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["return bilibili.resolve(request)", "search:bilibili:v2:", "it.equals(HttpHeaders.Cookie, true)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/SearchScreen.kt",
+          "contains": ["\"bilibili\" to \"B站\"", "搜索B站视频、BV号或链接", "if (sourceType != \"bilibili\") ActorSearchResults"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/BilibiliSourceTest.kt",
+          "contains": ["@Test fun canonicalReferencesRejectSpoofedHostsAndInvalidParts()", "@Test fun keywordSearchUsesAnonymousVisitorAndKeepsVideoRankingWithoutMovieRatings()", "@Test fun directSearchAndMultipartPlaybackRefreshTokensAndNeverUseFilmFallback()", "@Test fun restrictedVideosAndPartialSegmentsAreExplicitFailures()", "@Test fun anonymousCookiesCannotFollowCrossOriginRedirects()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/BilibiliCacheTest.kt",
+          "contains": ["@Test fun restartKeepsVideoMetadataButNeverPersistsPlaybackTokens()"]
+        },
+        {
+          "file": "mobile/iosApp/PandaVideoUITests/FullscreenTests.swift",
+          "contains": ["func testBilibiliPublicVideoSearchAndPlayback()"]
+        }
+      ],
+      "notes": "已有签名及全屏5/10秒契约冲突待对账，本次只登记和迁移共用解析器锚点，不重新签名。"
+    },
+    {
+      "id": "fullscreen-edge-double-tap-seek",
+      "title": "全屏左右双击快退快进",
+      "status": "active",
+      "requirement": "移动端内嵌与全屏播放器共用双击分区：左侧三分之一快退 10 秒，右侧三分之一快进 10 秒，中间暂停或播放。快进快退沿用现有提示和触觉反馈，夹在 0..duration 并保持暂停状态；锁定、无有效时长或不支持 seek 时不得绕过原有禁用条件。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": ["when (tapZone(offset.x, frameWidth))", "TapZone.Left -> quickSeek(false)", "TapZone.Right -> quickSeek(true)", "TapZone.Center -> doubleTapPlayPause()", "if (!quickSeekEnabled) return", "internal fun tapZone(x: Float, width: Int): TapZone"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": ["@Test fun fullscreenDoubleTapKeepsEdgeSeekAndCenterPlaybackAtEveryFrameSize()", "@Test fun doubleTapZonesSplitFrameIntoThirds()", "@Test fun quickSeekMovesTenSecondsAndClamps()"]
+        },
+        {
+          "file": "mobile/iosApp/PandaVideoUITests/FullscreenTests.swift",
+          "contains": ["FULLSCREEN_DOUBLE_TAP before=", "Edge seek must preserve paused playback"]
+        }
+      ],
+      "notes": "用户明确要求补全全屏左右双击。保留原有播控按钮和手势禁用条件。修改前已有签名及 5 秒/10 秒按钮契约冲突，未覆盖未对账签名。"
+    },
+    {
+      "id": "douban-native-login-session",
+      "title": "豆瓣会话隔离与本地资料",
+      "status": "active",
+      "requirement": "用户因图片验证仍不可用要求移除豆瓣登录入口。我的页面不展示连接/已连接入口，不提供登录弹窗，不自动验证豆瓣昵称；顶部与资料编辑使用本地昵称，昵称可编辑。保留底层会话隔离：Cookie 不写入本地资料备份或目录 JSON，只向显式允许的豆瓣 HTTPS 来源发送会话，逐跳检查且外站起始请求不获取会话，返回 Cookie 校验域；验证码、网络失败及仅存在 Cookie 不算身份确认。移除入口不清除本地资料、收藏、历史或浏览器会话。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/platform/DoubanSession.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/DoubanConnection.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/profile/ProfileScreen.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/profile/ProfileEditor.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidDoubanSession.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosDoubanSession.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/platform/DoubanSession.kt",
+          "contains": ["internal fun isDoubanLoginNavigation", "if (isMainFrame) return false", "if (address == \"about:blank\") return true", "\"t.captcha.qq.com\""]
+        },
+        {
+          "file": "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosDoubanSession.kt",
+          "contains": ["isDoubanLoginNavigation(", "isMainFrame = decidePolicyForNavigationAction.targetFrame?.mainFrame != false"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidDoubanSession.kt",
+          "contains": ["!isDoubanLoginNavigation(request.url.toString(), isMainFrame = request.isForMainFrame)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/profile/ProfileScreen.kt",
+          "contains": ["profile.nickname, fontSize = 20.sp", "EditProfileDialog("]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["val authenticated = dev.pandavideo.core.platform.isDoubanSessionUrl(address)", "val trusted = authenticated && dev.pandavideo.core.platform.isDoubanSessionUrl(target)", "it.hasClass(\"nav-user-account\")"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": ["doubanSession = platform.doubanSession()", "internal val douban = DoubanConnection", "loadDiscover(refresh = true)", "loadBrowse(refresh = true)"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/DoubanSessionTest.kt",
+          "contains": ["@Test fun captchaChildFramesLoadWithoutReceivingDoubanSession()", "@Test fun captchaNavigationRejectsUntrustedOriginsAndSchemes()", "@Test fun onlyOfficialAccountLandingInitiatesIdentityVerification()", "@Test fun loginRedirectSupersedesPendingStartupVerification()", "@Test fun onlyOfficialHttpsOriginsReceiveSession()", "@Test fun redirectRecomputesCookiesAndNeverLeaksToThirdParty()", "@Test fun externalRequestsCannotAcquireCookiesViaRedirect()", "@Test fun cookiePresenceAndChallengeDoNotProveIdentity()", "@Test fun verifiesOfficialAccountNavigationAfterMineRedirect()", "@Test fun successfulVerificationRefreshesAndDisconnectClearsSession()", "@Test fun verificationFailureKeepsRetryStateWithoutRefreshing()"]
+        },
+        {
+          "file": "mobile/iosApp/PandaVideoUITests/FullscreenTests.swift",
+          "contains": ["func testProfileHasNoDoubanLoginEntry()", "XCTAssertFalse(app.buttons[\"连接豆瓣账号\"].exists)", "XCTAssertFalse(app.buttons[\"豆瓣账号已连接\"].exists)", "XCTAssertFalse(app.staticTexts[\"昵称来自豆瓣账号\"].exists)"]
+        }
+      ],
+      "notes": "2026-11-15 按用户“还是不行，删掉这个入口吧”移除 DoubanAccount 与资料页调用，替换原登录 UI 守护为入口不存在、本地资料仍可编辑的守护。底层原生会话及其隔离测试保留。沿用已有契约签名及全屏快进锚点待对账基线，不重新签名覆盖其他窗口修改。"
+    },
+    {
+      "id": "ios-pending-seek-timeline",
+      "title": "iOS 异步 seek 进度保持",
+      "status": "active",
+      "requirement": "iOS 手动 seek 提交后立即显示目标进度；原生异步 seek 尚未完成时旧时间采样不得覆盖目标。使用精确容差，连续 seek 的旧完成事件、换集及释放后的事件不影响当前时间轴；完成后恢复原生进度，失败时回到实际位置，保留用户暂停意图。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/PendingSeek.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt",
+          "contains": ["pendingSeek.position(previous.mediaId", "toleranceBefore = CMTimeMake(0, 1), toleranceAfter = CMTimeMake(0, 1)", "!pendingSeek.complete(request)", "pendingSeek.clear()"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PendingSeekTest.kt",
+          "contains": ["@Test fun oldNativeSamplesCannotPullTheReleasedTimelineBack()", "@Test fun interruptedSeekCompletionCannotOverwriteTheNewestTarget()", "@Test fun mediaReplacementAndTeardownDiscardPendingSeeks()", "@Test fun failedCurrentSeekCanReturnToActualNativePosition()"]
+        }
+      ],
+      "notes": "旧进度与连续完成事件用 host 回归测试保护；AVPlayer 精确 seek 用 iOS 编译及设备验收。保留既存未对账签名。"
+    },
+    {
+      "id": "immediate-next-episode-playback",
+      "title": "完播后直接播放下一集",
+      "status": "active",
+      "requirement": "自然完播和跳过片尾后立即加载同线路下一集，移除结束提示页和倒计时；复用已有预加载，旧结束事件不得重复切集；最后一集不循环；播完当前睡眠设置优先，隐藏视频不自动切集，音频模式允许后台继续。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/DesktopVideoFrame.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/MiniPlayer.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": ["mutable.value = current.copy(ended = true, finished = true)", "advanceToNext()", "if (pauseAtEnd)", "player.mediaId != endedId"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": ["@Test fun completionImmediatelyAdvancesWithoutUiAndIgnoresStaleEnd()", "@Test fun hidingBeforeEndNeverStartsAutoAdvance()", "@Test fun sleepAfterCurrentPausesHiddenAudioBeforeAutoAdvanceAndIsOneShot()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackPreloadTest.kt",
+          "contains": ["@Test fun preparedDataIsConsumedImmediatelyAtEndAndCloseCancelsPreload()"]
+        }
+      ]
+    },
+    {
+      "id": "series-intro-outro-skip",
+      "title": "每部剧片头片尾时长与自动跳过",
+      "status": "active",
+      "requirement": "剧集默认开启跳过片头片尾，未配置时按地区回退（地区含美国/欧美/美剧为 30 秒，其余 90 秒），播放执行与设置开关一致。按来源详情页身份保存 0–300 秒的片头片尾时长，0 关闭；显式关闭必须持久化，重新打开或换集不得自动重启，已有自定义值保持不变。播放器“更多”里的开关在缺失边时按地区回退；每次新集加载快照设置，有效可快进时间轴才执行。较后续播不倒退；手动回看、同集换线和恢复不重复跳过。片尾直接进入同线路下一集，末集停在结束位置；暂停和隐藏视频不切集，播完当前及分钟定时优先。跳过片尾记为完播，回看恢复正常进度记录。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/SkipDurations.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/SkipDurationsStore.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/SkipDurationsDialog.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": ["activeSkip.fits(player.duration)", "private fun finishEpisode(player: PlayerState, synthetic: Boolean)", "fun seekTo(position: Long)", "preserveSkip = corresponding != null"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/SkipDurationsStore.kt",
+          "contains": ["series_skip_durations", "val key = titlePage(page)", "!value.valid", "fun get(page: String, seconds: Int = SkipDurations.DefaultSeconds)", "next[key] = value"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/SkipDurationsDialog.kt",
+          "contains": ["自动跳过片头片尾", "store.setEnabled(page, on, fallback)"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/SkipPlaybackTest.kt",
+          "contains": [
+            "@Test fun seriesSettingsPersistCanonicalIdentityAndRejectInvalidInput()",
+            "@Test fun skippingDefaultsOnByRegionAndExplicitOffSurvivesRestart()",
+            "@Test fun defaultSkippingSeeksIntroAndAdvancesPastOutroWithoutOpeningSettings()",
+            "@Test fun introWaitsForDurationAndPreservesLaterResumeOnBothHosts()",
+            "@Test fun invalidTimelineUnseekableAndMoviesDoNotSkip()",
+            "@Test fun outroImmediatelyAdvancesInSameLineAndNextLoadReadsNewSettings()",
+            "@Test fun pauseHiddenVideoAndAudioIntentAreRespected()",
+            "@Test fun manualCreditsReplayAndLineSwitchKeepExemption()",
+            "@Test fun forwardSeekIntoCreditsAdvancesButPausedSeekWaitsForPlay()",
+            "@Test fun seekingBeforeDurationArrivesDoesNotDisableLaterOutro()",
+            "@Test fun sleepAtCreditsIsOneShotAndNeverLoadsNext()",
+            "@Test fun finalEpisodeStopsAtEndAndCanReplayCredits()",
+            "@Test fun recoveryDoesNotRepeatIntroOrUndoViewerReplay()",
+            "@Test fun syntheticEndCheckpointsBeforeImmediateAdvanceAndMinuteTimerPausesNext()"
+          ]
+        }
+      ],
+      "notes": "配置时长方案，不做智能识别。设置从下一次新集加载生效。向前定位进入片尾仍续播，向后定位回看片尾或重开已完播集才豁免；未知时长的定位不关闭后续片尾跳过。保留原有未对账签名及 5 秒/10 秒步长冲突，不跨窗口重新签名。"
+    },
+    {
+      "id": "database-history-episode-continuation",
+      "title": "数据库观看历史与完播后下一集续播",
+      "status": "active",
+      "requirement": "历史、每集位置/时长/完成状态和源内剧集顺序持久化到独立 SQLite 数据库；进度在退出、切集、完播等事件边界保存，不做每5秒定时保存；旧偏好记录一次性迁移；默认入口自动恢复最近未完播集数及进度，无续播弹窗或确认等待；从历史重进时完播集进入同线路下一集，最后一集重播自身；显式选集不自动跳过；重试保持实际打开的集数及位置；内容缓存清理不能删除观看记录。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/PlaybackDatabase.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/UserStore.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/PlaybackDatabase.kt",
+          "contains": ["CREATE TABLE IF NOT EXISTS playback_data", "BEGIN IMMEDIATE", "put(\"migrated\", \"1\")"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/UserStore.kt",
+          "contains": ["fun continueEpisode(", "fun rememberEpisodes(", "playbackStorage.writeSnapshot(values)", "line.getOrNull(line.indexOf(selected) + 1)?.path ?: latest.episodePath"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": ["\"$it.playback.db\"", "resumeHistory = true", "user.continueEpisode(info.pageUrl, info.episodes)", "private suspend fun resolveRememberedEpisode(", "value.resumeHistory || value.episode == null"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": ["fun saveOnExit()", "position ?: (if (preserveSkip) resumeTarget else null) ?: stored", "(recoveryPosition ?: resumeTarget)"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": ["@Test fun completedFirstEpisodeReopensSecondAfterRestartWithLegacyProgress()", "@Test fun closeAfterImmediateAdvanceThenHistoryReopenKeepsSecondEpisode()", "@Test fun finishedFinalEpisodeHasNoResumeLabelAndReplaysSameEpisode()", "@Test fun automaticResumeSavesUpdatedPositionOnExit()", "@Test fun reopenSavedResumesTheUnfinishedEpisodeAndKeepsResumeLabel()", "@Test fun defaultEntriesRestoreFourthEpisodeAfterRestartAndExplicitSelectionWins()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": ["@Test fun progressAndResumeWorkWithoutAPlayerScreen()", "@Test fun automaticResumeLoadsWithoutWaitingAndSurvivesLateReadiness()", "@Test fun closingBeforeResolutionFinishesNeverLoadsNativeMedia()", "@Test fun firstSuccessfulLoadAfterResolverRetryAutomaticallyResumesSavedPosition()", "@Test fun pageExitCheckpointsWithoutStoppingAudioPlayback()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/PlaybackDatabaseTest.kt",
+          "contains": ["@Test fun completedEpisodeAndOrderedSuccessorSurviveDatabaseRestartAndCacheClear()", "@Test fun preferenceMigrationIsDurableAndClearedHistoryNeverReturns()", "@Test fun immediatelySelectedEpisodeWinsBeforeItsFirstCheckpoint()"]
+        }
+      ],
+      "notes": "不保存临时媒体地址。旧记录缺失剧集顺序时仅首次重进需要在线补齐；数据库与内容缓存独立。"
+    },
+    {
+      "id": "player-next-episode-address-preload",
+      "title": "下一集播放地址预解析与片尾刷新",
+      "status": "active",
+      "requirement": "当前集首帧后复用源信息预解析同线路下一集地址，但不得自动播放；地址缓存5分钟；播放到距片尾60秒且预解析结果超过45秒时绕过媒体缓存刷新；新鲜预加载结果忽略缓存策略字段匹配切集请求并直接复用，过期后重新解析并保留初始位置。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": [
+            "const val PRELOAD_VALID_MS = 5 * 60_000L",
+            "private fun preloadNext(info: PlaybackInfo, reuseSourceInfo: Boolean = true)",
+            "private fun refreshPreloadNearEnd()",
+            "player.duration - player.position > 60_000",
+            "nowMs() - completed < 45_000",
+            "val cached = preload?.takeIf { it.request.copy(reuseSourceInfo = value.reuseSourceInfo) == value && (it.completedMs == null || nowMs() - it.completedMs!! < PRELOAD_VALID_MS) }",
+            "controller.preload(MediaSource(generation + 1, info.url, info.kind, info.title, episodeLabelOf(info), autoplay = false, segments = info.segments))"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackPreloadTest.kt",
+          "contains": [
+            "@Test fun resolvedNextEpisodePreparesDataWithoutAutoplayAndCancelsWhenHidden()",
+            "@Test fun addressSurvivesMoreThanOneMinuteAndIsConsumedWithoutReresolution()",
+            "@Test fun nearEndRefreshesOldAddressAndPreloadsNewData()",
+            "@Test fun expiredAddressFallsBackToResolutionAndInitialPositionPrecedesBuffering()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": [
+            "@Test fun nextEpisodeIsPreloadedAndReusedWithoutStartingPlayback()"
+          ]
+        }
+      ],
+      "notes": "预解析只覆盖地址，不代表视频数据已下载。"
+    },
+    {
+      "id": "android-native-data-preload",
+      "title": "Android 原生视频数据预加载",
+      "status": "active",
+      "requirement": "Android 在播放服务内用 Media3 DefaultPreloadManager 预加载下一集约 3 秒媒体数据，预加载目标缓冲上限 8MiB，并与当前播放共用 LoadControl；实际播放开始时应接管预加载的 MediaSource，未命中时必须回退到普通加载且不报错。预加载命令只对同包 MediaController 开放。",
+      "implementation": [
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlaybackPreloader.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/PlaybackMediaSessionService.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlatform.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlaybackPreloader.kt",
+          "contains": [
+            "DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(PRELOAD_MS)",
+            ".setPlayerTargetBufferBytes(\"preload\", 8 * 1024 * 1024).build()",
+            "?.let(manager::getMediaSource)",
+            "consumed?.let(manager::remove)",
+            "private companion object { const val PRELOAD_MS = 3_000L }"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/PlaybackMediaSessionService.kt",
+          "contains": [
+            "internal const val ACTION_PRELOAD = \"dev.pandavideo.action.PRELOAD\"",
+            "if (controller.packageName == packageName && customCommand.customAction == ACTION_PRELOAD)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlatform.kt",
+          "contains": [
+            "override fun preload(source: MediaSource?)",
+            "mutable.value = mutable.value.copy(dataPreloadHit = bootstrapHit || response.extras.getBoolean(\"preloadHit\"))"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/PlaybackPreloadDeviceTest.kt",
+          "contains": [
+            "@Test fun sharedSessionConsumesTheNativeNextEpisodePreload()",
+            "@Test fun coldAndPreloadedMp4AndHlsRenderWithPausedIntentPreserved()"
+          ]
+        }
+      ],
+      "notes": "设备测试输出 PRELOAD_BENCH 首帧数据；本机实测 MP4/HLS 预加载后 P95 首帧下降 44%/56%，不含地址解析。"
+    },
+    {
+      "id": "ios-standby-preroll",
+      "title": "iOS 单播放器预加载与 item 接管",
+      "status": "active",
+      "requirement": "iOS 会话内只创建一个 AVPlayer，并始终由 AVPlayerLayer 与 PiP 持有；下一集预热只创建 AVPlayerItem 并异步加载 asset 的 playable/duration，不创建备用 AVPlayer，也不把 item 关联到其他播放器。只有预热 item 已就绪、地址与类型匹配、起始位置为 0 且无 PiP 占用时，切集才接管该 item，否则新建 item；接管后 layer 与 player 绑定不变，且必须仍能渲染首帧。",
+      "implementation": [
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt",
+          "contains": [
+            "val native: AVPlayer = AVQueuePlayer()",
+            "private data class Prepared(",
+            "item.asset.loadValuesAsynchronouslyForKeys(listOf(\"playable\", \"duration\"))",
+            "val upcoming = prepared?.takeIf { segmented == null && it.ready && it.source.url == source.url &&",
+            "native.replaceCurrentItemWithPlayerItem(item)",
+            "displayLayer?.isReadyForDisplay() == true"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/iosApp/PandaVideoUITests/FullscreenTests.swift",
+          "contains": [
+            "func testNextEpisodePreloadKeepsVideo()"
+          ]
+        }
+      ],
+      "notes": "ID 沿用旧的备用播放器 preroll 契约。备用 AVPlayer 会随接管重建 layer 绑定，实测接管集只有声音无画面；跨 AVPlayer 复用 item 会触发 NSInvalidArgumentException。2026-11-14 模拟器 XCUITest：接管路径第 2/3 集视频区平均亮度 107.88/145.89，修复前同路径为 0.0。"
+    },
+    {
+      "id": "playback-startup-telemetry",
+      "title": "播放启播遥测",
+      "status": "active",
+      "requirement": "启播遥测只记录本地内存最多 50 条；Ready 与真实首帧必须分开记录；只有 Started 样本包含首帧耗时；纯音频、取消、失败不得混入成功视频首帧；样本不得包含媒体 URL、标题、查询词或用户标识。视频遮罩仅在当前请求的真实首帧到达后撤掉，Ready/Playing/暂停及续播位置不能代替首帧；替换播放会话时首个 Composition 不得沿用旧会话的首帧状态；同一视频已显示后缓冲仍保留最后画面。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/PlaybackTelemetry.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/VideoFrameVisibility.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/PlaybackTelemetry.kt",
+          "contains": [
+            "enum class StartupOutcome { Pending, Started, Cancelled, Failed, AudioOnly }",
+            "val firstFrameMs: Long? = null",
+            ".takeLast(50)",
+            "player.firstFrameRendered && player.phase == PlayerPhase.Playing && player.position > 0",
+            "if (player.phase == PlayerPhase.Paused && !player.wantsPlay && mutable.value.last().outcome == StartupOutcome.Pending) finish(StartupOutcome.Cancelled)",
+            "/** Collects at most 50 attempts in memory; observation never sends or logs playback data. */"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": [
+            "telemetry.begin(id, reason)",
+            "telemetry.observe(player, mutable.value.audioOnly)",
+            "telemetry.finish(StartupOutcome.Failed)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/VideoFrameVisibility.kt",
+          "contains": [
+            "StateFlow<T>.collectPlaybackState(): State<T> = key(this) { collectAsState() }",
+            "!loading && !audioOnly && player.mediaId == requestedMediaId && player.firstFrameRendered",
+            "loading || player.mediaId != requestedMediaId || !presented"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": [
+            "val state by session.state.collectPlaybackState()",
+            "val player by session.controller.state.collectPlaybackState()",
+            "requestedMediaId = state.mediaId"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackPreloadTest.kt",
+          "contains": [
+            "@Test fun telemetrySeparatesReadyFromRenderedFrameAndRejectsStaleEvents()",
+            "@Test fun failuresCancellationAndAudioDoNotBecomeSuccessfulVideoSamples()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/VideoFrameVisibilityTest.kt",
+          "contains": [
+            "@Test fun readyPlayingAndPausedDoNotExposeAnUnrenderedReplacement()",
+            "@Test fun resolvedRequestCannotAcknowledgeThePreviousPlayersFirstFrame()",
+            "@Test fun rebufferingDoesNotBlackOutAnAlreadyRenderedPresentation()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/PlaybackStateSubscriptionTest.kt",
+          "contains": [
+            "@Test fun replacingSessionNeverComposesThePreviousPlayersRenderedFrameState()"
+          ]
+        }
+      ],
+      "notes": "rebufferMs 是诊断计数器，不能直接当作 Mux 口径的重缓冲率。2026-11-21 用失败后通过的真实 Compose 订阅测试和首帧遮罩测试修复搜索换片闪旧画面；原有契约签名及全屏 5 秒锚点冲突未对账，未执行 --accept 覆盖基线。"
+    },
+    {
+      "id": "player-session-reuse",
+      "title": "单播放会话与播放器复用",
+      "status": "active",
+      "requirement": "同一播放会话内切集、切线路复用同一个平台播放器对象；听音频退出列表后，从同一目录、搜索、首页续播或历史入口重新进入相同影片和集数时复用会话，不重新解析或加载，保留进度、倍速和暂停意图。身份按目录地址或解析后的播放页匹配，不按同名标题匹配；显式换集、离线入口、错误或完播后的重开保持原有加载行为。打开或替换另一部影片时关闭旧会话并释放旧播放器；关闭会话必须幂等并取消未完成的解析与预加载。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": [
+            "class PlaybackSession(",
+            "fun select(episode: Episode)",
+            "controller.stop()",
+            "private var closed = false",
+            "fun close() {"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": [
+            "fun minimizePlayer(playerSession: PlaybackSession? = session)",
+            "private fun reuseAudioPlayer(pageUrl: String?, episode: String? = null)",
+            "if (!offlineOnly && reuseAudioPlayer(request.page, request.episode)) return",
+            "session?.close(); session = null"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": [
+            "@Test fun closeIsIdempotentAndCancelsResolution()",
+            "@Test fun oldResolutionCannotReplaceNewSelection()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": [
+            "@Test fun audioModeReopensFromCatalogSearchAndHistoryWithoutReloading()",
+            "@Test fun audioModeReentryPreservesPauseButOtherEpisodesAndTitlesReplaceSession()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/AndroidPlayerConnectionDeviceTest.kt",
+          "contains": [
+            "@Test fun connectingAndReleasingUpdateTheObservedNativePlayer()"
+          ]
+        }
+      ],
+      "notes": "切集走 loadRequest，不重建 PlaybackSession。听音频重新进入由 AppStateTest 的 audioModeReopensFromCatalogSearchAndHistoryWithoutReloading、audioModeReentryPreservesPauseButOtherEpisodesAndTitlesReplaceSession 覆盖。保留原有未接受签名及全屏5/10秒冲突，未覆盖其他窗口签名。"
+    },
+    {
+      "id": "fullscreen-ten-second-seek",
+      "title": "全屏播控快进/快退 10 秒",
+      "status": "active",
+      "requirement": "全屏页播控条出现时，在播放/暂停按钮两侧显示快退 10 秒和快进 10 秒按钮；只在播放器具备 seek 能力且时长有效时可用；点击后按 10 秒步进并夹在 0..duration。按钮数字与无障碍文案均为10秒，与双击手势、电视遥控器和投屏遥控器的步长一致。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PlayerTransportIcons.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": [
+            "if (fullscreen) SeekButton(forward = false, enabled = quickSeekEnabled) { seekBySeconds(false) }",
+            "if (fullscreen) SeekButton(forward = true, enabled = quickSeekEnabled) { seekBySeconds(true) }",
+            "fun seekBySeconds(forward: Boolean)",
+            "distanceMs = 10_000L",
+            "private fun SeekButton(forward: Boolean, enabled: Boolean, onClick: () -> Unit)",
+            "contentDescription = if (forward) \"快进 10 秒\" else \"快退 10 秒\""
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PlayerTransportIcons.kt",
+          "contains": [
+            "val Replay = ImageVector.Builder(\"PlayerReplay\", 24.dp, 24.dp, 24f, 24f).apply {"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": [
+            "@Test fun fullscreenTenSecondSeekClampsToMediaBounds()"
+          ]
+        }
+      ],
+      "notes": "2026-11-22 用户明确要求统一为10秒，替代旧 fullscreen-five-second-seek 契约；不能再依据旧契约恢复为5秒。按钮、图标数字、无障碍文案和边界守护测试同步为10秒。"
+    },
+    {
+      "id": "playback-source-recovery",
+      "title": "播放失败换源与重试",
+      "status": "active",
+      "requirement": "非手动选线时，原生播放失败或连续15秒缓冲，同一集最多自动换源2次，优先最快已测可用对应集；用户选线后不自动覆盖。被拒绝的媒体URL及稳定剧集身份不得再次使用；手动重试必须清空被拒绝列表；隐藏或过期的错误事件不得触发换源。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": [
+            "if (recoveryAttempts >= 2)",
+            "if (info.segments.isEmpty()) setOf(info.url) else info.segments.map { it.url }.toSet()",
+            "if (info.url in value.rejectedMedia) throw IllegalStateException(\"备用线路不可用，请重试\")",
+            "loadRequest(it.copy(rejectedMedia = emptySet(), reuseSourceInfo = false), null, true,",
+            "preserveSkip = !mutable.value.ended && !mutable.value.finished"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": [
+            "@Test fun nativeFailureSwitchesSameEpisodeAndPreservesPositionAndPause()",
+            "@Test fun nativeRecoveryIsBoundedAndManualRetryClearsRejectedUrls()",
+            "@Test fun hiddenAndStaleNativeErrorsNeverResolveAnotherSource()"
+          ]
+        }
+      ],
+      "notes": "换源使用重新解析后的页面/集数，不沿用原始请求。"
+    },
+    {
+      "id": "audio-only-hidden-playback",
+      "title": "后台音频模式与隐藏暂停",
+      "status": "active",
+      "requirement": "页面隐藏且未启用音频模式时，暂停播放、取消自动连播并拒绝远端播放；启用音频模式后允许后台继续播放下一集；切回视频模式且仍隐藏时必须暂停；不支持音频模式的宿主不能启用该模式；原生预加载只能在可播放状态下进行。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": [
+            "private val playbackAllowed: Boolean get() = playbackVisible || mutable.value.audioOnly",
+            "fun setAudioOnly(enabled: Boolean)",
+            "fun setPlaybackVisible(visible: Boolean)",
+            "private fun pauseHiddenPlayback()",
+            "player.phase in setOf(PlayerPhase.Playing, PlayerPhase.Ended)"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": [
+            "@Test fun audioTogglePreservesTimelineRateAndPausedIntentWithoutReload()",
+            "@Test fun audioModeAllowsPendingLoadAndNextEpisodeWhileHidden()",
+            "@Test fun switchingBackToVideoWhileHiddenPausesAndRejectsRemotePlay()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/AudioModeDeviceTest.kt",
+          "contains": [
+            "@Test fun hiddenAudioAdvancesAndReturningToVideoPreservesMediaAndPause()"
+          ]
+        }
+      ],
+      "notes": "隐藏检查同时作用于预解析与原生数据预加载。"
+    },
+    {
+      "id": "audio-only-fullscreen",
+      "title": "听音频保留当前窗口",
+      "status": "active",
+      "requirement": "播放页或底部小窗开启听音频时保留当前窗口，不自动进入全屏或跳转播放页；返回视频时保留当前全屏状态，底部小窗返回视频可打开播放页；返回箭头仍可退出全屏；PiP 进入时退出全屏，退出 PiP 不因音频模式自动展开。不得改变播放进度、倍速或播放意图。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/MiniPlayer.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": [
+            "Audio mode changes the output, not the presentation.",
+            "if (fullscreen) changeFullscreen(false) else back()",
+            "if (pipActive) fullscreenLayout.enterPictureInPicture()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/MiniPlayer.kt",
+          "contains": [
+            "onOpen = { model.platform.haptics.tick() }"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": [
+            "@Test fun audioTogglePreservesTimelineRateAndPausedIntentWithoutReload()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/PictureInPictureCompositionTest.kt",
+          "contains": [
+            "@Test fun audioVideoRoundTripsRetainTheHostAndRemoveTheAudioBackdrop()"
+          ]
+        }
+      ],
+      "notes": "守护测试覆盖可见小窗和隐藏小窗的暂停意图、进度与倍速，以及音视频切换时原生宿主的保留；窗口布局仍需界面验收。按用户要求取消自动全屏；修改前契约签名已不匹配，暂不覆盖未对账的签名。"
+    },
+    {
+      "id": "audio-entry-and-sleep-timer",
+      "title": "听音频直接入口与统一定时关闭抽屉",
+      "status": "active",
+      "requirement": "播放器通过可见耳机图标在当前窗口直接进入音频模式，不自动展开；音频画面与小窗均提供返回视频和定时关闭按钮。返回视频先恢复可见播放权限，不重载或改变暂停意图。定时关闭共用应用状态，底部抽屉支持不开启、播完当前、30/60/90 分钟和 1–180 分钟自定义；关闭抽屉不取消计时，显式关闭播放器取消计时。播完当前在有效本集结束事件中优先暂停，阻止自动下一集，忽略过期结束事件；定时到点应暂停未完成解析的后续自动播放。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PlayerAudioControls.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PlayerSleepTimerSheet.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/AudioModeBackdrop.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/MiniPlayer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PlayerAudioControls.kt",
+          "contains": [
+            "internal fun PlayerAudioButton(",
+            "internal fun returnToVideo(",
+            "session.setPlaybackVisible(true)",
+            "session.setAudioOnly(false)",
+            "internal fun PlayerSleepTimerButton("
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PlayerSleepTimerSheet.kt",
+          "contains": [
+            "ModalBottomSheet(",
+            "listOf(30, 60, 90)",
+            "SleepTimerOption(\"播完当前\"",
+            "it in 1..180",
+            "if (editingCustom) \"返回\" else \"取消\""
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/MiniPlayer.kt",
+          "contains": [
+            "returnToVideo(session, onOpen)",
+            "PlayerSleepTimerButton(model",
+            "PlayerSleepTimerSheet(model)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": [
+            "AudioModeContent(cover, title)",
+            "state.audioOnly -> Modifier.fillMaxWidth().height(240.dp)",
+            "PlayerSleepTimerButton(model",
+            "PlayerSleepTimerSheet(model, fullscreen)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Player.kt",
+          "contains": [
+            "fun setPauseAtEnd(enabled: Boolean)",
+            "fun pauseForSleepTimer()",
+            "if (pauseAtEnd) {",
+            "finishPauseAtEnd()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": [
+            "fun setSleepAfterCurrent()",
+            "onPauseAtEnd = ::finishSleepAfterCurrent",
+            "active?.pauseForSleepTimer()"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": [
+            "@Test fun sleepAfterCurrentPausesHiddenAudioBeforeAutoAdvanceAndIsOneShot()",
+            "@Test fun sleepAfterCurrentArmedAfterAdvancePausesTheNewCurrentEpisode()",
+            "@Test fun staleEndCannotConsumeSleepActionAfterAnEpisodeSwitch()",
+            "@Test fun sleepTimerExpiryDuringResolutionPreventsLateAutoplay()",
+            "@Test fun returningFromMinimizedAudioOpensVideoBeforeRevokingAudioPermission()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": [
+            "@Test fun sleepAfterCurrentAndCountdownReplaceEachOtherAndClearOnCompletion()",
+            "@Test fun sleepAfterCurrentCanBeCancelledAndSurvivesTitleReplacement()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/PlayerSleepTimerUiTest.kt",
+          "contains": [
+            "@Test fun timerOptionsAndCustomInputWorkInPortraitAndShortLandscape()",
+            "@Test fun audioReturnActionReceivesTouchAboveThePlayerGestureLayer()"
+          ]
+        }
+      ],
+      "notes": "定时关闭表示暂停播放，保留会话与当前进度；定时状态不持久化。登记前已有契约签名不匹配，未覆盖此前签名。"
+    },
+    {
+      "id": "home-high-rating-filter",
+      "title": "首页高分内容过滤",
+      "status": "active",
+      "requirement": "首页来源目录各分类只展示豆瓣评分不低于 8.0 且评分存在的内容。精选保留 Top 250；其他分类使用完整豆瓣 JSON 分类接口，组合题材、地区和 8-10 分区间，保留上游分页，不受 Top 250 或预热 300 条限制。高分剧集与电视剧筛选在网络结果、缓存回调及离线返回中排除明确的赛事直播、演唱会、课程及带纪录片/真人秀/脱口秀/综艺类型证据的节目；保留体育题材剧情剧和类型不明条目，不仅凭电视剧来源标签强制归类。过滤不改变上游分页及原始缓存。个人历史续播卡片不受来源目录评分和分类限制。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+          "contains": [
+            "internal const val HomeMinimumRating = 8.0",
+            "internal fun CatalogItem.isTelevisionDrama(): Boolean"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": [
+            "browse(filters, start, HomeMinimumRating, refresh,",
+            "publish(page.highRated())",
+            "it.rating in HomeMinimumRating..10.0",
+            "items.filter { filters.type != \"tv\" || it.isTelevisionDrama() }"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/ContentRepositoryTest.kt",
+          "contains": [
+            "@Test fun everyHomeCategoryRequestsHighScoresAndKeepsUpstreamPaging()",
+            "@Test fun highRatedSeriesExcludeEventsAndFactualProgramsWithoutDroppingSportsDramas()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/CatalogDatabaseTest.kt",
+          "contains": ["@Test fun televisionFilteringAppliesBeforeCachedPublicationAndOfflineFallback()"]
+        }
+      ],
+      "notes": "按用户最新要求恢复完整 JSON 分类，保留高分规则。既有契约签名和其他窗口锚点冲突未重新签名。"
+    },
+    {
+      "id": "douban-json-categories",
+      "title": "完整豆瓣 JSON 分类与网站快照",
+      "status": "active",
+      "requirement": "分类恢复豆瓣 j/new_search_subjects JSON 接口，含 Top 250 之外的内容及上游分页。题材、地区、年份、热门/豆瓣评分/最新排序保持对应接口语义。网站可用数据导出为带来源、时间戳和分页覆盖的 JSON，内置为新旧安装缺失缓存键的兜底；已有 SQLite 刷新数据优先。启动及首次进入热播、发现、筛选和邻页时先显示本地快照，过期仅触发后台更新而不阻塞列表；快照沿用高分、类型及已确认无资源过滤。主动刷新绕过快照回调并保留当前列表，分页不得用第一页缓存覆盖已加载内容，失败保留原数据并标记 stale。不以全局快照冒充指定地区，也不伪造不可用后续页。移动端直接连接豆瓣，运行不依赖网站服务。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/Top250Categories.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogDatabase.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+        "mobile/shared/src/commonMain/composeResources/files/top250-categories.json",
+        "mobile/shared/src/commonMain/composeResources/files/catalog-categories.json",
+        "mobile/tools/export_website_catalog.py",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["if (kind == \"top250\" && country == \"all\") return top250Page(start, refresh, onCached)", "browse(filters, start, HomeMinimumRating, refresh,", "publish(page.highRated())", "forceRefresh = refresh", "onCached?.invoke(if (fresh) cached else cached.copy(stale = true))"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": ["private fun cachedPublisher(", "cachedPublisher(discoverMutable, !more && !refresh)", "cachedPublisher(browseMutable, !more && !refresh)", "cachedPublisher(hotMutable, !more && !refresh)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogDatabase.kt",
+          "contains": ["internal suspend fun top250Snapshot()", "if (stored != null || !initializeFromBundle) return stored", "Res.readBytes(\"files/catalog-categories.json\")", "snapshot.pages[key]?.let { StoredCatalog(it.page, it.savedAt) }"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/Top250Categories.kt",
+          "contains": ["items.drop(start).take(20)", "private val finance = setOf(\"1849031\", \"1305487\")", "private val nature = setOf(\"3442220\", \"1308857\")"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/ResponseCacheTest.kt",
+          "contains": ["@Test fun expiredCatalogAppearsBeforeNetworkAfterRestart()", "@Test fun explicitCatalogRefreshSkipsSnapshotAndFreshRestartSkipsNetwork()", "@Test fun cachedHomepageStillFiltersLegacyScoresAndRestoresCategory()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": ["@Test fun cachedHotListEndsLoadingWhileRevalidationIsPending()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/Top250CategoriesTest.kt",
+          "contains": ["@Test fun rankingMetadataSeparatesMultipleReleaseYearsFromProductionRegions()", "@Test fun categoriesScanTheWholeRankingBeforePaginatingAndKeepOnlyHighRatings()", "@Test fun emptyCategoryIsAValidRankingResultAndOfflineRefreshPreservesMatches()", "@Test fun genreCountryAndCuratedThemesAlwaysIntersectRankingMembership()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/CatalogDatabaseTest.kt",
+          "contains": ["@Test fun websiteJsonAddsFullCategoriesToExistingInstallAndRefreshOverridesBundle()", "@Test fun websiteJsonSurvivesFailedRefreshWithoutInventingRegionalCoverage()", "@Test fun allBundledTop250IdentitiesHaveVerifiedGenreAndCountryMetadata()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/ContentRepositoryTest.kt",
+          "contains": ["@Test fun fullCategoriesPaginateBeyondTop250AndTelevisionWarmLimit()", "@Test fun regionalRecommendationsCombineCountryGenreAndScoreAndKeepSeparateOfflineCaches()", "@Test fun homepageScoreRangeCacheIsSeparateFromBrowseAndSurvivesOffline()"]
+        }
+      ],
+      "notes": "替代此前 top250-genre-categories，用户明确要求恢复更完整的 JSON 分类。登记前存在签名不匹配、fullscreen-five-second-seek 两锚点及 sketch-catalog-browser-playback 三测试锚点缺失，未覆盖未对账签名。"
+    },
+    {
+      "id": "offline-downloads",
+      "title": "离线缓存与本地播放",
+      "status": "active",
+      "requirement": "播放详情的唯一缓存入口位于年份后面，打开单集/多集选择面板，默认选择本集，可全选当前线路；已缓存及队列中的集显示状态并防重复选择，暂停和失败任务可继续或重试。批量选择完整校验后按来源集序加入串行队列，逐集解析各自的新媒体地址，不改变当前播放；按稳定的集标识去重、持久化未完成任务并在恢复后标记为暂停；已完成且文件存在的集必须能在无网络时直接播放；文件丢失必须变成可重试错误，不能返回假的离线媒体；删源失败必须重试删除而不是重新下载。非 Wi-Fi 网络须经确认才解析并下载媒体，批量只提醒一次；失去 Wi-Fi 或断网暂停并保留进度，连接 Wi-Fi 恢复网络等待任务但不得恢复手动暂停；Android 复用完整保留的缓存字节，iOS 暂停并恢复 HLS 任务、MP4 保存并消费系统续传数据，源站不支持续传或地址过期时允许重新下载。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/OfflineDownloads.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/EpisodeCacheSheet.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidOfflineEngine.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosOfflineEngine.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlatform.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/OfflineDownloads.kt",
+          "contains": [
+            "class OfflineDownloads(",
+            "fun enqueue(info: PlaybackInfo, cover: String = \"\"): String",
+            "fun enqueueEpisodes(info: PlaybackInfo, paths: Collection<String>, cover: String = \"\"): List<String>",
+            "fun offline(request: PlayerRequest): PlaybackInfo?",
+            "private companion object { const val KEY = \"offline_downloads_v1\" }",
+            "private fun holdForNetwork()",
+            "generation == networkGeneration"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": ["PlayerCacheButton(enabled = !state.loading)", "items(extraMetadata)", "EpisodeCacheSheet(info, model, cover)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/EpisodeCacheSheet.kt",
+          "contains": ["Text(\"选择缓存集数\"", "GridCells.Adaptive(88.dp)", "model.cacheEpisodes(info, accepted, cover.orEmpty())"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/OfflineDownloadsTest.kt",
+          "contains": [
+            "@Test fun queueIsSerialAndDuplicatesUseStableEpisodeIdentity()",
+            "@Test fun completedEpisodeResolvesLocallyWithoutNetworkAndOmitsUncachedNextEpisode()",
+            "@Test fun lostLocalFilesBecomeRetryableInsteadOfReturningFakeOfflineMedia()",
+            "@Test fun deleteFailureRetriesDeletionInsteadOfDownloadingAgain()",
+            "@Test fun batchSelectionResolvesEachEpisodeInSourceOrderAndKeepsPlaybackSnapshot()",
+            "@Test fun invalidBatchSelectionNeverQueuesAPartialDownload()",
+            "@Test fun cachePickerKeepsSingleFilmWithoutAnEpisodeListDownloadable()",
+            "@Test fun batchSelectionResumesPausedEpisodesWithoutDuplicatingCompletedWork()",
+            "@Test fun mobileBatchWaitsForOneConsentBeforeResolvingAnyMedia()",
+            "@Test fun wifiLossPreservesProgressAndWifiReturnDoesNotResumeManualPause()",
+            "@Test fun offlineWaitAndExplicitPauseNeverStartOnReconnect()",
+            "@Test fun cancellingWaitingTaskInvalidatesConsentAndRetryRequiresConsentAgain()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/OfflineMediaDeviceTest.kt",
+          "contains": ["@Test fun pausedMp4ResumesFromCachedBytesAndNeverPublishesAPartialAsset()"]
+        }
+      ],
+      "notes": "离线引擎按平台注入；不支持缓存的宿主必须安全降级。宽屏详情面板将唯一缓存入口放在选集标题旁。基线签名及其他窗口5秒/10秒锚点冲突未对账，暂不覆盖签名。"
+    },
+    {
+      "id": "fullscreen-episode-drawer",
+      "title": "全屏右侧滑入选集",
+      "status": "active",
+      "requirement": "全屏选集从右侧滑入深色圆角面板并保留原生播放器与全屏状态；当前集高亮并滚动可见；选集后关闭，切线路立即生效且保留面板；关闭按钮、遮罩与系统返回可收起；退出全屏或进入 PiP 后隐藏；全屏返回内嵌播放时，窗口方向恢复前保持视频布局，不短暂显示横屏选集详情区域，PiP 不等待普通窗口恢复。剧集用惰性网格，按面板宽度与系统字体大小调整列数，长名称占整行并完整换行；分组按列表变化缓存。线路与详情复用PlaybackLineButton及来源名称回退，展示真实名称、耗时或待测速、广告标记与一致的选中样式，保持相同排序与可用性规则。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/FullscreenEpisodeDrawer.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/FullscreenLayoutState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/PlaybackLineButton.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/platform/PlayerOverlayBackHandler.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/PlayerOverlayBackHandler.android.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/PlayerOverlayBackHandler.ios.kt",
+        "mobile/shared/src/jvmMain/kotlin/dev/pandavideo/core/platform/PlayerOverlayBackHandler.jvm.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": [
+            "visible = fullscreenLayout.requested && !pipActive && episodePickerRequested",
+            "onLineSelected = session::selectLine",
+            "PlayerOverlayBackHandler(enabled = fullscreen && episodePickerRequested)",
+            "if (!fullscreen) episodePickerRequested = false"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/FullscreenLayoutState.kt",
+          "contains": [
+            "restoringLandscape = inlineLandscape.takeIf { it != landscape }",
+            "fun usesFullscreenLayout(landscape: Boolean)",
+            "fun enterPictureInPicture()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/FullscreenEpisodeDrawer.kt",
+          "contains": [
+            "remember(info?.episodes)",
+            "slideInHorizontally(tween(220)) { it }",
+            "LazyVerticalGrid(",
+        "GridCells.Adaptive(80.dp * LocalDensity.current.fontScale.coerceAtLeast(1f))",
+        "GridItemSpan(if (episode.label.length > 5) maxLineSpan else 1)",
+        "PlaybackLineButton(",
+            "gridState.scrollToItem(selectedIndex.coerceAtLeast(0))",
+            "onLineSelected(target)",
+            "onEpisodeSelected(episode)"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/FullscreenLayoutTest.kt",
+          "contains": [
+            "@Test fun delayedPortraitRestorationNeverShowsLandscapeEpisodeDetails()",
+            "@Test fun landscapeTabletAndDeniedEntryDoNotWaitForAnUnneededRotation()",
+            "@Test fun pictureInPictureCancelsPendingRestoration()",
+            "@Test fun reenterDuringRotationKeepsTheOriginalInlineOrientation()",
+            "@Test fun hostKeepingLandscapeCanFinishWithoutAResizeCallback()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlaybackTest.kt",
+          "contains": [
+            "@Test fun lineSelectionImmediatelyLoadsSameEpisodeAndPreservesPausedPosition()",
+            "@Test fun rapidLineSelectionCancelsEarlierSourceResolution()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/FullscreenEpisodeDrawerTest.kt",
+          "contains": [
+            "@Test fun selectedEpisodeIsVisibleAndLineSwitchKeepsDrawerOpenUntilEpisodeSelection()",
+            "@Test fun longEpisodeNamesGetWiderCells()",
+            "@Test fun narrowLandscapeAndLargeFontsShowCompleteEpisodeLabelsAndSourceNames()"
+          ]
+        }
+      ],
+      "notes": "守护测试覆盖当前集滚动可见、切线路保留面板、选集关闭、关闭按钮与遮罩收起。2026-11-21用户修正为手动切线路立即播放，并保留对应集数与进度；投屏暂停意图保持原有规则。系统返回需设备验收。修改前签名已不匹配，本项暂不重新签名，须先对账此前契约修改。"
+    },
+    {
+      "id": "actor-search-and-filmography",
+      "title": "演员搜索与参演作品",
+      "status": "active",
+      "requirement": "演员搜索和作品使用爱奇艺公开人物数据，不依赖 Wikidata；真实头像复用磁盘缓存，同名演员保留独立来源身份；人物资料保留来源字段标识、名称、顺序及原始值，关于TA显示全部非空资料，生日格式化但不得猜测无效日期，详情刷新按来源ID匹配并独立缓存，兼容旧生日缓存；作品仅纳入明确出演/配音的电影和电视剧，出演名单包含该人物时兼任导演或其他幕后角色仍保留，排除无出演证据的纯导演、分集、片段和综艺；播放页点击演员在当前页面从右侧滑入资料和作品面板，竖屏顶部对齐实际视频区域下沿并填满下方区域，横屏在右侧显示并填满可用高度；不导航、暂停、重载或改变进度、倍速及全屏状态，视频控件保持可交互，关闭、标题栏下拉或右滑收起不改变播放意图；搜索页保留独立演员页；目录映射要求媒体类型一致，优先唯一的标准化同名同年条目，允许片名字体空白标点差异、电视剧第一季/第一部/尾缀1差异和最多一年年份偏差，保留续集及多位数字身份，歧义不得自动匹配；映射成功采用目录片名和年份查找播放资源；豆瓣资料缺失时仍按片名、年份和类型独立验证播放来源，已验证的详情页直接播放，不把爱奇艺官网或媒体URL当详情页；当前播放页演员名单确认的影视作品补入来源遗漏的片单，按片名、年份和类型去重，来源失效时仍保留已确认作品；新规则缓存必须刷新旧遗漏，旧缓存仅用于限时离线回退，无资源和检查异常不写入长期映射缓存。演员作品列表不显示来源抓取说明或只支持搜索的未验证条目；确认无播放资源的作品按实际目录或播放详情 URL 隐藏，超时和网络错误不得记作无资源，空列表允许重试。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Actors.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/ActorBrowser.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogDatabase.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ActorSource.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/ActorUi.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/ActorHalfSheet.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Actors.kt",
+          "contains": [
+            "internal data class ActorRef(",
+            "internal data class ActorProfileField(",
+            "fun visibleProfileFields(): List<ActorProfileField>",
+            "internal data class ActorWork(",
+            "internal data class ActorFilmography(",
+            "val verifiedCatalog: Boolean = false",
+            "val playbackPageUrl: String = \"\"",
+            "internal fun ActorFilmography.withPlayingCredit(",
+            "internal fun ActorFilmography.withCatalogCredits(",
+            "internal fun actorPlaybackWorks(",
+            "it.catalog().url !in missingUrls"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/ActorBrowser.kt",
+          "contains": [
+            "internal class ActorBrowser(",
+            "fun search(query: String)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ActorSource.kt",
+          "contains": [
+            "internal class ActorSource(private val fetch: suspend (String) -> String)",
+            "suspend fun filmography(actor: ActorRef): ActorFilmography",
+            "suspend fun profile(actor: ActorRef): ActorRef",
+            "search(actor.name).actors.singleOrNull { it.id == actor.id }"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/ActorHalfSheet.kt",
+          "contains": [
+            "internal fun ActorHalfSheet(",
+            "enter = slideInHorizontally(tween(250)) { it }",
+            "exit = slideOutHorizontally(tween(250)) { it }",
+            "PlayerOverlayBackHandler(enabled = visible, onBack = onDismiss)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/ActorUi.kt",
+          "contains": [
+            "ActorTabs(tab, visibleCount)",
+            "value = ActorPageState(cached, loading = true)",
+            "if ((state.loading || checking) && visibleWorks.isEmpty())",
+            "pageScope.launch {",
+            ".clickable(role = Role.Button, onClickLabel = \"播放${work.title}\", onClick = play)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": [
+            "var actorSheetVisible by remember(session)",
+            "ActorHalfSheet(visible = actorSheetVisible && !pipActive",
+            "compact = true",
+            "padding(top = inlineVideoHeight.coerceAtMost(maxHeight))"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/ActorSourceTest.kt",
+          "contains": [
+            "@Test fun suggestionsKeepSameNameIdentitiesAndRejectFilmsAndInvalidIds()",
+            "@Test fun profilePropertiesPreserveSourceLabelsOrderRawValuesAndAdditionalFields()",
+            "@Test fun profileRefreshRequiresExactSourceIdentityDespiteSameNames()",
+            "@Test fun legacyProfilesAndMalformedBirthdaysDoNotInventPersonFacts()",
+            "@Test fun workRequiresActualCastAndExcludesCrewOnlyAndEpisode()",
+            "@Test fun catalogTranslationRequiresUniqueTitleYearAndKind()",
+            "@Test fun catalogMatchingAcceptsFirstSeasonTypographyAndOneYearOffset()",
+            "@Test fun relaxedCatalogMatchingRejectsSequelsRemakesAndAmbiguousYearOffsets()",
+            "@Test fun exactCatalogMatchWinsBeforeRelaxedYearCandidates()",
+            "@Test fun filmographySortsVerifiedWorksAndReportsSourceLimit()",
+            "@Test fun playbackWorksHideUnmappedCreditsAndConfirmedMissingCatalogUrls()",
+            "@Test fun playbackVerifiedCreditsDoNotRequireDoubanMetadata()",
+            "@Test fun catalogCreditsRepairPremiereYearsAndIncludeKnownFilmsWithoutDuplicatingDubs()",
+            "@Test fun catalogCreditsRequireExactCastTokensAndNeverMergeAmbiguousRemakes()",
+            "@Test fun translatedDubbedCreditsCountAsOneDisplayedCatalogWork()",
+            "@Test fun playingCreditSupplementsPartialFilmographyWithoutMergingRemakesOrSubstringNames()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/ActorCacheTest.kt",
+          "contains": [
+            "@Test fun actorCatalogSnapshotUsesShippedCastsAndCompleteCachedSubjectDetails()",
+            "@Test fun staleFilmographyRendersBeforeSlowRefreshAndCancellationStopsRequest()",
+            "@Test fun overAgeActorSnapshotIsNeverPublishedWhileRefreshing()",
+            "@Test fun verifiedSearchPosterSurvivesSparseDetailAndFreshEmptyArtworkCache()",
+            "@Test fun confirmedReleaseNeverBorrowsSameNameOtherYearPoster()",
+            "@Test fun completeProfileUsesIndependentCacheAndSurvivesOfflineReload()",
+            "@Test fun freshLegacyOmissionsRefreshIntoNewActorCaches()",
+            "@Test fun actorWorkFindsPlaybackWhenDoubanSuggestReturnsNoSubjects()",
+            "@Test fun staleUnmappedActorCacheDoesNotHideNewlyVerifiedPlayback()",
+            "@Test fun verifiedPlaybackPageIsRecheckedWithoutSearchingOrTreatingOfflineAsMissing()",
+            "@Test fun verifiedV1CatalogIdentityStillHasBoundedOfflineFallbackAfterV3Migration()",
+            "@Test fun playbackFallbackRejectsSameNameMovieForSeriesAndDoesNotCacheUncertainty()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/ActorNavigationDeviceTest.kt",
+          "contains": [
+            "@Test fun searchActorFilterWorksAndReturnToSearch()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/ActorHalfSheetTest.kt",
+          "contains": [
+            "@Test fun halfSheetKeepsSessionAndUpperPlayerControlsInteractive()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": [
+            "@Test fun castIdentityUsesIqiyiAvatarWithoutCrossSourceRequests()",
+            "@Test fun actorFilmographyRetainsConfirmedPlayingCreditWhenProviderIsUnavailable()",
+            "@Test fun actorFilmographyIncludesLoadedCatalogCreditsWithoutAnActivePlayer()",
+            "@Test fun actorFilmographyPublishesKnownCreditsBeforeProviderCompletes()",
+            "@Test fun actorPlaybackUsesVerifiedPageWithoutRepeatingSourceSearch()",
+            "assertSame(session, model.session)"
+          ]
+        }
+      ],
+      "notes": "按来源隔离旧缓存。人物资料动态解析所有key/value属性并优先按properties排序，空值不展示，简介不截断；路由携带完整资料，旧路由与搜索缓存通过独立详情缓存补齐。已按用户要求移除来源与收录范围说明，未映射作品保留在来源缓存而不展示搜索入口；资源检查与列表过滤使用同一目录身份。首页、缓存目录和完整详情中的明确演员名单补齐已确认作品，仍验证唯一人物ID；普通话等显式配音后缀统一查询片名，同一已验证目录URL仅展示和计数一次，不按同名同年猜测不同来源身份。已有目录唯一对应的发行年份修正最多一年首映偏差。标题数字与实际可显示作品一致，逐项发布检查结果，部分失败可重试。基线已有其他窗口的契约签名不匹配及5秒/10秒旧锚点冲突，暂不重新签名，待对账此前变更。"
+    },
+    {
+      "id": "catalog-tab-swipe-animation",
+      "title": "首页分类跟手滑动与切换动效",
+      "status": "active",
+      "requirement": "首页及共用分类手势同时呈现当前与相邻分类的独立列表，横向拖动时相邻真实内容跟手进入视口，松手达到阈值后切换分类；相邻页预加载不得改变当前筛选、触发分页或弹出失败提示，完成的预加载直接复用，未完成的预加载在切换时接续同一请求并立即沿用已发布的缓存列表；退出或改变地区后旧任务不得覆盖新筛选；短距离与首尾越界回弹，点击分类有方向性过渡，保留垂直刷新与斜向手势仲裁。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/TopTabSwipe.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/TopTabSwipe.kt",
+          "contains": [
+            "internal fun Modifier.topTabSwipe(",
+            "internal fun TopTabPager(",
+            "clipContent = false",
+            "LaunchedEffect(selectedIndex)",
+            "PointerEventPass.Initial",
+            "abs(distance) >= minimumDistance && destination != selected",
+            "animate(offset, 0f, animationSpec = tween(220))",
+            "translationX = if (selectedIndex != animatedIndex)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt",
+          "contains": [
+            "internal fun StateFlow<CatalogState>.collectCatalogPageState()",
+            "key(this) { collectAsState() }",
+            "if (!isActive) return@snapshotFlow null",
+            "posterSharedTransition(if (active) item.url else null)"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/TopTabRefreshGestureTest.kt",
+          "contains": [
+            "@Test fun diagonalLeftSwipeDoesNotRefresh()",
+            "@Test fun diagonalRightSwipeDoesNotRefresh()",
+            "@Test fun verticalPullStillRefreshes()",
+            "@Test fun diagonalVerticalPullDoesNotSwitchTab()",
+            "@Test fun shortHorizontalDragSpringsBack()",
+            "@Test fun firstCategoryResistsAndReturns()",
+            "@Test fun lastCategoryResistsAndReturns()",
+            "@Test fun categoryTapAlsoSlidesContent()",
+            "@Test fun categoryTapNeverDrawsSettledContentBeforeItsArrivalAnimation()",
+            "@Test fun changingCatalogSubscriptionKeepsEachPagesOwnRowsOnItsFirstFrame()",
+            "@Test fun neighboringPageIsVisibleBeforeRelease()",
+            "Adjacent page must be visible before release",
+            "Content must follow the finger before release",
+            "Release must animate rather than instantly reset the content"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": [
+            "@Test fun neighborPreloadDoesNotSelectAndIsAdoptedWithoutReload()",
+            "@Test fun staleTabsKeepTheirRowsWhileRevalidatingAfterASelectionChange()",
+            "@Test fun browseAndHotPreviewsKeepActiveFiltersAndFailuresSilent()",
+            "@Test fun selectingUnfinishedNeighborReusesItsRequestAcrossCatalogChannels()",
+            "@Test fun promotingStaleNeighborKeepsItsCachedRowsWhileJoiningRevalidation()",
+            "@Test fun leavingPromotedNeighborCannotPublishIntoAnotherRegion()"
+          ]
+        }
+      ],
+      "notes": "使用真实 Compose 场景与布局坐标验证拖动、入场、回弹及刷新仲裁。基线已有其他窗口未对账的契约签名不匹配，保留原签名。"
+    },
+    {
+      "id": "saved-first-tab-startup",
+      "title": "按保存的 Tab 顺序启动",
+      "status": "active",
+      "requirement": "长按调整底部 Tab 顺序后，下次冷启动默认打开保存顺序中的第一项；本次会话中的重新排序不得重建导航图或重置当前页面。空或非法顺序由 SettingsStore 规范化为合法且非空的顺序。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/SettingsStore.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+          "contains": [
+            "val initialTab = remember(model) { model.settings.settings.value.tabOrder.first() }",
+            "navigation, startDestination = initialTab,"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/SettingsStoreTest.kt",
+          "contains": [
+            "@Test fun everyTabCanRemainFirstAfterColdReload()",
+            "@Test fun reorderedTabsSurviveReloadAndOtherPreferenceChanges()",
+            "@Test fun invalidStoredOrderRetainsKnownTabsAndRestoresMissingDestinations()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/BottomTabGestureTest.kt",
+          "contains": [
+            "@Test fun longDragAcrossSeveralTabsPersistsOrderWithoutNavigating()"
+          ]
+        }
+      ],
+      "notes": "设置持久化与拖动分别由测试覆盖，NavHost 接线与会话内初始路由稳定性由锚点保护；保留其他窗口尚未对账的契约签名，不用 --accept 掩盖基线差异。"
+    },
+    {
+      "id": "player-pinch-zoom",
+      "title": "播放器双指放大与缩小",
+      "status": "active",
+      "requirement": "移动端视频支持双指缩放至原始画面的 50%～400%，居中显示并反馈百分比；可以从 100% 继续缩小，也能放大回原始尺寸；无效触点距离不改变比例。进入全屏与切换视频时恢复原始比例，默认完整显示视频与内嵌字幕。锁定、听音频和 PiP 时禁用缩放，PiP 按原始比例显示。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/VideoZoom.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlatform.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/VideoZoom.kt",
+          "contains": ["coerceIn(0.5f, 4f)", "event.calculateZoom()"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": [
+            "remember(player.mediaId, fullscreen) { mutableFloatStateOf(1f) }",
+            "enabled = !state.audioOnly && !locked && !pipMode",
+            "if (pipMode) 1f else zoom",
+            "(zoom * 100).roundToInt()"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/VideoZoomTest.kt",
+          "contains": [
+            "fun pinchCanEnlargeAndReturnToOriginalSize()",
+            "fun pinchCanShrinkBelowOriginalAndReturnToOriginalSize()",
+            "fun boundsPreventOverZoomAndExcessiveShrinking()",
+            "fun coincidentOrInvalidTouchDistancesKeepCurrentPicture()"
+          ]
+        }
+      ],
+      "notes": "缩放范围和双向恢复由共享测试覆盖；原生居中缩放与手势布局需设备验收。登记时已存在契约签名及 5 秒/10 秒步长冲突，保留原签名待对账，不用 --accept 覆盖其他窗口的变更。"
+    },
+    {
+      "id": "sketch-catalog-browser-playback",
+      "title": "小品分类与内部播放（移除优酷来源）",
+      "status": "active",
+      "requirement": "最近热播顶部提供唯一的小品分类，仅保留碟音网的公开列表，移除小品网优酷条目；分页、重启与离线缓存均不得恢复已移除来源。小品卡片及继续播放卡片不展示年份、评分及来源播放说明，封面与电影卡片统一使用宽高比 0.7，相同列宽下高度一致。碟音网明确嵌入的公开 B 站视频通过官方接口获取完整 MP4 接入内部播放器，每次播放或重试重新解析；只对校验过的官方 CDN 设置 User-Agent。未支持的嵌入保留原站播放，不把网页交给原生播放器、不用同名影视资源替换小品。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/SketchSource.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/SketchPlayback.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/BilibiliSource.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/BilibiliMedia.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidOfflineEngine.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/HomeHistory.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+          "contains": ["\"xiaopin\" to \"小品\""]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": ["api.sketches(start, refresh, onCached = cached)", "platform.openLink(item.url)", "api.sketchHasNative(item.url)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/SketchPlayback.kt",
+          "contains": ["resolveVideo(request, bvid, page", "SketchSource.owns(page)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/BilibiliSource.kt",
+          "contains": ["fnval=0&platform=html5", "BilibiliMedia.owns(it) && it !in request.rejectedMedia"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidOfflineEngine.kt",
+          "contains": ["DefaultHttpDataSource.Factory().setUserAgent(dev.pandavideo.core.player.BilibiliMedia.userAgent)"]
+        },
+        {
+          "file": "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt",
+          "contains": ["AVURLAssetHTTPUserAgentKey"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt",
+          "contains": ["if (item.kind != \"xiaopin\") Row(", "Box(Modifier.fillMaxWidth().aspectRatio(0.7f)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/HomeHistory.kt",
+          "contains": ["CatalogItem(record.title, record.pageUrl, kind = kind)"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/SketchSourceTest.kt",
+          "contains": [
+            "@Test fun parsesBothCatalogsWithoutDownloadLinks()",
+            "@Test fun validatesDetailAddressesAndRejectsChallengePages()",
+            "@Test fun loadsOnlyActiveSourceAndSkipsNativeAvailabilitySearch()",
+            "@Test fun removedSourceIsNeverRequested()",
+            "@Test fun activeSourcePaginatesWithoutRemovedProvider()",
+            "@Test fun refreshUsesActiveSourceMemoryFallbackWhenOffline()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": ["@Test fun sketchesExcludeYoukuSourceAndRetainUnsupportedEmbedFallback()", "@Test fun verifiedBilibiliSketchNavigatesToNativePlayer()", "@Test fun sketchNetworkFailureOffersRetryOnHotTabWithoutBrowserFallback()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/SketchPlaybackTest.kt",
+          "contains": ["@Test fun resolvesFreshMp4AndStableEpisodeOnEveryReplay()", "@Test fun rejectsUntrustedEmbedsAndCdnUrls()", "@Test fun rejectsPartialSegmentsAndApiErrorsWithoutMovieFallback()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/SketchCatalogCacheTest.kt",
+          "contains": ["@Test fun removedYoukuCacheNeverReturnsAfterRestartOrOfflineRefresh()"]
+        }
+      ],
+      "notes": "按用户要求停用小品网优酷来源，旧缓存不得回流；保留旧地址解析兼容性。小品卡片移除年份、评分和来源说明。碟音网明确的 B 站嵌入支持官方公开完整 MP4 原生播放。Android FrameExtractor 当前不支持自定义请求头，使用时间拖动而不请求缩略图。青少年模式沿用小品入口限制。保留基线签名，待其他窗口的签名和 5 秒/10 秒步长契约对账后统一接受。"
+    },
+    {
+      "id": "home-first-last-played",
+      "title": "底部第一项首页首位展示最后播放内容",
+      "status": "active",
+      "requirement": "当前保存的底部第一项为发现、分类或最近热播时，仅该首页的第一个顶部分类在首位展示最新播放历史并标记“继续播放”，其他顶部分类保持普通目录。随长按交换底部顺序迁移并在冷启动后保留；没有历史保持原始列表。首次进入时历史卡片与首批目录一起绘制，等待期间统一占位；本地缓存页立即展示，刷新和分页保留已有内容；空目录或初次加载失败仍可展示历史。历史影片不在来源目录时也能展示，年份和评分随历史持久化，旧记录仅从明确匹配的目录或元数据异步补齐，不改动观看进度、历史顺序或复活已删除记录。点击保存的播放地址和记录集数恢复进度，不把记录的剧集替换成下一集。展示层去重明确匹配的影片，保留同名不同年份版本、来源分页和推荐列表。我的排在第一位时沿用已有最新优先的播放记录。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/UserStore.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/HomeHistory.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/user/UserStore.kt",
+          "contains": ["val rating: Double? = null", "fun fillHistoryMetadata(", "rating = rating ?: previous?.rating"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/HomeHistory.kt",
+          "contains": ["categoryIndex == 0", "tabOrder.firstOrNull() == destination", "history.firstOrNull()", "internal fun catalogWithoutHistory(", "rating = record.rating ?: match?.rating"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt",
+          "contains": ["item(key = \"history:${recent.pageUrl}\")", "continuePlayback = true", "Text(\"继续播放\"", "if (awaitingInitialCatalog(state))"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+          "contains": [
+            "homeHistoryFor(themeMode.tabOrder, \"discover\", history, index)",
+            "homeHistoryFor(themeMode.tabOrder, \"browse\", history, index)",
+            "homeHistoryFor(themeMode.tabOrder, \"hot\", history, index)",
+            "model.resumeHomeHistory(record)"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": ["internal fun resumeHomeHistory(record: HistoryTitle)", "episode = record.episodePath.takeIf { it.isNotBlank() }"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/HomeHistoryTest.kt",
+          "contains": [
+            "@Test fun savedFirstTabPinsHistoryAfterEveryPossibleSwapAndColdReload()",
+            "@Test fun swappingFirstTabMovesHistoryImmediatelyWithoutChangingHistory()",
+            "@Test fun onlyTheFirstCategoryPinsHistoryAndOtherCategoryTabsKeepTheirCatalog()",
+            "@Test fun noHistoryOrNonHomeDestinationKeepsCatalogUnchanged()",
+            "@Test fun latestPlayedTitleWinsAndClearingHistoryRemovesThePin()",
+            "@Test fun savedTitleAppearsEvenWhenTheCatalogIsEmptyOrLoading()",
+            "@Test fun initialHistoryAndCatalogWaitTogetherIncludingBeforeLoadingStarts()",
+            "@Test fun cachedPagesAndRefreshNeverHideHistoryOrExistingCatalog()",
+            "@Test fun emptyCompletedPageAndInitialFailureStillAllowSavedPlayback()",
+            "@Test fun matchedTitleIsRemovedOnceWhileSourcePagingAndRecommendationsStayIntact()",
+            "@Test fun sameNameRemakesAreKeptAndUnknownYearsNeverGuessBetweenEditions()",
+            "@Test fun exactSourceIdentityWinsAndUniqueLegacyTitleCanSupplyMetadata()",
+            "@Test fun storedYearAndRatingSurviveMissingOrUnrelatedCatalogRows()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": ["@Test fun homeResumeUsesRecordedFourthEpisodeAndKeepsItsPosition()", "@Test fun reopenSavedResumesTheUnfinishedEpisodeAndKeepsResumeLabel()", "@Test fun historyMetadataUsesOtherLoadedCatalogsAndSurvivesColdRestart()", "@Test fun legacyHistoryMetadataIsRepairedWithoutChangingResumePosition()", "@Test fun playbackSourceAliasesKeepTheOriginatingCatalogYearAndRating()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/PlaybackDatabaseTest.kt",
+          "contains": ["@Test fun historyYearAndRatingSurviveDatabaseRestartAndLegacyRecords()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/UserStoreBehaviorTest.kt",
+          "contains": ["@Test fun metadataRepairPreservesOrderProgressAndDeletedHistory()"]
+        }
+      ],
+      "notes": "仅首页顶部第一分类提供带“继续播放”标签的首位个人入口，使用保存播放地址和明确记录集数，避免再次按影片名匹配或自动跳到后一集。通用播放记录入口的完成后续播规则不变。保留既存未接受签名与其他窗口 5 秒/10 秒步长冲突，不执行 --accept。"
+    },
+    {
+      "id": "catalog-failure-details",
+      "title": "列表与搜索失败显示具体异常",
+      "status": "active",
+      "requirement": "发现、分类筛选、最近热播及搜索失败弹窗显示具体异常和底层原因，保留 HTTP 状态及超时、解析描述；没有异常消息时显示异常类型，原因链与单项长度有界，长文可滚动。异常中请求地址及具名凭据脱敏；重试保留原筛选或关键词，取消不触发重试，协程取消不作为失败弹窗。播放失败在自动恢复结束后只显示一个全局重试弹窗，画面与详情不再重复提示；保留实际失败描述，匹配失败区分来源不确定、同名版本歧义与未找到资源，保留已选择的目录影片身份。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/RetryPrompts.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/RetryDialog.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/RetryPrompts.kt",
+          "contains": ["internal fun failureDetails(error: Throwable)", "visited.size < 4", ".take(500)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": ["failureDetails(error), \"browse\"", "failureDetails(error), \"discover\"", "failureDetails(error), \"hot\"", "failureDetails(error), \"search\"", "failureDetails(IllegalStateException(state.error))"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["throw ApiError(\"分类页面不可用或需要站点验证\", error)", "internal suspend fun playbackMatch(item: CatalogItem)", "when (result.status)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/RetryDialog.kt",
+          "contains": ["Modifier.verticalScroll(rememberScrollState())"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/RetryPromptsTest.kt",
+          "contains": ["@Test fun failureDetailsPreserveStatusAndNestedNetworkCause()", "@Test fun failureDetailsHideUrlsAndCredentialsAndBoundLongMessages()", "@Test fun dismissDoesNotRetryAndRepeatedFailureDoesNotDuplicate()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": ["@Test fun failedCatalogRetryPreservesFiltersAndReplacementClearsOldPrompt()", "prompt.message.contains(\"HTTP 503\")", "@Test fun failedPlaybackRetryKeepsTheTitleAndClosingInvalidatesIt()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/CatalogPlaybackMatchTest.kt",
+          "contains": ["@Test fun playbackMatchingDistinguishesMissingAndUnconfirmedSources()"]
+        }
+      ],
+      "notes": "本项为用户明确要求的增强。签名已有其他窗口未对账修改及 5 秒/10 秒冲突，暂不执行 --accept 覆盖既存冲突。"
+    },
+    {
+      "id": "search-release-rating",
+      "title": "搜索版本去重与真实评分排序",
+      "status": "active",
+      "requirement": "搜索按片名、已知年份和兼容类型/地区/主演合并同一版本的来源重复项，支持已知年份对应的1986/86版及国语粤语别名，优先保留可播放来源；未知年份、续作和明确不同版本不得误合并。结果先按标准化片名完全匹配、前缀匹配、包含匹配及其他来源别名排序，同级按真实豆瓣评分降序、未知评分靠后，再按年份降序；未评分的完全匹配不得被高分续集挤到后面。搜索卡片展示已知评分。先显示可用搜索结果，随后用本地目录和唯一同名同年豆瓣身份补分，评分异常和超时不清空列表、不阻断播放、不编造分数；评分正缓存持久化。缓存及离线结果也去重排序。自动目录匹配保留所有原始来源候选，展示去重不得删除可用的回退源。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/SearchPresentation.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/CatalogDatabase.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/PomoSource.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/JianpianSource.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/model/Models.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/SearchScreen.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/SearchPresentation.kt",
+          "contains": ["private fun sameRelease(", "rows.all { sameRelease(it, item) }", "fun matchesCatalog(", "compareBy<SearchItem>", "title == target -> 0", "title.startsWith(target) -> 1", "target in title -> 2", ".thenByDescending { rating(it.rating) ?: -1.0 }"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["SearchPresentation.apply(sourceSearch(query, type), searchKeyword(query))", "val search = sourceSearch(item.title, type)", "internal suspend fun searchRatings(", "withTimeoutOrNull(5_000)", "fun searchSuggestion("]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/search/SearchScreen.kt",
+          "contains": ["Text(\"豆瓣 $rating 分\""]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PomoSourceTest.kt",
+          "contains": ["@Test fun searchMergesJourneyToWestMirrorsAndSortsByRelevanceThenRating()", "@Test fun searchDedupDoesNotRemoveCatalogMatchingFallbackMirrors()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/SearchPresentationTest.kt",
+          "contains": ["@Test fun releaseDedupKeepsRemakesSequelsTypesAndUnknownYearsSeparate()", "@Test fun dedupSelectsPlayableMirrorAndKeepsItsResourceIdentity()", "@Test fun exactTitlesTakePriorityOverRatingAndYearWhileInvalidRatingsRemainUnknown()", "@Test fun unratedExactTitleAndVerifiedReleaseAliasesPrecedeHighlyRatedPartialMatches()", "@Test fun conflictingCastsAndRegionsAreNotCollapsed()", "@Test fun scoreLookupRejectsMissingYearsConflictingSubjectsAndWrongReleaseDetails()", "@Test fun optionalRatingsSortRealVersionsAndRetainScoresWhenBudgetExpires()", "@Test fun unavailableRatingsNeverFailOrErasePlayableSearchResults()", "@Test fun sameTitleVersionsShareOneSubjectQuery()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/ResponseCacheTest.kt",
+          "contains": ["@Test fun searchRatingsUseExactLocalCatalogAndPersistVerifiedOnlineScores()", "@Test fun yearlessSeedSubjectDetailsSupplyOnlyTheMatchingReleaseScore()"]
+        }
+      ],
+      "notes": "已从真实接口确认西游记多站重复及Pomo缺失评分。原始来源缓存保留，展示层统一修正旧缓存。缺年份的内置目录通过已知豆瓣条目读取详情后核对版本，不能直接借用评分；同名版本共享一次建议查询，空建议不覆盖成功缓存。保留既有签名不匹配及全屏5秒/10秒契约冲突，不覆盖未对账签名。"
+    },
+    {
+      "id": "pomo-preferred-playback-source",
+      "title": "精选聚合荐片目录与双源影视搜索",
+      "status": "active",
+      "requirement": "精选普通分类合并荐片评分目录与豆瓣原列表，保留8分下限、原分类、地区筛选与20槽逻辑翻页；荐片独立每24槽翻一页，实际15条也继续直到原始空页，详情补齐年份、地区、题材后过滤，单源失败保留其他来源及缓存。Top250仍固定豆瓣榜单。影视搜索并行查询荐片与Pomo，即使Pomo已有结果也加入荐片；展示按版本去重，目录匹配保留原始候选并优先已验证荐片直连线路，无法匹配时回退Pomo。保留年份、类型、分集和同名歧义校验，取消向上传递，单源失败不误判无资源；旧单源搜索缓存刷新并保留限时离线回退，部分失败缓存再次校验。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/JianpianSource.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": [
+            "private suspend fun mergedSearch(",
+            "home:merged:v1:$kind:$country:$start",
+            "private suspend fun homeSourceCatalog(",
+            "search:online5:$type:$address:",
+            "legacyKey = \"search:online4:",
+            "{ PomoSource.search(fetch(address, 8_000), type) }"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/JianpianSource.kt",
+          "contains": ["fun catalogMetadata(", "fun matchesFilters(", "filters.type == \"tv\" && !item.isTelevisionDrama()", "rows.isNotEmpty() && start < 9_984"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": ["target === discoverMutable && kind != \"top250\""]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/JianpianSourceTest.kt",
+          "contains": [
+            "@Test fun searchIncludesJianpianEvenWhenPomoHasResultsAndPrefersDirectRelease()",
+            "@Test fun catalogPrefersVerifiedJianpianAndRetainsEveryDirectLine()",
+            "@Test fun preferredPomoTimeoutCancelsRequestAndFallsBackToJianpian()",
+            "@Test fun catalogAlsoRetriesJianpianWhenPomoReturnsOnlyRelatedTitles()",
+            "@Test fun emptyPrimaryWaitsForBackupAndPartialFailureDoesNotHideCatalog()",
+            "@Test fun deadMediaFallsBackToSameEpisodeOfTheSameRelease()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/CatalogPlaybackMatchTest.kt",
+          "contains": ["@Test fun africaDocumentarySeriesDoesNotUseTheTelevisionOnlySearchFilter()"]
+        },
+        {
+          "file": "mobile/shared/src/jvmTest/kotlin/dev/pandavideo/CatalogDatabaseTest.kt",
+          "contains": [
+            "@Test fun legacySingleSourceSearchRefreshesToMergedSourcesButSurvivesOffline()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/HomeSourceCatalogTest.kt",
+          "contains": [
+            "@Test fun selectedCatalogCombinesSourcesAndKeepsIndependentPaginationAndScoreFloor()",
+            "@Test fun regionalGenreSelectionRequiresSourceMetadataAndKeepsOriginalOnSourceFailure()",
+            "@Test fun enrichedTelevisionMetadataExcludesFactualAndVarietyPrograms()"
+          ]
+        }
+      ],
+      "notes": "用户明确要求精选列表本身及搜索增加荐片来源，覆盖原Pomo优先策略。真实接口确认评分目录每页15条及详情area/types字段；保留既有未对账签名及5/10秒锚点冲突，未重新签名。"
+    }
+    ,{
+      "id": "dlna-video-cast-handoff",
+      "title": "兼容 BDDLNA 视频投屏与真实接收状态",
+      "requirement": "Android/iOS 共用 SSDP 和 AVTransport；iOS 通过系统 Bonjour 发现熊猫接收端，无需受限组播权限，保留定向 IP 搜索，投屏列表仅提供接收端选择，不提供 AirPlay 入口；连接后展示独立遥控器，支持播放暂停、10 秒快进快退、进度和选集，切集后重新连接原接收端；连接中允许取消并停止旧请求，成功退出后显示投屏结束与重新投屏入口；有视频地址即可投屏，无需手机首帧或持续播放，暂停交接不发送 Play；成功后停止手机本地媒体，接收端暂停与手机切后台保留连接，接收端结束后恢复本地媒体与进度但不自动播放；切集和退出停止旧投屏，缓冲保留播放意图，电视播放错误可见。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Dlna.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/DlnaCasting.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/DlnaRemoteScreen.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosDlna.kt",
+        "mobile/iosApp/PandaVideo/Info.plist"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosDlna.kt",
+          "contains": ["discoverIosBonjour()", "_pandacast._tcp.", "browser.stop()", "it.stop(); it.delegate = null", "if (host != null) return@coroutineScope discoverIosSsdp(host)"]
+        },
+        {
+          "file": "mobile/iosApp/PandaVideo/Info.plist",
+          "contains": ["NSBonjourServices", "_pandacast._tcp", "NSLocalNetworkUsageDescription"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/DlnaCasting.kt",
+          "contains": ["wantsPlay: Boolean = player.state.value.wantsPlay", "if (wantsPlay) client.play(target)", "currentMediaId() != source.id", "player.stop()", "playing = wantsPlay", "commands.withLock { cleanup(target) }", "fun cancelConnection()", "endedDevice = target", "state == \"STOPPED\" && transportActivated", "player.load(it.copy(autoplay = false, startPosition = position))"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/DlnaRemoteScreen.kt",
+          "contains": ["internal fun DlnaRemoteScreen(", "投屏遥控器", "快进 10 秒", "快退 10 秒", "casting.position - 10_000", "casting.position + 10_000", "casting::disconnect", "正在连接…", "投屏已结束", "重新投屏"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/Dlna.kt",
+          "contains": ["ERROR_OCCURRED", "setOf(\"PLAYING\", \"TRANSITIONING\")", "SetAVTransportURI", "REL_TIME"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/iosApp/PandaVideoUITests/FullscreenTests.swift",
+          "contains": ["func testPandaCastBonjourDiscovery()", "func testPandaCastFromPausedPhoneAndBackgroundReturn()", "iphone-pandacast-bonjour-discovery", "iphone-pandacast-remote-ui", "iphone-pandacast-ended-ui"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/DlnaCastingTest.kt",
+          "contains": ["@Test fun cancellingConnectionStopsPendingHandoffBeforeReconnecting()", "@Test fun remoteEpisodeHandoffKeepsRemotePlayIntentAndPositionWithPhonePaused()", "@Test fun pausedPhoneHandsOffWithoutStartingRemotePlayback()", "@Test fun acceptedCastPausesPhoneAndDisconnectRestoresPositionWithoutAutoplay()", "@Test fun rejectedPlayStopsRemoteAndLeavesPhonePlaying()", "@Test fun changingEpisodeDuringHandoffNeverPausesNewMediaAndStopsStaleCast()", "@Test fun pageDisposalStopsConnectedTelevisionAndCancelsPolling()", "@Test fun sourceCanBeCastBeforePhoneHasPlayedItsFirstFrame()", "@Test fun resolvedSourceCanCastBeforeNativeControllerConnects()", "@Test fun remotePauseSurvivesPollingAndOnlyStopEndsCast()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/DlnaTest.kt",
+          "contains": ["@Test fun bufferingKeepsPlayIntentAndRendererErrorsAreReported()", "@Test fun soapEscapesUriAndNestedMetadataWithoutLosingQueryParameters()"]
+        },
+        {
+          "file": "mobile/shared/src/androidHostTest/kotlin/dev/pandavideo/PandaCastReceiverInteropTest.kt",
+          "contains": ["@Test fun productionSenderControlsRealMedia3Receiver()"]
+        }
+      ],
+      "notes": "参考 PicoCastProject swan-w-qssi 的 BDDLNA 视频接口；PandaCastReceiver 位于用户指定独立目录。登记时既有签名不匹配及 fullscreen-five-second-seek 的 5/10 秒冲突未对账，保留签名，未执行 --accept。"
+    },
+    {
+      "id": "player-regional-high-rating-recommendations",
+      "title": "播放页同地区同类型高分推荐",
+      "status": "active",
+      "tv_detail_revision": "2026-11-22：电视在线搜索与播放历史详情在元数据就绪后复用区域推荐加载器，逐批展示；同步观察AppState异步补全的playingCatalog，片源缺地区时用可信目录地区触发推荐。切换影片或返回取消旧请求，全屏保持任务。推荐卡片继续保留null来源以加载下一部推荐，已有目录与央视同栏目列表不被替换。登记前其他窗口已有签名及电视播控锚点差异，未重新签名。",
+      "requirement": "播放页推荐继承当前影片的制作地区和类型，评分至少8分，排除当前影片；中国大陆、香港、台湾分别匹配。优先可信目录元数据，再使用播放源地区，未知地区不展示全局推荐。已知动画电影与剧集分开，电视剧排除明确非剧情节目。保留打开影片时筛选列表的成员范围，补全区域元数据不得引入范围外影片。区域请求不修改页面筛选；请求失败保留可用推荐，取消向上传递。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/PlayerRecommendations.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvDetail.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/PlayerRecommendations.kt",
+          "contains": ["internal fun playerRecommendationScope(", "item.rating?.let { it in HomeMinimumRating..10.0 }", "item.countries.any { recommendationRegion(it) == region }", "val permitted = originating?", "return 0.50 * genreScore + 0.30 * castScore + 0.20 * ratingScore"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt",
+          "contains": ["internal suspend fun recommendationCatalog(type: String, country: String, start: Int = 0)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/player/ModernPlayer.kt",
+          "contains": ["model.playerRecommendations(recommendationScope"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvDetail.kt",
+          "contains": [
+            "internal suspend fun tvDetailRecommendations(",
+            "selection.recommendations?.let { return it }",
+            "LaunchedEffect(selection, recommendationScope, info?.pageUrl)",
+            "model.playingCatalog ?: selection.catalog",
+            "selection.recommendations ?: fetchedRelated",
+            "tvRelatedSelection(item, selection.recommendations)"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/PlayerRecommendationsTest.kt",
+          "contains": [
+            "@Test fun chineseDramaOnlyRecommendsHighRatedChineseDramas()",
+            "@Test fun expandedRailKeepsEighteenDistinctScopedHighRatedTitles()",
+            "@Test fun relevanceUsesFiftyThirtyTwentyWeightsWithoutInflatingMissingSignals()",
+            "@Test fun genreAndCastRelevanceOutrankUnrelatedHigherRatedTitles()",
+            "@Test fun earlyCastOverlapOutweighsLaterCastOverlapWithoutSubstringMatching()",
+            "@Test fun cachedCandidateMetadataEnrichesRankingWithoutBorrowingAnotherRelease()",
+            "@Test fun weightedRankingStillRejectsRelevantRowsOutsideOriginRegionAndScoreFloor()",
+            "@Test fun sourceMetadataFallbackKeepsFullActorNamesAndChangesScopeWhenDetailsArrive()",
+            "@Test fun otherRegionsAndMoviesFollowTheSameScoreAndTypeRules()",
+            "@Test fun legacyMetadataUsesProviderRegionWithoutTreatingTwoMovieRoutesAsSeries()",
+            "@Test fun originatingFilterMembershipSurvivesRegionalMetadataEnrichment()",
+            "@Test fun verifiedCountriesOverrideSearchAndUnknownRegionsNeverUseGlobalSuggestions()",
+            "@Test fun movieAndSeriesVersionsOfAnimationStaySeparateWhenMetadataIsKnown()",
+            "@Test fun detailMetadataRetainsProductionCountriesForRecommendations()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidHostTest/kotlin/dev/pandavideo/TvDetailRecommendationsTest.kt",
+          "contains": [
+            "@Test fun searchAndHistoryLoadRegionalRecommendationsWithoutAnOriginatingList()",
+            "@Test fun originatingListsAndCctvKeepTheirOwnRecommendations()",
+            "@Test fun unknownRegionDoesNotBorrowGlobalSuggestions()",
+            "@Test fun verifiedCatalogMetadataEnablesHistoryRecommendationsWhenProviderRegionIsMissing()",
+            "@Test fun leavingDetailCancelsTheRecommendationRequest()"
+          ]
+        }
+      ],
+      "notes": "用户要求播放中国剧推荐中国高分剧，其他地区及类型同理。保留既有未对账签名与全屏5/10秒冲突，未执行 --accept。"
+    },
+    {
+      "id": "discover-country-filter",
+      "title": "发现页国家筛选",
+      "status": "active",
+      "requirement": "发现页分类标签下提供唯一的国家地区筛选行，复用分类页的国家选项；默认全部地区。选择国家后按国家、分类和高分规则请求列表；左右切换分类、下拉刷新、翻页及离开再返回均保留国家，切换国家重置对应分页。播放页推荐继续继承该筛选列表的范围，不能引入范围外内容。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/CommonComponents.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/data/repository/ContentRepository.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/PandaVideoApp.kt",
+          "contains": [
+            "var country by rememberSaveable { mutableStateOf(model.discoverCountry) }",
+            "ChoiceRow(BrowseCountryOptions, country, tab = true)",
+            "model.discoverPage(type, country)",
+            "model.loadDiscover(type, true, country)"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": ["@Test fun discoverRetainsCountryForCategoryRefreshAndPagingButResetsOnRegionChange()"]
+        },
+        {
+          "file": "mobile/iosApp/PandaVideoUITests/FullscreenTests.swift",
+          "contains": ["func testDiscoverCountryFilterKeepsSelection()"]
+        }
+      ],
+      "notes": "2026-11-19 按截图恢复发现页国家入口。登记前已有签名未接受及全屏5/10秒冲突，保留原签名待对账，未执行 --accept。"
+    },
+    {
+      "id": "android-tv-halfway-pagination",
+      "title": "电视目录半程自动分页",
+      "status": "active",
+      "requirement": "电视首页、热播、分类浏览至当前已加载条目的一半时自动追加下一页，每次追加重新计算阈值，直到 hasMore=false。保留当前筛选、滚动及海报焦点；按来源偏移去重，加载中或失败时停止自动请求，筛选切换不得用旧结果请求新来源。全部被过滤但仍有下一页时继续推进来源偏移。手机原有近底部加载阈值保持不变。",
+      "implementation": [
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvLibrary.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvLibrary.kt",
+          "contains": ["latestSelection != selected || state != channel.value", "state.items.size, prefetchAtHalfway = true)", "distinctUntilChanged().collect", "model.loadDiscover(category, more = true, country = country)", "model.loadHot(hotType, more = true)", "model.loadBrowse(filters, more = true)", "已加载全部 ${titles.size} 部"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/catalog/CatalogComponents.kt",
+          "contains": ["prefetchAtHalfway: Boolean = false", "(displayCount - 1).coerceAtLeast(0) / 2", "!state.loading && !state.loadingMore && state.error == null && page.hasMore", "state.items.isEmpty() || lastVisible >= threshold", "page.nextStart().takeIf"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/CatalogPaginationTest.kt",
+          "contains": ["fun televisionPrefetchStartsAtHalfwayAndMovesForwardAfterAppend()", "fun televisionPrefetchWaitsForLayoutAndStopsDuringLoadingOrErrors()", "fun prefetchThresholdUsesDisplayedRowsButPreservesSourceOffset()", "fun fullyFilteredCachedPageCanAdvanceWithoutAVisiblePoster()"]
+        }
+      ],
+      "notes": "2026-11-22 登记半程自动加载。登记前已有其他窗口签名与来源/全屏锚点差异，保留签名待对账，不执行 --accept 覆盖这些变更。"
+    },
+    {
+      "id": "android-tv-direct-playback",
+      "preview_focus_revision": "2026-11-22：详情页视频预览获得遥控器焦点时显示3dp品牌橙色边框，失焦或进入全屏后移除；边框绘制在首帧加载占位之上，保留画面、点击/确认进入全屏及原会话。",
+      "initial_hot_type_focus_revision": "2026-11-22：初次进入电视目录时默认选中热播与热播剧集，焦点直接落到第二行热播剧集。TvCatalogLibrary只在尚未初始化时请求hotTypeFocus，TvFilterRow将selectedFocus挂到当前热播类型；详情/搜索返回仍按原有保存位置恢复焦点，不重复执行启动焦点。替代filter_rows_revision中的顶部热播默认焦点，设备回归从热播剧集直接按右键验证类型切换。原有并行能力差异保持待对账。",
+      "browse_confirmation_revision": "2026-11-22：按用户反馈，分类的类型、题材、地区、年份、排序仅在确认或点击后生效，焦点移动不修改筛选；TvFilterRow默认activateOnFocus=false，仅热播类型显式启用true。筛选LazyRow不设focusGroup，允许上下离开尚有隐藏选项的长列表。设备守护验证焦点停在年份时仍为全部年份、下键到排序、上键返回及确认应用年份，其他字段与跨Tab状态保留。替代filter_rows_revision中的分类获取焦点即生效要求；既有并行契约签名差异未对账，保留签名。",
+      "filter_rows_revision": "2026-11-22：主导航合为一行，搜索最左、记录与投屏最右，初始焦点在热播。热播类型使用TvFilterRow直接横向展开；分类沿用手机类型、题材、地区、年份、排序五行布局，长列表横向滚动，选项获得遥控器焦点立即生效，也支持点击。筛选变更保留其余字段并重置当前列表位置；各Tab筛选仍独立保存。分类海报缩为八列，热播与精选保持六列、搜索三列。此修订替代requirement与filter_dropdown_revision中的热播/分类下拉和分类六列要求；精选、央视频道/年月继续使用原下拉。同步修改设备回归，既有并行签名差异保持待对账，未执行--accept。",
+      "seek_feedback_revision": "2026-11-22：TV左右键短按跳转10秒并显示短提示；超过600ms进入预览，每120ms累计10秒，按住时不提交跳转。播控可见且播放按钮聚焦时原时间轴跟随目标并显示滑块时间弹窗；播控隐藏时仅显示目标/总时长及进度条小卡片。松开只提交一次seekTo，不主动打开播控。返回关闭预览后同一手势继续累计但不再显示，松开仍提交。手势开始暂停自动隐藏，原生播放器完成处理且就绪后重新计时5秒。媒体变化、退出和后台取消手势。下方操作按钮和选集面板仍左右导航。TvRemoteTest守护阈值、累计、单次提交、关闭、取消及边界。修改前已有未对账并行签名差异，保留签名。",
+      "remote_only_seek_revision": "2026-11-22：TV全屏移除后退10秒和前进10秒按钮，保留遥控器左右键十秒目标预览、220ms合并及松键提交。播放/暂停改用TV Material IconButton，48dp圆形内22dp图标在两种状态均居中；保留确认键及触屏操作。test_tv_play_controls.py用实际UI树检查控件移除及图标与按钮中心误差不超过1px。",
+      "tab_focus_revision": "2026-11-22：热播、精选、央视点播、分类四个主内容Tab在遥控器获得焦点时立即切换，也保留点击切换；搜索、记录、投屏仍为显式操作。共享导航焦点组固定在一个Compose位置，央视内容切换不替换顶部Tab，也不抢走导航焦点。各页筛选、缓存、列表位置和搜索输入保持；切换Tab取消待执行的详情焦点恢复，避免旧列表抢焦点。央视返回恢复精选内容焦点。",
+      "loading_indicator_revision": "2026-11-22：TV详情加载和等待首帧的预览/全屏占位统一显示橙色转圈及正在加载文案，不显示Logo；继续复用VideoFrameVisibility，已出画面的缓冲或暂停不遮挡保留帧，错误提示保持。",
+      "cast_handoff_revision": "2026-11-22：接收端创建播放器前，在主线程同步释放本地媒体服务的播放器、预加载、系统静音观察器和媒体会话，再停止服务。暂停、关闭控制器及异步停止服务不视为解码资源已释放；直接进入接收端和重复投屏均执行交接。手机后台播放生命周期保持。ReceiverHandoffProbe 用先准备并暂停本地视频、再通过正式 AVTransport 启动接收播放守护资源释放。",
+      "title": "Android TV 独立播放与遥控器操作",
+      "status": "active",
+      "play_controls_revision": "2026-11-22：预览画面移除中央全屏播放按钮，点击预览画面或右侧全屏按钮进入全屏，复用原会话及表面。预览画面保留可聚焦的全屏点击语义，纯图标按钮内容居中。隐藏控制栏时确认键只唤出控制栏，保留播放或暂停状态；整次确认键按下、重复和松开由父级消费，避免焦点迁移后松键误触播放按钮。控制栏已显示时，完整确认键仍交由聚焦按钮处理。此修订替代 requirement 中隐藏控制时确认键暂停/播放的旧行为。",
+      "filter_dropdown_revision": "2026-11-22 用户要求筛选改为下拉：热播类型、精选内容/地区、分类类型/题材/地区/年份/排序及央视频道/年月复用TvChoice，按钮显示名称、当前值和矢量下拉箭头，点击或确认后在按钮附近展开单列可滚动菜单；焦点落在当前选项，长列表先滚到当前值。上下选择、确认生效并关闭，返回/外部点击取消，关闭恢复原筛选按钮焦点；左右不跳出菜单。分类五项筛选合并成一行，保留原选项、筛选状态与分页。替代旧的四列居中弹窗。",
+      "title_marquee_revision": "2026-11-22：TvPoster 标题在卡片遥控器聚焦或鼠标悬停后延迟800ms开始跑马灯，长标题完整循环显示，移开后恢复单行省略。卡片统一提供焦点和悬停状态，标题本身不新增遥控器焦点；短标题不滚动，边框仍收在卡片内部。",
+      "search_ui_revision": "2026-11-22：搜索使用独立页头，仅保留返回、标题、搜索类型、键盘及结果，隐藏热播、精选、央视点播、分类、记录和投屏导航。进入时聚焦键盘，详情返回恢复搜索结果焦点；返回按钮和遥控器返回键回到进入搜索前的页面，保留查询、类型及两页滚动位置。既有签名及手机5/10秒冲突未对账，保留签名。",
+      "search_order_revision": "2026-11-22：在线结果复用 TvTitleIndex.ranks 对标准化中文、全拼及首字母排序，完全匹配先于前缀及包含匹配，已知匹配先于仅片源识别的别名；保留来源别名，不因本地字典覆盖不足删除可播放结果。在线排序不受本地60条搜索上限限制；目录和在线结果通过tvSearchOrder统一排序，列表身份、返回焦点及索引沿用统一顺序。守护中文/拼音/首字母、版本别名、超过60条在线结果及跨来源排序。",
+      "search_revision": "2026-11-22：搜索默认全部，按需筛选电影/电视剧/动漫/纪录片/综艺。动漫等题材映射至片源支持的 all 搜索，再按已知类型展示，未知类型保留；已收录目录支持中文、首字母与全拼。500ms 后先启动在线搜索再建立可选本地索引；在线片源可匹配 HZW 等未收录首字母，不承诺全网拼音覆盖。本地异常不阻断在线结果，加载与无结果明确提示。普通文字按钮仍左右16dp，六列字母键特例改为4dp，保证 W 完整。同步实现、守护和镜像；修改前已有其他窗口签名及手机5/10秒冲突，不覆盖未对账签名。",
+      "ui_revision": "2026-11-22：TV 入口显示精选/热播；左上预览扩大且实际视频与占位共用尺寸，右侧简介限制两行，线路和选集放到简介下方，线路标签仅显示名称及耗时/待测速，集数只在选集区显示。",
+      "remote_seek_revision": "2026-11-22：修复播控条显示时左右键失效；播放按钮聚焦时仍按整期时间轴每次快进/快退十秒，下方操作按钮及选集面板保留左右焦点导航，seek 期间更新交互计时。",
+      "requirement": "提供独立电视桌面入口，兼容 Android 6/API 23 与 32 位 ARM；复用移动端直连目录、片源匹配、高分精选、国家筛选、搜索和播放记录。首页复用 HomeCategoryOptions、热播复用 HotTypeOptions，分别保存选择；分类保留类型、题材、国家、年份、排序，三个页面统一六列竖向网格，筛选使用按钮附近展开的单列可滚动下拉菜单，关闭恢复筛选焦点。文字按钮左右16dp留白，桌面和内置Logo使用同一熊猫图。详情左侧视频预览、右侧信息与全屏/收藏，下方线路与每20集分段的横向选集。详情解析可取消，成功后开始预览；预览与全屏共用同一会话和同一视频表面，切线及选集调用原会话方法。六列遥控器字母数字键盘以500ms延迟搜索，已收录目录支持全拼和首字母，完整片名继续在线搜索；返回恢复原海报焦点和滚动。播放器顶部标题、底部时间轴与每24集分段的八列选集面板，支持倍速；隐藏控制时左右十秒目标预览，220ms合并或松键提交，确认键暂停/播放。全屏返回预览保持播放状态，返回列表及切后台保存进度并暂停视频。投屏入口开启前停止普通会话，内置熊猫接收端提供前台SSD​​P/Bonjour发现及有界AVTransport服务，支持播放、暂停、定位、停止，退后台关闭服务并释放播放器。普通播放与投屏均在系统媒体音量0或系统静音时强制解码器静音，正音量由系统控制。错误操作提供重试/取消，无 NAS 依赖。Android 6补充官方 ISRG Root X1，固定指纹并保留 PKIX、证书有效期及默认主机名校验。",
+      "implementation": [
+        "mobile/tv/build.gradle.kts",
+        "mobile/tv/src/main/AndroidManifest.xml",
+        "mobile/tv/src/main/java/dev/pandavideo/tv/TvActivity.kt",
+        "mobile/tv/src/main/res/values/styles.xml",
+        "mobile/tv/src/main/res/values-v31/styles.xml",
+        "mobile/tv/src/main/res/drawable/tv_startup_background.xml",
+        "mobile/tv/src/main/res/drawable-xxxhdpi/launch_slogan.png",
+        "mobile/tv/src/main/res/drawable/ic_tv_startup_logo.xml",
+        "mobile/tv/src/main/res/drawable/ic_tv_system_startup_logo.xml",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/AndroidTvApp.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvLibrary.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvDetail.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvTitleIndex.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvSearch.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/TvRemote.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlatform.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidSourceTls.kt",
+        "mobile/shared/src/androidMain/assets/legacy-ca/isrgrootx1.pem",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidOfflineEngine.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/ui/common/Poster.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidSystemMediaMute.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/PlaybackMediaSessionService.kt",
+        "mobile/tv/src/main/java/dev/pandavideo/tv/cast/ReceiverActivity.java",
+        "mobile/tv/src/main/java/dev/pandavideo/tv/cast/ReceiverServer.java",
+        "mobile/tv/src/main/java/dev/pandavideo/tv/cast/Transport.java"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/tv/src/main/AndroidManifest.xml",
+          "contains": ["android.intent.category.LEANBACK_LAUNCHER", "android.hardware.touchscreen", "android:theme=\"@style/TvLaunchTheme\""]
+        },
+        {
+          "file": "mobile/tv/src/main/res/values/styles.xml",
+          "contains": ["name=\"TvLaunchTheme\" parent=\"TvTheme\"", "name=\"android:windowBackground\">@drawable/tv_startup_background"]
+        },
+        {
+          "file": "mobile/tv/src/main/res/values-v31/styles.xml",
+          "contains": ["android:windowSplashScreenAnimatedIcon", "@drawable/ic_tv_system_startup_logo", "android:windowSplashScreenBrandingImage", "@drawable/launch_slogan"]
+        },
+        {
+          "file": "mobile/tv/src/main/res/drawable/tv_startup_background.xml",
+          "contains": ["android:startColor=\"#202840\"", "android:endColor=\"#10131A\"", "@drawable/ic_tv_startup_logo", "android:gravity=\"center\"", "@drawable/launch_slogan", "android:gravity=\"bottom|center_horizontal\""]
+        },
+        {
+          "file": "mobile/tv/src/main/res/drawable/ic_tv_startup_logo.xml",
+          "contains": ["android:width=\"96dp\" android:height=\"96dp\"", "android:src=\"@drawable/panda_logo\""]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/TvRemote.kt",
+          "contains": ["internal class TvConfirmPress", "if (heldKey == key)", "if (!down) heldKey = null", "if (controlsVisible || !down) return false", "if (repeatCount == 0) revealControls()", "internal class TvSeekGesture", "if (held <= 600) return", "(held - 600) / 120", "fun release(now: Long): Long?", "fun dismiss() { if (target != null) suppressed = true }"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/PlaybackMediaSessionService.kt",
+          "contains": ["internal fun seekToReady(position: Long, settled: () -> Unit)", "player.seekTo(position)", "val barrier = player.createMessage", "processed = true", "player.removeListener(observer)"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlatform.kt",
+          "contains": ["internal suspend fun seekAndAwaitReady(seek: () -> Unit)", "PlaybackMediaSessionService.seekToReady(target, settled)", "continuation.invokeOnCancellation"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/AndroidTvApp.kt",
+          "contains": ["val confirmPress = remember(session) { TvConfirmPress() }", "confirmPress.handle(key", "event.nativeKeyEvent.repeatCount, controls || episodes)", ".clickable(onClickLabel = \"全屏\", onClick = fullscreen)", "if (showLabel) Modifier else Modifier.fillMaxWidth()", "Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/AndroidTvApp.kt",
+"contains": ["model.playTelevisionDetail(selected.request.copy(", "session.selectLine(line)", "visiblePlaybackLines(", "model.retryPrompts.retry(prompt.id)", "session.setPlaybackVisible(false)", "val gesture = remember(session) { TvSeekGesture() }", "commitSeek()", "TvTimeline(controlPosition, player.duration, preview)", "GridCells.Fixed(8)", "modifier.tvTouchClick(action)", "modifier.fillMaxWidth().hoverable(interactions).tvTouchClick(play)", "detectTapGestures { latestAction() }", ".tvTouchClick { controls = !controls; interaction++ }", "ButtonDefaults.scale(focusedScale = 1f)", "CardDefaults.scale(focusedScale = 1f)", "border = BorderStroke(3.dp, Color.White), inset = (-2).dp", "focused || hovered", "interactionSource = interactions", "Modifier.basicMarquee(iterations = Int.MAX_VALUE", "overflow = if (revealTitle) TextOverflow.Clip else TextOverflow.Ellipsis", "var seekExpanded by remember { mutableStateOf(false) }", "gesture.dismiss(); syncPreview(); seekHint = null", "if (key == seekKey) commitSeek()", "seekHint?.let { hint ->", "Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp)", "\"快进 10s\" else \"快退 10s\"", "if (expanded && seekExpanded && !seekSuppressed && !controls && !episodes)", "val controlPosition = if (preview) seekTarget ?: player.position else player.position", "seekKey == null && !seekPending", "delay(5_000)", "android.seekAndAwaitReady { session.seekTo(target) }"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvLibrary.kt",
+          "contains": ["delay(500)", "cardFocus.requestFocus()", "televisionSearchCatalog()", "TvKeyboard(", "HomeCategoryOptions", "HotTypeOptions", "model.loadBrowse(navigation.filters)", "val columns = when (tab) { \"搜索\" -> 3; \"分类\" -> 8; else -> 6 }", "GridCells.Fixed(columns)", "navigation.grids.getValue(tab).scrollToItem(restoreIndex)", "var searchType by mutableStateOf(\"all\")", "model.search(navigation.query.trim(), tvSearchSourceType(navigation.searchType))", "search.loading || localSearching", "horizontalPadding = 4.dp"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvSearch.kt",
+          "contains": ["internal fun tvSearchSourceType", "internal fun tvSearchResults", "kind == \"all\" || declared.isBlank() || declared == kind", "return visible.sortedBy { ranked.getValue(it.detailUrl) }", "SearchPresentation.title(it)", "internal fun tvSearchOrder(", "val ranks = TvTitleIndex(titles).ranks(query)"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvLibrary.kt",
+          "contains": ["DropdownMenu(expanded = expanded", "properties = PopupProperties(focusable = true)", "triggerFocus.requestFocus()", "optionFocus.requestFocus()", "scroll.scrollTo(with(density)", "left = FocusRequester.Cancel", "TvFilterRow(\"类型\", HotTypeOptions, navigation.hotType,", "activateOnFocus = true, selectedFocus = hotTypeFocus)", "\"热播\" -> hotTypeFocus.requestFocus()", "Modifier.focusRequester(selectedFocus)", "TvFilterRow(\"类型\", BrowseTypeOptions", "activateOnFocus: Boolean = false", ".onFocusChanged { if (activateOnFocus && it.isFocused && key != selected) change(key) }", "LazyRow(Modifier.weight(1f), state = scroll", "navFocus.getValue(\"热播\")"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvLibrary.kt",
+          "contains": ["fun openSearch()", "fun closeSearch()", "BackHandler(enabled = tab == \"搜索\") { navigation.closeSearch() }", "if (navigation.tab != \"搜索\") { Row(", "if (tab == \"搜索\" && !navigation.restoreFocus)", "keyboardFocus.requestFocus()"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvLibrary.kt",
+          "contains": ["fun selectMainTab(target: String)", "TvMainTabOptions.any { it.first == target }", "Modifier.onFocusChanged { mainTabsFocused = it.hasFocus }.focusGroup()", ".onFocusChanged { if (it.isFocused) navigation.selectMainTab(target) }", "private fun TvCatalogLibrary("]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvCctvLibrary.kt",
+          "contains": ["else if (!initialized && !keepNavigationFocus)", "BackHandler { navigation.tab = \"精选\"; navigation.restoreFocus = true }"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/TvDetail.kt",
+          "contains": ["model.televisionDetail(selection.catalog, selection.request)", "catch (cancelled: CancellationException) { throw cancelled }", "session?.selectLine(value)", "session?.select(ep)", "episodes.drop(group * 20).take(20)"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/AndroidTvApp.kt",
+          "contains": ["internal fun TvVideoLoading(coverVideo: Boolean = true)", "CircularProgressIndicator(Modifier.size(40.dp), color = Orange, strokeWidth = 3.dp)", "Text(\"正在加载\", fontSize = 16.sp, color = Muted)", "val coverVideo = frameVisibility.cover("]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/AndroidTvApp.kt",
+          "contains": [".onFocusChanged { previewFocused = it.isFocused }", "if (!expanded && previewFocused)", "Box(Modifier.fillMaxSize().border(3.dp, Orange))"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/tvui/AndroidTvApp.kt",
+          "contains": ["IconButton(onClick = ::toggle", "Modifier.size(48.dp).focusRequester(playFocus)", ".onFocusChanged { playFocused = it.isFocused }.tvTouchClick(::toggle)", "IconButtonDefaults.scale(focusedScale = 1f)", "contentDescription = if (player.wantsPlay) \"暂停\" else \"播放\"", "if ((seekKey != null || (!controls || playFocused) && !episodes)", "key in setOf(AndroidKey.KEYCODE_DPAD_LEFT, AndroidKey.KEYCODE_DPAD_RIGHT)"]
+        },
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/app/AppState.kt",
+          "contains": ["internal suspend fun televisionDetail(", "api.playbackMatch(it).pageUrl", "internal fun playTelevisionDetail(", "playingRecommendations = recommendations?.toList()"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidSystemMediaMute.kt",
+          "contains": ["if (index <= 0 || muted) 0f else 1f", "audio.isStreamMute(AudioManager.STREAM_MUSIC)", "app.unregisterReceiver(receiver)"]
+        },
+        {
+          "file": "mobile/tv/src/main/java/dev/pandavideo/tv/cast/ReceiverActivity.java",
+          "contains": ["new AndroidSystemMediaMute(this, created)", "if (destroyed || !foreground)", "if (player != null) endPlayback()", "previous.release()", "PlaybackMediaSessionService.releaseForCasting();"]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/PlaybackMediaSessionService.kt",
+          "contains": ["fun releaseForCasting()", "service.releasePlayback()", "service.stopSelf()", "preloader.release()", "session.release()"]
+        },
+        {
+          "file": "mobile/tv/build.gradle.kts",
+          "contains": ["minSdk = 23", "applicationId = \"dev.pandavideo.tv\""]
+        },
+        {
+          "file": "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidSourceTls.kt",
+          "contains": ["Build.VERSION.SDK_INT >= Build.VERSION_CODES.N", "ROOT_SHA256", "certificate.checkValidity()", "system.checkServerTrusted(chain, authType)", "extra.checkServerTrusted(chain, authType)", "sslSocketFactory(trusted.sockets, trusted.manager)"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/tools/test_tv_play_controls.py",
+          "contains": ["def test_seek_uses_remote_without_toolbar_buttons(self)", "def test_play_and_pause_icon_is_centered_in_its_circle(self)", "delta=1", "Expected one visible playback state icon"]
+        },
+        {
+          "file": "mobile/shared/src/androidHostTest/kotlin/dev/pandavideo/SystemMediaMuteTest.kt",
+          "contains": ["fun zeroIndexMutesEvenWhenVendorStreamIsNotMuted()", "fun explicitMuteOverridesPositiveSystemVolume()", "fun positiveVolumeRestoresGainWithoutReplacingTheSystemCurve()"]
+        },
+        {
+          "file": "mobile/shared/src/androidHostTest/kotlin/dev/pandavideo/TvTabNavigationTest.kt",
+          "contains": ["fun focusingEveryMainTabSelectsItImmediatelyAndPreservesPageState()", "fun selectingAnotherMainTabCancelsPendingDetailFocusRestoration()", "fun toolbarActionsAreNotContentTabs()"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/VideoFrameVisibilityTest.kt",
+          "contains": ["fun readyPlayingAndPausedDoNotExposeAnUnrenderedReplacement()", "fun rebufferingDoesNotBlackOutAnAlreadyRenderedPresentation()"]
+        },
+        {
+          "file": "mobile/tv/src/androidTest/java/dev/pandavideo/tv/ReceiverHandoffProbe.java",
+          "contains": ["Paused local fixture did not acquire a decoder", "Receiver failed after local decoder handoff", "Local media session still owns its paused decoder", "Local player was not released"]
+        },
+        {
+          "file": "mobile/tools/test_tv_filter_dropdown.py",
+          "contains": ["def test_select_cancel_and_restore_far_year(self)", "self.assert_selected(self.wait_focus(\"热门电影\"), \"热门电影\")", "self.assert_selected(root, year)", "self.wait_focus(\"内容：精选\")", "Far year must remain visible and focused", "self.assert_selected(root, \"全部年份\")", "Down must reach the sorting row without traversing hidden years", "Only confirmation applies the focused Browse filter"]
+        },
+        {
+          "file": "mobile/tv/src/test/java/dev/pandavideo/tv/cast/TransportTest.java",
+          "contains": ["descriptorAndServiceDocumentAreValidXml"]
+        },
+        {
+          "file": "mobile/tv/src/test/java/dev/pandavideo/tv/cast/ReceiverServerTest.java",
+          "contains": ["discoverySocketFailureDoesNotCloseHttpDescriptor", "explicitShutdownClosesHttpAndReportsStopped"]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/TvRemoteTest.kt",
+          "contains": ["fun remoteSeekMovesTenSecondsAndBoundsBothEnds()", "fun unknownTimelineDoesNotResetPlaybackOnRemoteSeek()", "fun revealingControlsConsumesRepeatsAndReleaseWithoutPausingPlayback()", "fun unrelatedConfirmationReleaseDoesNotUnlockPress()", "fun orphanedConfirmationRepeatDoesNotRevealControls()", "fun heldSeekingAccumulatesTenSecondStepsAndReversesAtTimelineBounds()", "fun shortPressAndRepeatEventsCommitOnlyOnce()", "fun heldPreviewUsesElapsedTimeAndNeverKeyRepeatCount()", "fun dismissKeepsAccumulatingUntilReleaseAndNextGestureShowsAgain()", "fun cancellationAndUnknownDurationCannotCommitAnOldMediaSeek()", "fun holdReversesFromPreviewAndClampsVeryLongPresses()"]
+        },
+        {
+          "file": "mobile/shared/src/androidHostTest/kotlin/dev/pandavideo/TvTitleIndexTest.kt",
+          "contains": ["fun remoteInitialsAndFullPinyinFindKnownTitles()", "fun completeTitlesNumbersAndTypeBoundariesRemainDistinct()", "fun allScopeFindsOnePieceByChineseTitleInitialsAndFullPinyin()", "fun exactThenPrefixThenContainsMatchesPrecedeProviderOrder()"]
+        },
+        {
+          "file": "mobile/shared/src/androidHostTest/kotlin/dev/pandavideo/TvSearchTest.kt",
+          "contains": [
+            "fun exactChineseAndPhoneticTitlesPrecedeNewerSpinOffsAndLooseProviderMatches()",
+            "fun verifiedReleaseAliasesMatchChinesePinyinAndInitialsExactly()",
+            "fun onlineRankingDoesNotApplyTheSixtyTitleLocalSearchLimit()",
+            "fun gridRanksOnlineExactMatchesAheadOfLocalPartialMatchesAndPreservesIdentities()",
+            "fun remoteInitialsKeepOnlineAnimationEvenWithoutLocalCatalogCoverage()",
+            "fun genreButtonsUseSupportedProviderScopesAndKeepUnknownMetadata()",
+            "fun searchBackReturnsToOriginWithoutLosingQueryFiltersOrResultPosition()",
+            "fun closingSearchOutsideSearchDoesNotNavigateOrRequestFocusRestoration()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/AppStateTest.kt",
+          "contains": ["fun televisionDetailResolvesWithoutStartingPlayerOrRecordingHistory()", "fun leavingTelevisionDetailCancelsMatchingWithoutStartingPlayer()"]
+        },
+        {
+          "file": "mobile/tv/src/androidTest/java/dev/pandavideo/tv/TvNetworkProbe.java",
+          "contains": ["wrong.host.badssl.com", "expired.badssl.com", "self-signed.badssl.com", "Unexpectedly trusted", "Activity.RESULT_CANCELED"]
+        }
+      ],
+      "notes": "2026-11-21 新增独立电视应用；参考已安装荐片界面重构自绘键盘、已收录目录拼音搜索、详情选集、返回海报焦点及连续快进预览。登记前已有签名未接受及手机全屏5/10秒冲突；保留原签名，不执行 --accept 覆盖其他窗口修改。"
+    },
+    {
+      "id": "cast-receiver-black-background-remote-sizing",
+      "title": "投屏黑色背景、遥控器快进快退与充满屏幕",
+      "status": "active",
+      "requirement": "TV 内置接收端及独立熊猫投屏播放背景和视频 shutter 为纯黑。播放期间左右方向键直接按 10 秒快退/快进，保留暂停意图并限制在有效时间轴内；等待及不可 seek 状态不得跳转。保留进度条及设置的原生方向键操作；播控区上键聚焦充满屏幕按钮，画面尺寸按钮的下键回到播放暂停。充满屏幕使用等比例裁切，适应屏幕恢复完整画面，切换不得重建播放器或改变播放进度；按钮随控制条同步隐藏。",
+      "implementation": [
+        "mobile/tv/src/main/java/dev/pandavideo/tv/cast/ReceiverActivity.java",
+        "mobile/tv/src/main/res/layout/receiver_player_view.xml"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/tv/src/main/java/dev/pandavideo/tv/cast/ReceiverActivity.java",
+          "contains": [
+            "root.setBackgroundColor(Color.BLACK)",
+            "video.setShutterBackgroundColor(Color.BLACK)",
+            "screenMode.setVisibility(visibility)",
+            "RESIZE_MODE_ZOOM",
+            "RESIZE_MODE_FIT",
+            "public boolean dispatchKeyEvent(KeyEvent event)",
+            "player.isCurrentMediaItemSeekable()",
+            "if (back) player.seekBack(); else player.seekForward()",
+            "screenMode.requestFocus()"
+          ]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/tv/src/androidTest/java/dev/pandavideo/tv/ReceiverRemoteProbe.java",
+          "contains": [
+            "Video background must be black",
+            "Letterbox background must be black",
+            "Left must rewind ten seconds",
+            "Right must advance ten seconds",
+            "Sizing must preserve paused playback and position",
+            "Rewind must clamp at zero",
+            "Forward must clamp at duration"
+          ]
+        }
+      ],
+      "notes": "独立接收端位于 /Users/bytedance/Documents/develop/vibe/PandaCastReceiver，同步实现并由 ReceiverPlaybackLifecycleTest.remoteArrowSeekAndScreenFillPreservePausedPlayback 验证。登记前已有契约签名未接受及手机全屏5/10秒锚点冲突，保留原签名，不执行 --accept 掩盖未对账差异。"
+    },
+    {
+      "id": "hls-playlist-first-segment-reuse",
+      "title": "未加密 HLS 播放列表与首片段复用",
+      "status": "active",
+      "requirement": "Android/iOS 下一集预加载对未加密、有限时长 MPEG-TS 媒体播放列表缓存播放列表和完整首片段。正式播放等待同一下载任务，命中后不重新从源站请求这两份资源；后续片段保留基于最终重定向地址解析的绝对地址。缓存按完整 URL 区分，单片段上限 16MiB、任务超时 12 秒、有效期 2 分钟；候选替换取消下载，播放等待者取消不取消共享任务。缓存缺失、失败、过期或不支持时回退原播放地址，保留暂停、进度、倍速及单播放器/PiP 行为。Android 缓存文件由播放服务退出后清理；iOS 仅通过 loopback HTTP 暴露两份缓存资源。",
+      "implementation": [
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/HlsBootstrapCache.kt",
+        "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/BootstrapHttp.kt",
+        "mobile/shared/src/androidMain/kotlin/dev/pandavideo/core/platform/AndroidPlatform.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosPlatform.kt",
+        "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosHlsBootstrapServer.kt"
+      ],
+      "anchors": [
+        {
+          "file": "mobile/shared/src/commonMain/kotlin/dev/pandavideo/core/player/HlsBootstrapCache.kt",
+          "contains": [
+            "pending = scope.async",
+            "withTimeout(12_000)",
+            "const val TTL_MS = 120_000L",
+            "private const val MAX_SEGMENT = 16 * 1024 * 1024",
+            "currentCoroutineContext().ensureActive()",
+            "encodedParameters.clear()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/iosMain/kotlin/dev/pandavideo/core/platform/IosHlsBootstrapServer.kt",
+          "contains": ["this[0] = 127u", "http://127.0.0.1:$port/index.m3u8", "bootstrapHttpResponse(request, manifest, segment)"]
+        }
+      ],
+      "guards": [
+        {
+          "file": "mobile/shared/src/commonTest/kotlin/dev/pandavideo/HlsBootstrapCacheTest.kt",
+          "contains": [
+            "fun playbackJoinsInFlightDownloadAndWarmReplayMakesNoRequests()",
+            "fun waiterCancellationDoesNotCancelSharedWorkAndExactUrlsExpire()",
+            "fun followsRedirectBeforeResolvingSegmentsAndFallsBackOnFailure()",
+            "fun loopbackSupportsHeadRangesAndRejectsOtherResources()"
+          ]
+        },
+        {
+          "file": "mobile/shared/src/androidDeviceTest/kotlin/dev/pandavideo/HlsBootstrapDeviceTest.kt",
+          "contains": ["fun nativePlaybackReadsPreloadedPlaylistAndFirstSegment()"]
+        },
+        {
+          "file": "mobile/shared/src/iosTest/kotlin/dev/pandavideo/IosHlsBootstrapTest.kt",
+          "contains": ["fun avPlayerReadsLoopbackBootstrapAndPreservesPendingPause()"]
+        }
+      ],
+      "notes": "本次只更新缓存相关契约和 Android 命中标志锚点。登记前存在原签名未接受及全屏5/10秒冲突，保留签名，不通过 --accept 掩盖既有失败。当前是会话缓存，不承诺重启后复用。"
+    }
+  ]
+}

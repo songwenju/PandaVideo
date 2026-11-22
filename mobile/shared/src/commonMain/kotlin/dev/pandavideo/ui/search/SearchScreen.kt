@@ -28,6 +28,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.IconButton
@@ -81,6 +83,7 @@ import dev.pandavideo.ui.common.rememberSkeletonAlpha
 @Composable
 internal fun SearchPage(
     model: AppState, query: String, showingResults: Boolean,
+    sourceType: String, onSourceChange: (String) -> Unit,
     onQueryChange: (String) -> Unit,
     submit: () -> Unit, searchTitle: (String) -> Unit, reset: () -> Unit,
     back: () -> Unit, play: (SearchItem) -> Unit,
@@ -118,6 +121,7 @@ internal fun SearchPage(
                 modifier = Modifier.weight(1f).focusRequester(requester),
                 onSearch = submit,
                 onClear = { reset(); requester.requestFocus() },
+                placeholder = if (sourceType == "bilibili") "搜索B站视频、BV号或链接" else "搜索影视或演员",
             )
             TextButton(
                 onClick = submit, enabled = query.isNotBlank(),
@@ -128,8 +132,17 @@ internal fun SearchPage(
                         else MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        Row(Modifier.fillMaxWidth().padding(start = 52.dp, bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("all" to "影视", "bilibili" to "B站").forEach { (type, label) ->
+                FilterChip(selected = sourceType == type, onClick = { onSourceChange(type) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Accent.copy(alpha = 0.10f), selectedLabelColor = Accent),
+                    label = { Text(label) })
+            }
+        }
         if (showingResults) {
-            ActorSearchResults(model, openActor)
+            if (sourceType != "bilibili") ActorSearchResults(model, openActor)
             SearchResults(state, query, model, Modifier.weight(1f),
                 onBack = { reset(); requester.requestFocus() }, retry = submit, play = play)
         } else {
@@ -143,6 +156,7 @@ internal fun SearchPage(
 private fun SearchField(
     query: String, onQueryChange: (String) -> Unit, modifier: Modifier,
     onSearch: () -> Unit, onClear: () -> Unit,
+    placeholder: String,
 ) {
     BasicTextField(
         value = query, onValueChange = onQueryChange, modifier = modifier, singleLine = true,
@@ -164,7 +178,7 @@ private fun SearchField(
                 Spacer(Modifier.width(7.dp))
                 Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                     if (query.isEmpty()) Text(
-                        "搜索影视或演员", fontSize = 14.sp,
+                        placeholder, fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
                     )
                     innerTextField()
@@ -249,12 +263,14 @@ internal fun SearchResults(
 
 @Composable
 private fun SearchRow(item: SearchItem, query: String, model: AppState, play: (SearchItem) -> Unit) {
+    val publicVideo = item.sourceId.startsWith("bilibili:")
+    val posterHeight = if (publicVideo) 72.dp else 134.dp
     Row(
         Modifier.fillMaxWidth().clickable(enabled = item.playable, role = Role.Button) { play(item) }
             .padding(vertical = 14.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(Modifier.width(96.dp).height(134.dp)) {
+        Box(Modifier.width(if (publicVideo) 128.dp else 96.dp).height(posterHeight)) {
             Poster(model.poster(item), item.title, Modifier.fillMaxSize().posterSharedTransition(item.detailUrl))
             if (item.remark.isNotBlank()) Box(
                 Modifier.align(Alignment.BottomStart).padding(6.dp)
@@ -264,7 +280,7 @@ private fun SearchRow(item: SearchItem, query: String, model: AppState, play: (S
         }
         // Font metrics vary across platforms and accessibility sizes. Reserve the poster
         // height as a minimum instead of squeezing the final button into a fixed column.
-        Column(Modifier.weight(1f).heightIn(min = 134.dp)) {
+        Column(Modifier.weight(1f).heightIn(min = posterHeight)) {
             HighlightedTitle(item.title, query, Modifier.fillMaxWidth())
             item.rating?.let { rating ->
                 Spacer(Modifier.height(6.dp))
@@ -288,10 +304,11 @@ private fun SearchRow(item: SearchItem, query: String, model: AppState, play: (S
                     }
                 }
             }
-            if (item.cast.isNotBlank()) {
+            val credit = if (publicVideo) item.uploader else item.cast
+            if (credit.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "主演：${item.cast}", fontSize = 12.sp,
+                    "${if (publicVideo) "UP主" else "主演"}：$credit", fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )

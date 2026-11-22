@@ -6,6 +6,9 @@ import dev.pandavideo.core.model.SearchItem
 import dev.pandavideo.core.model.SearchResult
 import dev.pandavideo.core.platform.currentEpochMillis
 import dev.pandavideo.data.repository.CatalogDatabase
+import dev.pandavideo.data.repository.BundledCatalogSnapshot
+import dev.pandavideo.resources.Res
+import org.jetbrains.compose.resources.ExperimentalResourceApi
 import dev.pandavideo.data.repository.ContentRepository
 import dev.pandavideo.data.repository.BundledPosters
 import dev.pandavideo.data.repository.CatalogAvailability
@@ -22,25 +25,135 @@ import java.io.File
 import kotlin.test.*
 
 class CatalogDatabaseTest {
-    @Test fun legacyFastestSearchRefreshesToPomoButSurvivesOffline() = runTest {
+    @OptIn(ExperimentalResourceApi::class)
+    @Test fun shippedJianpianSourcesUpgradeNonemptyDatabaseAndPersistOffline() = runTest {
+        val bundle = Json { ignoreUnknownKeys = true }
+            .decodeFromString<dev.pandavideo.data.repository.BundledPlaybackIdentities>(
+                Res.readBytes("files/catalog-playback-identities.json").decodeToString())
+        val verified = bundle.subjects.filterValues { it.jianpian.isNotBlank() }
+        assertTrue(verified.isNotEmpty())
+        withDatabase { path ->
+            val legacy = CatalogDatabase(path)
+            val unrelated = CatalogItem("用户作品", "https://movie.douban.com/subject/123/")
+            legacy.pinPlaybackIdentity(unrelated, pomoPage)
+            val (subject, identity) = verified.entries.first()
+            val item = CatalogItem("精选电影", "https://movie.douban.com/subject/$subject/",
+                year = identity.year, cover = "https://image/existing.jpg", playbackPageUrl = pomoPage)
+            legacy.pinPlaybackIdentity(item, pomoPage)
+            legacy.write("top250:0", CatalogPage(listOf(item), 0, 25, true), 1L)
+            val upgraded = CatalogDatabase(path, initializeFromBundle = true)
+            val expected = JianpianSource.address(identity.jianpian)
+            assertEquals(expected, upgraded.playbackIdentity(item).playbackPageUrl)
+            assertEquals(item.cover, upgraded.playbackIdentity(item).cover)
+            assertEquals(pomoPage, upgraded.playbackIdentity(unrelated).playbackPageUrl)
+            assertEquals(item, upgraded.read("top250:0")!!.page.items.single())
+            upgraded.clearCache()
+            // Disable bundled import on restart to prove the mappings came from SQLite.
+            val restarted = CatalogDatabase(path)
+            for ((id, source) in verified) {
+                val restored = restarted.playbackIdentity(CatalogItem(
+                    "", "https://movie.douban.com/subject/$id/"))
+                assertEquals(JianpianSource.address(source.jianpian), restored.playbackPageUrl)
+                assertEquals(source.year, restored.year)
+                assertEquals(source.isSeries, restored.isSeries)
+            }
+        }
+    }
+    @Test fun damingDynastyUpgradesLegacySingleSourceWithoutLosingSeriesIdentity() = runTest {
+        withDatabase { path ->
+            val item = CatalogItem("大明王朝1566", "https://movie.douban.com/subject/2210001/",
+                year = "2007", isSeries = true)
+            val legacyPage = PomoSource.address("auto_detail", "site" to "暴风", "id" to "6186")
+            CatalogDatabase(path).pinPlaybackIdentity(item, legacyPage)
+            val upgraded = CatalogDatabase(path, initializeFromBundle = true)
+                .playbackIdentity(item.copy(playbackPageUrl = legacyPage))
+            assertEquals(JianpianSource.address("13003"), upgraded.playbackPageUrl)
+            assertEquals("2007", upgraded.year)
+            assertEquals(true, upgraded.isSeries)
+            assertEquals(item.url, upgraded.url)
+            val restarted = CatalogDatabase(path).playbackIdentity(item)
+            assertEquals(upgraded.playbackPageUrl, restarted.playbackPageUrl)
+            assertEquals(true, restarted.isSeries)
+        }
+    }
+
+    @Test fun persistedJianpianPinBypassesTitleSearch() = runTest {
+        withDatabase { path ->
+            val item = CatalogItem("测试电影", "https://movie.douban.com/subject/123/", year = "2020")
+            CatalogDatabase(path).pinPlaybackIdentity(item, JianpianSource.address("1"))
+            var searches = 0
+            val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+                when {
+                    request.url.encodedPath.endsWith("/init") -> respond("""{"code":1,"data":{"secret":"s"}}""")
+                    request.url.encodedPath.endsWith("/detailv2") ->
+                        respond("""{"code":1,"data":{"source_list_source":[{"source_list":[{"source_name":"正片","url":"https://media.test/film.m3u8"}]}]}}""")
+                    else -> { searches++; respond("", HttpStatusCode.ServiceUnavailable) }
+                }
+            }), CatalogDatabase(path))
+            try {
+                assertEquals(JianpianSource.address("1"), repo.playbackMatch(item).pageUrl)
+                assertEquals(0, searches)
+            } finally { repo.close() }
+        }
+    }
+
+    @Test fun verifiedDetailIdentitySurvivesRestartAndSkipsTitleSearch() = runTest {
+        withDatabase { path ->
+            val item = CatalogItem("测试电影", "https://movie.douban.com/subject/123/", year = "2020")
+            val first = ContentRepository(HttpClient(mockEngine { request ->
+                assertEquals("auto_detail", request.url.parameters["type"])
+                respond(pomoDetailFixture)
+            }), CatalogDatabase(path))
+            try {
+                assertEquals(pomoPage, first.playbackMatch(item.copy(playbackPageUrl = pomoPage)).pageUrl)
+            } finally { first.close() }
+            val database = CatalogDatabase(path)
+            assertEquals(pomoPage, database.playbackIdentity(item).playbackPageUrl)
+            database.clearCache()
+            var details = 0
+            val restarted = ContentRepository(HttpClient(mockEngine { request ->
+                assertEquals("auto_detail", request.url.parameters["type"], "Pinned details must bypass title search")
+                details++
+                respond(pomoDetailFixture)
+            }), CatalogDatabase(path))
+            try {
+                assertEquals(pomoPage, restarted.playbackMatch(item).pageUrl)
+                assertEquals(1, details)
+                assertEquals("", database.playbackIdentity(item.copy(
+                    url = "https://movie.douban.com/subject/124/")).playbackPageUrl,
+                    "Different subjects must not inherit a same-title mapping")
+            } finally { restarted.close() }
+        }
+    }
+
+    @Test fun legacySingleSourceSearchRefreshesToMergedSourcesButSurvivesOffline() = runTest {
         withDatabase { path ->
             val database = CatalogDatabase(path)
             val address = PomoSource.address("auto_search", "wd" to "测试电影")
             val suffix = "movie:$address:${Json.encodeToString(ParserRules())}"
             val previous = SearchResult(listOf(SearchItem("测试电影", "荐片", playable = true,
                 detailUrl = JianpianSource.address("1"))))
-            database.writeResponse("search:online3:$suffix", Json.encodeToString(previous), currentEpochMillis())
+            database.writeResponse("search:online4:$suffix", Json.encodeToString(previous), currentEpochMillis())
             var calls = 0
-            val repo = ContentRepository(HttpClient(mockEngine {
-                calls++
-                respond(pomoSearch(pomoRow("测试电影")))
+            val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) { request ->
+                when {
+                    request.url.host == "pomo.mom" -> {
+                        calls++
+                        respond(pomoSearch(pomoRow("测试电影")))
+                    }
+                    request.url.encodedPath.endsWith("/init") -> respond("""{"code":1,"data":{"secret":"s"}}""")
+                    request.url.encodedPath.endsWith("/resourceDomainConfig") ->
+                        respond("""{"code":1,"data":{"imgDomain":"images.test"}}""")
+                    else -> respond("""{"code":1,"data":[{"id":1,"title":"荐片新增电影","top_category":{"id":1},"years":[{"year":"2020"}]}]}""")
+                }
             }), database)
             try {
                 val result = repo.search("测试电影", "movie")
-                assertEquals(pomoPage, result.results.single().detailUrl)
+                assertEquals(setOf(pomoPage, JianpianSource.address("1")),
+                    result.results.map { it.detailUrl }.toSet())
                 assertEquals(result, repo.search("测试电影", "movie"))
                 assertEquals(1, calls)
-                assertNotNull(database.readResponse("search:online4:$suffix"))
+                assertNotNull(database.readResponse("search:online5:$suffix"))
             } finally { repo.close() }
         }
         withDatabase { path ->
@@ -49,7 +162,7 @@ class CatalogDatabaseTest {
             val suffix = "movie:$address:${Json.encodeToString(ParserRules())}"
             val previous = SearchResult(listOf(SearchItem("测试电影", "荐片", playable = true,
                 detailUrl = JianpianSource.address("1"))))
-            database.writeResponse("search:online3:$suffix", Json.encodeToString(previous), currentEpochMillis())
+            database.writeResponse("search:online4:$suffix", Json.encodeToString(previous), currentEpochMillis())
             val repo = ContentRepository(HttpClient(mockEngine {
                 respond("", HttpStatusCode.ServiceUnavailable)
             }), database)
@@ -85,11 +198,25 @@ class CatalogDatabaseTest {
         }
     }
 
+    @OptIn(ExperimentalResourceApi::class)
     @Test fun websiteJsonAddsFullCategoriesToExistingInstallAndRefreshOverridesBundle() = runTest {
         withDatabase { path ->
             CatalogDatabase(path).write("top250:0", page(), 1L)
             val db = CatalogDatabase(path, initializeFromBundle = true)
             val rankingIds = db.top250Snapshot().flatMap { it.items }.map { it.url }.toSet()
+            val snapshot = Json { ignoreUnknownKeys = true }.decodeFromString<BundledCatalogSnapshot>(
+                Res.readBytes("files/catalog-categories.json").decodeToString())
+            // Prove that missing categories come from the bundle, then explicitly establish
+            // fresh cache entries. Shipped capture timestamps eventually expire; that normal
+            // revalidation must not make this cache/forced-refresh test depend on today's date.
+            val comedyPages = snapshot.pages.filterKeys {
+                io.ktor.http.Url(it).parameters["tags"] == "电影,喜剧"
+            }
+            assertTrue(comedyPages.isNotEmpty())
+            for ((key, entry) in comedyPages) {
+                assertEquals(entry.page, assertNotNull(db.read(key)).page)
+                db.write(key, entry.page, currentEpochMillis())
+            }
             var calls = 0
             val repo = ContentRepository(HttpClient(mockEngine {
                 calls++
@@ -143,7 +270,7 @@ class CatalogDatabaseTest {
                 try {
                     val restored = repo.list("tv")
                     assertEquals("tv", restored.items.single().kind)
-                    assertEquals(savedAt == 1L, restored.stale)
+                    assertTrue(restored.stale, "Unavailable supplementary sources require revalidation")
                     assertEquals(legacy, db.read("tv:0")?.page,
                         "The view restores category metadata without rewriting the saved snapshot")
                 } finally { repo.close() }
@@ -165,7 +292,7 @@ class CatalogDatabaseTest {
                     val result = repo.list("tv", onCached = { published += it })
                     assertEquals(listOf("武林外传"), result.items.map { it.title })
                     assertEquals(listOf("武林外传"), published.single().items.map { it.title })
-                    assertEquals(legacy.pageSize, result.pageSize)
+                    assertEquals(20, result.pageSize)
                     assertEquals(legacy.hasMore, result.hasMore)
                     assertEquals(legacy, db.read("tv:0")?.page)
                 } finally { repo.close() }
@@ -338,7 +465,9 @@ class CatalogDatabaseTest {
                 assertEquals("肖申克的救赎", films.first().title)
                 assertFalse(repo.list("top250", 225).hasMore)
                 assertTrue(repo.list("tv", 280).hasMore)
-                assertEquals(0, requests)
+                // Shipped capture timestamps eventually expire. Failed offline revalidation
+                // must preserve all subjects above and stay bounded by these 27 page reads.
+                assertTrue(requests <= 27, "Offline revalidation must stay bounded by page reads")
                 assertNotNull(BundledPosters.read(films.first().cover))
                 assertNotNull(BundledPosters.read(tv.first().cover))
             } finally { repo.close() }

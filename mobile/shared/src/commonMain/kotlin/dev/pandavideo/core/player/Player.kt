@@ -3,6 +3,7 @@ package dev.pandavideo.core.player
 import dev.pandavideo.core.model.Episode
 import dev.pandavideo.core.model.PlaybackInfo
 import dev.pandavideo.core.model.PlayerRequest
+import dev.pandavideo.core.model.LineProbe
 import dev.pandavideo.core.model.nextEpisode
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -20,6 +21,8 @@ data class MediaSource(
     val startPosition: Long = 0,
     /** Opening policy evaluated against native duration before the first playback frame. */
     val startupSkip: SkipDurations = SkipDurations(),
+    /** Ordered assets sharing one full-program timeline; [url] is the single-URL fallback. */
+    val segments: List<dev.pandavideo.core.model.MediaSegment> = emptyList(),
 )
 data class PlayerCapabilities(
     val playbackRate: Boolean = true, val seeking: Boolean = true,
@@ -107,7 +110,11 @@ class PlaybackSession(
      * hundreds of entries, so resolving on the UI dispatcher delays the first composition.
      */
     private val resolveDispatcher: CoroutineDispatcher? = null,
+    /** Manual advertising reports rank automatic recovery without overriding explicit line taps. */
+    private val lineHasAds: (PlaybackInfo, Episode) -> Boolean = { _, _ -> false },
     private val skipDurations: (PlaybackInfo) -> SkipDurations = { SkipDurations() },
+    /** Optional background mirror discovery; it must return metadata without loading media. */
+    private val supplement: (suspend (PlaybackInfo) -> PlaybackInfo)? = null,
 ) {
     private var activeSkip = SkipDurations()
     private var introConsumed = false
@@ -121,8 +128,13 @@ class PlaybackSession(
         val player = controller.state.value
         if (player.mediaId != mutable.value.mediaId) return
         introConsumed = true
-        if (player.duration <= 0 || position >= player.duration - activeSkip.outroSeconds * 1_000L ||
-            mutable.value.ended || mutable.value.finished) outroExempt = true
+        // Entering credits by fast-forward is still normal episode completion. Only
+        // moving back within credits or reopening a completed episode requests replay.
+        // Unknown duration cannot establish a credits boundary and must not disable the
+        // outro policy for the rest of the episode once the native timeline arrives.
+        if (mutable.value.ended || mutable.value.finished ||
+            (player.duration > 0 && position < player.position &&
+                position >= player.duration - activeSkip.outroSeconds * 1_000L)) outroExempt = true
         dismissEnded()
         mutable.value = mutable.value.copy(finished = false)
         controller.seekTo(position.coerceAtLeast(0))
@@ -142,6 +154,7 @@ class PlaybackSession(
     private var request: PlayerRequest? = null
     private var resolution: Job? = null
     private var refreshJob: Job? = null
+    private var supplementJob: Job? = null
     private data class Preload(
         val request: PlayerRequest, val result: Deferred<PlaybackInfo?>,
         var completedMs: Long? = null, var info: PlaybackInfo? = null,
@@ -154,6 +167,8 @@ class PlaybackSession(
     private var pauseAtEnd = false
     private var playbackVisible = true
     private var recoveryAttempts = 0
+    private var manualLine = false
+    private var bufferingJob: Job? = null
     private var recoveryPosition: Long? = null
     // Keep the initial target through native readiness and retries, including an explicit zero.
     private var resumeTarget: Long? = null
@@ -240,6 +255,7 @@ class PlaybackSession(
             // last non-error intent so recovery continues active playback but respects pause.
             if (!closed && !current.loading && player.mediaId == current.mediaId &&
                 player.phase != PlayerPhase.Error) intendedPlay = player.wantsPlay
+            watchBuffering(player)
             if (!closed && !current.loading && player.mediaId == current.mediaId &&
                 player.mediaId != resumedId && player.duration > 0 &&
                 player.phase in setOf(PlayerPhase.Ready, PlayerPhase.Playing, PlayerPhase.Paused, PlayerPhase.Buffering)) {
@@ -277,19 +293,8 @@ class PlaybackSession(
             }
             if (!closed && playbackAllowed && !current.loading && current.error == null &&
                 player.mediaId == current.mediaId && player.phase == PlayerPhase.Error) {
-                val info = current.info ?: return@collect
-                if (recoveryAttempts >= 2) {
+                if (!recoverSource(player)) {
                     mutable.value = current.copy(error = player.error ?: "当前播放线路无法播放，请重试或切换线路")
-                } else {
-                    recoveryAttempts++
-                    // Use the resolved page/episode after a provider switch, not the original
-                    // request. Rejected URLs stay in memory and cannot be reused by preloading.
-                    val rejected = request?.rejectedMedia.orEmpty() + info.url
-                    loadRequest(PlayerRequest(page = info.pageUrl, title = info.title,
-                        episode = info.selected, rejectedMedia = rejected,
-                        rejectedEpisodes = request?.rejectedEpisodes.orEmpty() + info.selected),
-                        recoveryPosition ?: if (player.mediaId != resumedId && player.position == 0L)
-                            resumeTarget ?: 0L else player.position, intendedPlay, preserveSkip = true)
                 }
             }
             if (!closed && playbackAllowed && player.phase == PlayerPhase.Ended && player.mediaId == current.mediaId &&
@@ -297,6 +302,60 @@ class PlaybackSession(
                 finishEpisode(player, synthetic = false)
             }
         }
+    }
+    private fun watchBuffering(player: PlayerState) {
+        val current = mutable.value
+        if (closed || manualLine || !playbackAllowed || current.loading || current.error != null ||
+            player.mediaId != current.mediaId || !player.wantsPlay || player.phase != PlayerPhase.Buffering) {
+            bufferingJob?.cancel()
+            bufferingJob = null
+            return
+        }
+        // Native buffered-position updates must not restart the deadline. Leaving buffering,
+        // pausing or changing media cancels it, so a healthy seek never triggers a later switch.
+        if (bufferingJob != null) return
+        val id = player.mediaId
+        bufferingJob = scope.launch {
+            delay(AUTO_LINE_BUFFER_TIMEOUT_MS)
+            val latest = controller.state.value
+            if (!closed && !manualLine && playbackAllowed && !mutable.value.loading &&
+                mutable.value.error == null && latest.mediaId == id && latest.wantsPlay &&
+                latest.phase == PlayerPhase.Buffering) {
+                if (!recoverSource(latest))
+                    mutable.value = mutable.value.copy(error = "播放持续缓冲，请重试或切换线路")
+            }
+        }
+    }
+    private fun recoverSource(player: PlayerState): Boolean {
+        val info = mutable.value.info ?: return false
+        if (manualLine) return false
+        if (recoveryAttempts >= 2) return false
+        // A segmented route and its complete HLS fallback share one PID. Reject the failing
+        // MP4 tier, retaining that stable episode and HLS so recovery can replay the whole program.
+        val rejected = request?.rejectedMedia.orEmpty() +
+            if (info.segments.isEmpty()) setOf(info.url) else info.segments.map { it.url }.toSet()
+        val rejectedEpisodes = request?.rejectedEpisodes.orEmpty() +
+            if (info.segments.isEmpty()) setOf(info.selected) else emptySet()
+        val selected = info.episodes.find { it.path == info.selected }
+        val index = info.episodes.filter { it.line == selected?.line }.indexOf(selected)
+        // Only a corresponding episode can be an automatic target. Unlike a manual tap,
+        // recovery must never fall back to episode one of a shorter or unrelated line.
+        val target = info.episodes.groupBy { it.line }.values.mapNotNull { line ->
+            selected?.label?.takeIf { it.isNotBlank() }?.let { label -> line.find { it.label == label } }
+                ?: line.getOrNull(index)
+        }.filter { it.path !in rejectedEpisodes && info.lineProbes[it.line]?.available == true &&
+            info.lineProbes[it.line]?.elapsedMs?.let { elapsed -> elapsed >= 0 } == true }
+            .minWithOrNull(compareBy<Episode> { lineHasAds(info, it) }
+                .thenBy { info.lineProbes.getValue(it.line).elapsedMs!! })
+        recoveryAttempts++
+        // Fresh measurements rank recovery; absent measurements retain the resolver's
+        // existing same-episode fallback. Failed stable paths and URLs cannot cycle back.
+        loadRequest(PlayerRequest(page = info.pageUrl, title = info.title,
+            episode = target?.path ?: info.selected, rejectedMedia = rejected,
+            rejectedEpisodes = rejectedEpisodes, preferFastestLine = target == null),
+            recoveryPosition ?: if (player.mediaId != resumedId && player.position == 0L)
+                resumeTarget ?: 0L else player.position, intendedPlay, reason = "recovery", preserveSkip = true)
+        return true
     }
     private fun finishEpisode(player: PlayerState, synthetic: Boolean) {
         val current = mutable.value
@@ -334,17 +393,23 @@ class PlaybackSession(
         if (mutable.value.ended) mutable.value = mutable.value.copy(ended = false)
     }
     fun load(value: PlayerRequest) {
+        // Explicit route choices disable fallback. An episode path alone can also come
+        // from automatic history/preloading and must not be mistaken for a manual line tap.
+        manualLine = !value.allowLineFallback
         recoveryAttempts = 0
-        loadRequest(value, null, true)
+        loadRequest(value.copy(preferFastestLine = if (supplement != null) false else !manualLine,
+            reuseSourceInfo = supplement != null || value.reuseSourceInfo), null, true)
     }
     private fun loadRequest(value: PlayerRequest, position: Long?, autoplay: Boolean, reason: String = "load",
         preserveSkip: Boolean = false) {
         if (closed) return
+        bufferingJob?.cancel()
+        bufferingJob = null
         recoveryPosition = position
         intendedPlay = playbackAllowed && autoplay
         savePosition()
         // A slow resolver must not consume the address's lifetime before it finishes.
-        val cached = preload?.takeIf { it.request == value &&
+        val cached = preload?.takeIf { it.request.copy(reuseSourceInfo = value.reuseSourceInfo) == value &&
             (it.completedMs == null || nowMs() - it.completedMs!! < PRELOAD_VALID_MS) }
         if (cached == null) preload?.result?.cancel()
         if (cached == null) controller.preload(null)
@@ -353,6 +418,7 @@ class PlaybackSession(
         request = value
         resolution?.cancel()
         refreshJob?.cancel()
+        supplementJob?.cancel()
         val id = ++generation
         telemetry.begin(id, reason)
         controller.stop()
@@ -392,16 +458,42 @@ class PlaybackSession(
                         recoveryPosition = null
                     }
                     controller.load(MediaSource(id, info.url, info.kind, info.title,
-                        episodeLabelOf(info), playbackAllowed && intendedPlay, artworkUrl(info), start, startupSkip))
+                        episodeLabelOf(info), playbackAllowed && intendedPlay, artworkUrl(info), start, startupSkip,
+                        segments = info.segments))
                     if (controller.capabilities.playbackRate) controller.setPlaybackRate(playbackRate)
                     installRemoteActions(info)
                     preloadNextAfterFirstFrame(info, id)
+                    supplementJob = supplement?.let { discover ->
+                        scope.launch {
+                            try {
+                                val updated = resolveDispatcher?.let { withContext(it) { discover(info) } }
+                                    ?: discover(info)
+                                ensureActive()
+                                val current = mutable.value
+                                if (!closed && id == generation && current.info?.pageUrl == info.pageUrl &&
+                                    current.info.selected == info.selected && updated.pageUrl == info.pageUrl &&
+                                    updated.episodes.any { it.path == current.info.selected }) {
+                                    // Publish only the list. Native media, position, play intent and the
+                                    // user's selected line remain untouched, including an intervening pause.
+                                    mutable.value = current.copy(info = current.info.copy(episodes = updated.episodes))
+                                    installRemoteActions(mutable.value.info!!)
+                                }
+                            } catch (error: CancellationException) { throw error }
+                            catch (_: Exception) { /* Optional discovery cannot become a playback error. */ }
+                        }
+                    }
                 }
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) {
                 if (!closed && id == generation) {
                     telemetry.finish(StartupOutcome.Failed)
                     mutable.value = mutable.value.copy(loading = false, error = error.message ?: "视频解析失败")
+                    // A measured backup can fail while resolving. Continue with the remaining
+                    // corresponding routes, retaining the original timeline and pause intent.
+                    if (reason == "recovery") {
+                        request = value.copy(rejectedEpisodes = value.rejectedEpisodes + listOfNotNull(value.episode))
+                        recoverSource(controller.state.value)
+                    }
                 }
             }
         }
@@ -414,7 +506,7 @@ class PlaybackSession(
         controller.preload(null)
         request?.copy(rejectedEpisodes = emptySet())?.let {
             recoveryAttempts = 0
-            loadRequest(it.copy(rejectedMedia = emptySet()), null, true,
+            loadRequest(it.copy(rejectedMedia = emptySet(), reuseSourceInfo = false), null, true,
                 preserveSkip = !mutable.value.ended && !mutable.value.finished)
         }
     }
@@ -422,7 +514,8 @@ class PlaybackSession(
     fun refresh() {
         if (closed || mutable.value.loading || mutable.value.refreshing) return
         val current = mutable.value.info ?: run { retry(); return }
-        val value = PlayerRequest(page = current.pageUrl, title = current.title, episode = current.selected)
+        val value = PlayerRequest(page = current.pageUrl, title = current.title, episode = current.selected,
+            allowLineFallback = !manualLine)
         val id = generation
         preload?.result?.cancel()
         preload = null
@@ -466,13 +559,26 @@ class PlaybackSession(
         }
     }
 
-    private fun preloadNext(info: PlaybackInfo) {
+    /**
+     * Discards speculative next-episode choices after a manual line report changes.
+     * Active playback stays untouched; the next load resolves using the new preferences.
+     */
+    fun invalidateLinePreload() {
+        if (closed || manualLine) return
+        preload?.result?.cancel()
+        preload = null
+        nativePreload = null
+        controller.preload(null)
+    }
+
+    private fun preloadNext(info: PlaybackInfo, reuseSourceInfo: Boolean = true) {
         preload?.result?.cancel()
         preload = null
         nativePreload = null
         controller.preload(null)
         val next = nextEpisode(info) ?: return
-        val value = PlayerRequest(page = info.pageUrl, title = info.title, episode = next.path)
+        val value = PlayerRequest(page = info.pageUrl, title = info.title, episode = next.path,
+            allowLineFallback = !manualLine, reuseSourceInfo = reuseSourceInfo)
         lateinit var candidate: Preload
         val result = scope.async(start = CoroutineStart.LAZY) {
             try {
@@ -507,7 +613,7 @@ class PlaybackSession(
         if (nativePreload === candidate) return
         nativePreload = candidate
         controller.preload(MediaSource(generation + 1, info.url, info.kind, info.title,
-            episodeLabelOf(info), autoplay = false))
+            episodeLabelOf(info), autoplay = false, segments = info.segments))
     }
     private fun refreshPreloadNearEnd() {
         if (closed || !playbackAllowed || mutable.value.loading) return
@@ -517,16 +623,24 @@ class PlaybackSession(
         if (player.mediaId != mutable.value.mediaId || player.phase != PlayerPhase.Playing ||
             player.duration <= 0 || player.duration - player.position > 60_000 ||
             nowMs() - completed < 45_000) return
-        mutable.value.info?.let(::preloadNext)
+        mutable.value.info?.let { preloadNext(it, reuseSourceInfo = false) }
     }
     fun select(episode: Episode) {
         val info = mutable.value.info ?: return
         recoveryAttempts = 0
-        loadRequest(PlayerRequest(page = info.pageUrl, title = info.title, episode = episode.path),
+        loadRequest(PlayerRequest(page = info.pageUrl, title = info.title, episode = episode.path,
+            allowLineFallback = !manualLine, reuseSourceInfo = true),
             null, true, reason = "episode")
     }
+    /** Applies optional measurements only while the same resolved episode is still active. */
+    fun updateLineProbes(info: PlaybackInfo, probes: Map<Int, LineProbe>) {
+        val current = mutable.value
+        if (closed || current.loading || current.info?.pageUrl != info.pageUrl ||
+            current.info.selected != info.selected || current.info.url != info.url) return
+        mutable.value = current.copy(info = current.info.copy(lineProbes = current.info.lineProbes + probes))
+    }
     /**
-     * Immediately loads the corresponding episode on [line], preserving position and play intent.
+     * Immediately plays the corresponding episode on [line], preserving its position.
      * Matches an episode label first, then its index within the current line. If neither exists,
      * starts the first available episode on the target line without carrying unrelated progress.
      * Unknown lines, an already active line, and identical pending requests are ignored.
@@ -536,7 +650,15 @@ class PlaybackSession(
         val current = mutable.value
         val info = current.info ?: return
         val selected = info.episodes.find { it.path == info.selected }
-        if (selected?.line == line && !current.loading && current.error == null) return
+        if (info.episodes.none { it.line == line }) return
+        manualLine = true
+        bufferingJob?.cancel()
+        bufferingJob = null
+        if (selected?.line == line && !current.loading && current.error == null) {
+            request = request?.copy(page = info.pageUrl, episode = info.selected,
+                preferFastestLine = false, allowLineFallback = false)
+            return
+        }
         val targets = info.episodes.filter { it.line == line }
         if (targets.isEmpty()) return
         // Providers can use different language/quality labels for the same episode. Preserve
@@ -546,7 +668,8 @@ class PlaybackSession(
             targets.find { it.label == label }
         } ?: targets.getOrNull(index)
         val target = corresponding ?: targets.first()
-        val value = PlayerRequest(page = info.pageUrl, title = info.title, episode = target.path)
+        val value = PlayerRequest(page = info.pageUrl, title = info.title, episode = target.path,
+            allowLineFallback = false, reuseSourceInfo = true)
         // Loading still exposes the previous PlaybackInfo. Compare with the actual pending
         // request so repeated taps cannot restart its timeout or cancel useful resolution.
         // Failed loads remain retryable, and a different target still supersedes this request.
@@ -556,7 +679,7 @@ class PlaybackSession(
             recoveryPosition ?: player.position.takeIf { player.mediaId == current.mediaId }
         else null
         recoveryAttempts = 0
-        loadRequest(value, position, intendedPlay, reason = "line", preserveSkip = corresponding != null)
+        loadRequest(value, position, true, reason = "line", preserveSkip = corresponding != null)
     }
     /** Exposes episode switching to platform lock-screen / notification transport controls. */
     private fun installRemoteActions(info: PlaybackInfo) {
@@ -575,6 +698,8 @@ class PlaybackSession(
         generation++
         resolution?.cancel()
         refreshJob?.cancel()
+        supplementJob?.cancel()
+        bufferingJob?.cancel()
         preload?.result?.cancel()
         preload = null
         nativePreload = null
@@ -586,5 +711,6 @@ class PlaybackSession(
     private companion object {
         const val PRELOAD_VALID_MS = 5 * 60_000L
         const val PRELOAD_AFTER_FIRST_FRAME_TIMEOUT_MS = 15_000L
+        const val AUTO_LINE_BUFFER_TIMEOUT_MS = 15_000L
     }
 }

@@ -36,6 +36,7 @@ import java.util.concurrent.Executors
  */
 @UnstableApi
 internal class AndroidOfflineEngine private constructor(context: Context) : OfflineEngine {
+    init { AndroidSourceTls.install(context) }
     private val root = File(context.filesDir, "offline-media").apply { mkdirs() }
     private val database = StandaloneDatabaseProvider(context)
     private val caches = mutableMapOf<String, SimpleCache>()
@@ -140,6 +141,7 @@ internal class AndroidOfflineEngine private constructor(context: Context) : Offl
 /** Selects private cache sources while leaving ordinary online playback unchanged. */
 @UnstableApi
 internal class OfflineMediaSourceFactory(context: Context) : MediaSource.Factory {
+    init { AndroidSourceTls.install(context) }
     private val online = DefaultMediaSourceFactory(context)
     private val bilibili = DefaultMediaSourceFactory(DefaultDataSource.Factory(context,
         DefaultHttpDataSource.Factory().setUserAgent(dev.pandavideo.core.player.BilibiliMedia.userAgent)))

@@ -22,11 +22,20 @@ data class CatalogItem(
     @SerialName("playback_page_url") val playbackPageUrl: String = "",
     /** Whether the catalog subject is episodic, independent of animation/documentary genres. */
     @SerialName("is_series") val isSeries: Boolean? = null,
+    /** Provider's update/episode badge; never inferred from a title. */
+    val remark: String = "",
+    /** Original broadcast date supplied by a program provider, separate from a film's year. */
+    val broadcastDate: String = "",
+    /** Original program column supplied by the provider. */
+    val programColumn: String = "",
 )
+@Serializable
+data class CatalogSection(val title: String, val items: List<CatalogItem>)
 @Serializable
 data class CatalogPage(
     val items: List<CatalogItem>, val start: Int, @SerialName("page_size") val pageSize: Int,
     @SerialName("has_more") val hasMore: Boolean, val label: String = "", val stale: Boolean = false,
+    val sections: List<CatalogSection> = emptyList(),
 ) {
     fun nextStart(): Int = start + pageSize
 }
@@ -65,6 +74,7 @@ internal val HomeCatalogFilters = linkedMapOf(
     "nature" to BrowseFilters(type = "documentary", genre = "nature", sort = "rating"),
     "movie" to BrowseFilters(sort = "rating"),
     "documentary" to BrowseFilters(type = "documentary", sort = "rating"),
+    "variety" to BrowseFilters(type = "variety", sort = "rating"),
     "drama" to BrowseFilters(genre = "drama", sort = "rating"),
     "action" to BrowseFilters(genre = "action", sort = "rating"),
     "romance" to BrowseFilters(genre = "romance", sort = "rating"),
@@ -95,6 +105,8 @@ data class SearchItem(
     val cast: String = "", val remark: String = "",
     /** Verified Douban score on the ten-point scale; absent or unverified scores stay null. */
     val rating: Double? = null,
+    /** Public video uploader; independent of a film's credited cast. */
+    val uploader: String = "",
 )
 @Serializable
 data class SourceCount(val name: String, val count: Int, val status: String)
@@ -104,7 +116,20 @@ data class SearchResult(
     val errors: List<String> = emptyList(), val stale: Boolean = false,
 )
 @Serializable
-data class Episode(val path: String, val label: String, val line: Int)
+data class Episode(val path: String, val label: String, val line: Int, val lineName: String = "")
+/** A real bounded media-prefix probe; its latency is not video first-frame time. */
+@Serializable
+data class LineProbe(val elapsedMs: Long? = null, val available: Boolean? = null)
+
+/** Orders verified routes by latency, retaining unmeasured routes after successful ones. */
+internal fun visiblePlaybackLines(lines: Collection<Int>, probes: Map<Int, LineProbe>): List<Int> =
+    lines.filter { probes[it]?.available != false }.sortedBy {
+        probes[it]?.takeIf { probe -> probe.available == true }?.elapsedMs ?: Long.MAX_VALUE
+    }
+/** One public MP4 asset and its declared length in the full-program timeline. */
+@Serializable
+data class MediaSegment(val url: String, val durationMs: Long)
+
 @Serializable
 data class PlaybackInfo(
     val title: String, val url: String, val kind: String, val episodes: List<Episode> = emptyList(),
@@ -112,6 +137,11 @@ data class PlaybackInfo(
     val synopsis: String = "",
     /** Detail-page area label (e.g. "美国"); empty when the source does not expose one. */
     val region: String = "",
+    val lineProbes: Map<Int, LineProbe> = emptyMap(),
+    /** Original corresponding episode whose saved position applies after automatic line selection. */
+    val resumeFromEpisode: String? = null,
+    /** Complete ordered public MP4 route; [url] remains the full-program single-URL fallback. */
+    val segments: List<MediaSegment> = emptyList(),
 )
 @Serializable
 data class MatchResult(val playable: Boolean, @SerialName("page_url") val pageUrl: String = "")
@@ -123,6 +153,12 @@ data class PlayerRequest(
     val resumeHistory: Boolean = false,
     /** Failed source-owned episode paths; rotating media tokens must not reuse a failed line. */
     val rejectedEpisodes: Set<String> = emptySet(),
+    /** Prefers fresh measured routes for automatic entry/recovery; explicit line taps keep priority. */
+    val preferFastestLine: Boolean = false,
+    /** False after a manual route choice, so parser failures cannot silently replace that route. */
+    val allowLineFallback: Boolean = true,
+    /** Reuses source metadata and recently validated episode URLs during same-title navigation. */
+    val reuseSourceInfo: Boolean = false,
 )
 
 /** Returns the next episode in the selected source line, preserving server order. */

@@ -10,7 +10,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 
 class PomoSourceTest {
-    @Test fun searchMergesJourneyToWestMirrorsAndSortsByRating() = runTest {
+    @Test fun searchMergesJourneyToWestMirrorsAndSortsByRelevanceThenRating() = runTest {
         val body = """{"code":200,"data":{
             "西瓜":[
                 {"id":1,"name":"西游记1986","year":"1986","area":"大陆","douban_score":"9.8"},
@@ -22,7 +22,7 @@ class PomoSourceTest {
         val repo = ContentRepository(HttpClient(mockEngine { respond(body) }))
         try {
             val result = repo.search("西游记", "all")
-            assertEquals(listOf("西游记1986", "西游记续集", "西游记2010"), result.results.map { it.title })
+            assertEquals(listOf("西游记1986", "西游记2010", "西游记续集"), result.results.map { it.title })
             assertEquals(pomoPage, result.results.first().detailUrl)
             assertEquals(3, result.sources.sumOf { it.count })
         } finally { repo.close() }

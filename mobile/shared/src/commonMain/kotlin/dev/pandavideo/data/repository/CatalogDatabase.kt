@@ -36,7 +36,18 @@ internal data class BundledPlaybackIdentity(
     @SerialName("is_series") val isSeries: Boolean,
     /** Stable Pomo site:id pair, present only after manifest and segment verification. */
     val pomo: String = "",
-)
+    /** Stable Jianpian ID verified against the exact Douban subject and release year. */
+    val jianpian: String = "",
+) {
+    fun playbackPage(): String {
+        if (jianpian.matches(Regex("[1-9]\\d{0,11}")))
+            return JianpianSource.address(jianpian)
+        val provider = pomo.split(':')
+        return if (provider.size == 2) ContentParsers.playbackPageOrNull(
+            PomoSource.address("auto_detail", "site" to provider[0], "id" to provider[1]),
+        ).orEmpty() else ""
+    }
+}
 
 /** Persistent catalog pages; each film is stored as an ordered row in a SQLite transaction. */
 @OptIn(ExperimentalResourceApi::class)
@@ -46,19 +57,28 @@ class CatalogDatabase(private val path: String, private val initializeFromBundle
     private var bundledTop250: List<CatalogPage>? = null
     private var bundledCategories: BundledCatalogSnapshot? = null
     private var bundledPlaybackIdentities: BundledPlaybackIdentities? = null
+    private var importedPlaybackIdentities = false
 
     /** Applies shipped identity corrections to cached cards without replacing refreshed pages. */
     internal suspend fun playbackIdentity(item: CatalogItem): CatalogItem {
+        val pinned = access { db ->
+            db.prepare("SELECT item FROM playback_identities WHERE key = ?").use {
+                it.bindText(1, item.url)
+                if (it.step()) runCatching { json.decodeFromString<CatalogItem>(it.getText(0)) }.getOrNull() else null
+            }
+        }
+        if (pinned != null && ContentParsers.playbackPageOrNull(pinned.playbackPageUrl) != null)
+            return item.copy(playbackPageUrl =
+                if (JianpianSource.owns(pinned.playbackPageUrl)) pinned.playbackPageUrl
+                else item.playbackPageUrl.ifBlank { pinned.playbackPageUrl },
+                year = pinned.year.ifBlank { item.year }, isSeries = pinned.isSeries ?: item.isSeries)
         if (!initializeFromBundle) return item
         val identities = bundledPlaybackIdentities ?: json.decodeFromString<BundledPlaybackIdentities>(
             Res.readBytes("files/catalog-playback-identities.json").decodeToString(),
         ).also { bundledPlaybackIdentities = it }
         val identity = DoubanArtwork.subjectId(item.url)?.let { identities.subjects[it] }
         if (identity != null) {
-            val provider = identity.pomo.split(':')
-            val page = if (provider.size == 2) ContentParsers.playbackPageOrNull(
-                PomoSource.address("auto_detail", "site" to provider[0], "id" to provider[1]),
-            ).orEmpty() else ""
+            val page = identity.playbackPage()
             return item.copy(
                 year = identity.year,
                 isSeries = identity.isSeries,
@@ -75,6 +95,22 @@ class CatalogDatabase(private val path: String, private val initializeFromBundle
             playbackPageUrl = source.playbackPageUrl.ifBlank { item.playbackPageUrl },
             isSeries = item.isSeries ?: source.isSeries,
         )
+    }
+
+    /**
+     * Persists a verified subject-to-detail identity without retaining expiring media URLs.
+     * Subject URLs, rather than titles, keep different releases and remakes separate.
+     */
+    internal suspend fun pinPlaybackIdentity(item: CatalogItem, page: String) {
+        if (DoubanArtwork.subjectId(item.url) == null) return
+        val stable = ContentParsers.playbackPageOrNull(page)?.substringBefore('#') ?: return
+        access { db ->
+            db.prepare("INSERT OR REPLACE INTO playback_identities(key, item) VALUES (?, ?)").use {
+                it.bindText(1, item.url)
+                it.bindText(2, json.encodeToString(item.copy(playbackPageUrl = stable)))
+                it.step()
+            }
+        }
     }
 
     /** Reads the complete offline ranking and fills metadata omitted by older installations. */
@@ -115,11 +151,40 @@ class CatalogDatabase(private val path: String, private val initializeFromBundle
             }
             // Connections are scoped to a single operation, so cancellation and app teardown
             // cannot leave an open native handle. The mutex protects transactions on all targets.
+            val shippedIdentities = if (initializeFromBundle) bundledPlaybackIdentities
+                ?: json.decodeFromString<BundledPlaybackIdentities>(
+                    Res.readBytes("files/catalog-playback-identities.json").decodeToString(),
+                ).also { bundledPlaybackIdentities = it } else null
             BundledSQLiteDriver().open(path).use { db ->
                 db.execute("PRAGMA busy_timeout = 5000")
                 db.execute("CREATE TABLE IF NOT EXISTS catalog_pages (key TEXT PRIMARY KEY, metadata TEXT NOT NULL, saved_at INTEGER NOT NULL)")
                 db.execute("CREATE TABLE IF NOT EXISTS catalog_items (page_key TEXT NOT NULL, position INTEGER NOT NULL, item TEXT NOT NULL, PRIMARY KEY(page_key, position))")
                 db.execute("CREATE TABLE IF NOT EXISTS response_cache (key TEXT PRIMARY KEY, payload TEXT NOT NULL, saved_at INTEGER NOT NULL, byte_size INTEGER NOT NULL)")
+                db.execute("CREATE TABLE IF NOT EXISTS playback_identities (key TEXT PRIMARY KEY, item TEXT NOT NULL)")
+                val needsIdentities = shippedIdentities != null && !importedPlaybackIdentities
+                if (needsIdentities) {
+                    // A nonempty identity table must still receive newly shipped Jianpian
+                    // mappings. Import once per instance; keep unrelated runtime pins and
+                    // existing Pomo entries, while upgrading verified subjects to Jianpian.
+                    db.execute("BEGIN IMMEDIATE")
+                    try {
+                        shippedIdentities.subjects.forEach { (subject, identity) ->
+                            val page = identity.playbackPage().takeIf(String::isNotBlank) ?: return@forEach
+                            val conflict = if (JianpianSource.owns(page)) "REPLACE" else "IGNORE"
+                            db.prepare("INSERT OR $conflict INTO playback_identities(key, item) VALUES (?, ?)").use { statement ->
+                                val url = "https://movie.douban.com/subject/$subject/"
+                                statement.bindText(1, url)
+                                statement.bindText(2, json.encodeToString(CatalogItem(
+                                    "", url, year = identity.year, playbackPageUrl = page,
+                                    isSeries = identity.isSeries,
+                                )))
+                                statement.step()
+                            }
+                        }
+                        db.execute("COMMIT")
+                        importedPlaybackIdentities = true
+                    } catch (error: Throwable) { db.execute("ROLLBACK"); throw error }
+                }
                 block(db)
             }
         }
@@ -150,6 +215,39 @@ class CatalogDatabase(private val path: String, private val initializeFromBundle
                         }
                 }
             }.distinctBy { it.url }
+        }
+    }
+
+    /**
+     * Reads known cast metadata without making network requests or depending on the active page.
+     * Full cached subject details and shipped catalog metadata fill omissions in old seed rows;
+     * refreshed nonempty fields remain authoritative and subjects are joined only by URL.
+     */
+    internal suspend fun actorCatalogSnapshot(): List<CatalogItem> = withContext(Dispatchers.Default) {
+        val stored = searchCatalogSnapshot()
+        val details = access { db ->
+            db.prepare("SELECT payload FROM response_cache WHERE key LIKE 'artwork:douban:v2:%' ORDER BY saved_at DESC").use { statement ->
+                buildList {
+                    while (statement.step()) {
+                        runCatching { json.decodeFromString<CatalogItem>(statement.getText(0)) }
+                            .getOrNull()?.let { add(it) }
+                    }
+                }
+            }
+        }
+        val shipped = if (initializeFromBundle) {
+            val snapshot = bundledCategories ?: json.decodeFromString<BundledCatalogSnapshot>(
+                Res.readBytes("files/catalog-categories.json").decodeToString(),
+            ).also { bundledCategories = it }
+            snapshot.pages.values.flatMap { it.page.items }
+        } else emptyList()
+        (details + stored + shipped).groupBy { it.url }.values.map { rows ->
+            val first = rows.first()
+            playbackIdentity(first.copy(
+                year = first.year.ifBlank { rows.firstOrNull { it.year.isNotBlank() }?.year.orEmpty() },
+                casts = first.casts.ifEmpty { rows.firstOrNull { it.casts.isNotEmpty() }?.casts.orEmpty() },
+                cover = first.cover.ifBlank { rows.firstOrNull { it.cover.isNotBlank() }?.cover.orEmpty() },
+            ))
         }
     }
 

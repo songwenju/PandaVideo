@@ -1,7 +1,18 @@
 package dev.pandavideo.ui.catalog
 
+import dev.pandavideo.app.CatalogState
 import dev.pandavideo.core.model.CatalogItem
 import dev.pandavideo.data.user.HistoryTitle
+
+/**
+ * Keeps the resume card and catalog behind the same initial display boundary.
+ *
+ * The idle state before the load coroutine starts is also pending. A published page,
+ * including an empty or stale cached page, is ready immediately; refreshes retain it.
+ * A failed initial request releases the boundary so saved playback remains accessible.
+ */
+internal fun awaitingInitialCatalog(state: CatalogState): Boolean =
+    state.page == null && state.items.isEmpty() && state.error == null
 
 /** Selects the latest played title only for the first category of the user's first destination. */
 internal fun homeHistoryFor(
@@ -32,8 +43,8 @@ internal fun catalogWithoutHistory(items: List<CatalogItem>, record: HistoryTitl
 /** Builds display metadata only; opening this card always uses the saved playback URL. */
 internal fun historyCatalogPoster(record: HistoryTitle, items: List<CatalogItem>): CatalogItem {
     val match = historyCatalogMatch(record, items)
-    // A resume card can render before its catalog arrives. Preserve the sketch identity
-    // from the saved source URL so it uses the same compact card during cold loading.
+    // An empty or failed catalog may supply no metadata. Preserve the sketch identity
+    // from the saved source URL so the resume card keeps the source's artwork ratio.
     val kind = if (dev.pandavideo.data.repository.SketchSource.owns(record.pageUrl)) "xiaopin" else "movie"
     return (match ?: CatalogItem(record.title, record.pageUrl, kind = kind)).copy(
         title = record.title,

@@ -29,6 +29,21 @@ ${if (more) """<a href="/xiaopin/index_$nextPage.html">下一页</a>""" else ""}
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SketchSourceTest {
+    @Test fun excludesDownloadCollectionsButKeepsPlayableCardsWithDownloadLinks() {
+        val promotion = dieyinSketchFixture(id = 407963)
+            .replace(">又来了</a>", ">2026宋小宝春晚小品合集 3部高清下载</a>")
+        val page = SketchSource.catalog(dieyinSketchFixture() + promotion, "www.dieyin.cn", 1)
+        assertEquals(listOf("又来了"), page.items.map { it.title })
+        assertTrue(page.hasMore)
+        val excludedPage = SketchSource.catalog(promotion, "www.dieyin.cn", 1)
+        assertTrue(excludedPage.items.isEmpty())
+        assertTrue(excludedPage.hasMore)
+        listOf("小品合集打包下载", "宋小宝全集下载", "小品网盘资源", "小品3部下载").forEach {
+            assertFalse(SketchSource.catalogTitle(it), it)
+        }
+        assertTrue(SketchSource.catalogTitle("宋小宝春晚小品合集"))
+    }
+
     @Test fun parsesBothCatalogsWithoutDownloadLinks() {
         val first = SketchSource.catalog(sketchFixture(), "www.xiaopin.tv", 1)
         val second = SketchSource.catalog(dieyinSketchFixture(), "www.dieyin.cn", 1)

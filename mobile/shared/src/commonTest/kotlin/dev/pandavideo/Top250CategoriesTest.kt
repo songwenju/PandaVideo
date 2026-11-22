@@ -53,8 +53,14 @@ class Top250CategoriesTest {
 
     @Test fun emptyCategoryIsAValidRankingResultAndOfflineRefreshPreservesMatches() = runTest {
         var offline = false
-        val repo = ContentRepository(HttpClient(mockEngine {
+        val repo = ContentRepository(HttpClient(mockEngine(backupSources = true) {
             if (offline) respond("", HttpStatusCode.Forbidden)
+            else if (it.url.encodedPath.endsWith("/init"))
+                respond("""{"code":1,"data":{"secret":"s"}}""")
+            else if (it.url.encodedPath.endsWith("/resourceDomainConfig"))
+                respond("""{"code":1,"data":{"imgDomain":"images.test"}}""")
+            else if (it.url.encodedPath.endsWith("/crumb/list"))
+                respond("""{"code":1,"data":[]}""")
             else if (it.url.parameters["tags"] == "电影,科幻") respond("""{"data":[]}""")
             else respond("""{"data":[{"title":"传记作品","url":"https://movie.douban.com/subject/123/","rate":"9.1"}]}""")
         }))

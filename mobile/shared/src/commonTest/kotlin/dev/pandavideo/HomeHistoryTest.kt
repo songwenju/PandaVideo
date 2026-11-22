@@ -10,6 +10,7 @@ import dev.pandavideo.ui.catalog.catalogWithoutHistory
 import dev.pandavideo.ui.catalog.historyCatalogMatch
 import dev.pandavideo.ui.catalog.historyCatalogPoster
 import dev.pandavideo.ui.catalog.homeHistoryFor
+import dev.pandavideo.ui.catalog.awaitingInitialCatalog
 import kotlin.test.*
 
 class HomeHistoryTest {
@@ -75,6 +76,32 @@ class HomeHistoryTest {
         assertEquals(recent.pageUrl, poster.url)
         assertEquals("$pomoPage#1-3", recent.episodePath)
         assertTrue(state.loading)
+    }
+
+    @Test fun initialHistoryAndCatalogWaitTogetherIncludingBeforeLoadingStarts() {
+        for (state in listOf(CatalogState(), CatalogState(loading = true))) {
+            assertSame(recent, homeHistoryFor(routes, "hot", listOf(recent)))
+            assertTrue(awaitingInitialCatalog(state))
+        }
+        val items = listOf(CatalogItem("首批影片", "https://catalog.example/first"))
+        val ready = CatalogState(items, CatalogPage(items, 0, 20, true))
+        assertFalse(awaitingInitialCatalog(ready))
+        assertEquals(listOf(items.first()), catalogWithoutHistory(ready.items, recent))
+    }
+
+    @Test fun cachedPagesAndRefreshNeverHideHistoryOrExistingCatalog() {
+        val items = listOf(CatalogItem("缓存影片", "https://catalog.example/cached"))
+        val cached = CatalogState(items, CatalogPage(items, 0, 20, true, stale = true))
+        assertFalse(awaitingInitialCatalog(cached))
+        assertFalse(awaitingInitialCatalog(cached.copy(loading = true, refreshing = true)))
+        assertFalse(awaitingInitialCatalog(cached.copy(loading = true, loadingMore = true)))
+        assertFalse(awaitingInitialCatalog(CatalogState(items = items, loading = true)))
+    }
+
+    @Test fun emptyCompletedPageAndInitialFailureStillAllowSavedPlayback() {
+        assertFalse(awaitingInitialCatalog(CatalogState(page = CatalogPage(emptyList(), 0, 20, false))))
+        assertFalse(awaitingInitialCatalog(CatalogState(error = "网络连接失败")))
+        assertEquals(recent.pageUrl, historyCatalogPoster(recent, emptyList()).url)
     }
     @Test fun storedYearAndRatingSurviveMissingOrUnrelatedCatalogRows() {
         val saved = recent.copy(rating = 9.1)

@@ -75,21 +75,27 @@ class PlaybackPreloadTest {
 
     @Test fun nearEndRefreshesOldAddressAndPreloadsNewData() = runTest {
         var nextCount = 0
+        val requests = mutableListOf<PlayerRequest>()
         val controller = Controller()
         val session = PlaybackSession({
+            requests += it
             if (it.episode == "two") nextCount++
             info(it.episode ?: "one").let { result ->
                 if (it.episode == "two") result.copy(url = "https://fixture/two-$nextCount.mp4") else result
             }
         }, controller, backgroundScope, nowMs = { testScheduler.currentTime })
         session.load(PlayerRequest(page = "https://page")); runCurrent()
+        assertTrue(requests.last().reuseSourceInfo)
+        assertFalse(requests.last().preferFastestLine)
         advanceTimeBy(80_000)
         controller.state.value = controller.state.value.copy(duration = 120_000, position = 80_000)
         runCurrent()
         assertEquals(2, nextCount)
+        assertFalse(requests.last().reuseSourceInfo, "Near-end refresh must bypass the media cache")
         assertEquals("https://fixture/two-2.mp4", controller.candidates.last()?.url)
         session.select(episodes[1]); runCurrent()
         assertEquals("https://fixture/two-2.mp4", controller.loads.last().url)
+        assertEquals(2, nextCount, "Freshly prepared URL must still match the episode navigation request")
         session.close()
     }
 

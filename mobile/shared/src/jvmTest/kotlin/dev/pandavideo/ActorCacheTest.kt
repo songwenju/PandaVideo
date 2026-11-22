@@ -8,6 +8,8 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -15,6 +17,74 @@ import java.io.File
 import kotlin.test.*
 
 class ActorCacheTest {
+    @Test fun staleFilmographyRendersBeforeSlowRefreshAndCancellationStopsRequest() = runTest {
+        val file = File.createTempFile("pandavideo-actor-loading-", ".db")
+        try {
+            val database = CatalogDatabase(file.absolutePath)
+            val actor = ActorRef("iqiyi:123", "演员")
+            val snapshot = ActorFilmography(listOf(ActorWork("iqiyi:100", "影片", "movie", "2024")))
+            database.writeResponse("actors:iqiyi:works:v2:${actor.id}", Json.encodeToString(snapshot),
+                currentEpochMillis() - 8L * 24 * 60 * 60 * 1000)
+            val gate = CompletableDeferred<Unit>()
+            val requested = CompletableDeferred<Unit>()
+            val repo = ContentRepository(HttpClient(mockEngine {
+                requested.complete(Unit)
+                gate.await()
+                respond("", HttpStatusCode.ServiceUnavailable)
+            }), database)
+            try {
+                val published = mutableListOf<ActorFilmography>()
+                val refresh = async { repo.actorWorks(actor) { published += it } }
+                requested.await()
+                assertFalse(refresh.isCompleted)
+                assertEquals(listOf(snapshot.copy(stale = true)), published)
+                refresh.cancel()
+                refresh.join()
+                assertTrue(refresh.isCancelled)
+                assertEquals(Json.encodeToString(snapshot),
+                    database.readResponse("actors:iqiyi:works:v2:${actor.id}")!!.payload)
+                gate.complete(Unit)
+                assertTrue(repo.actorWorks(actor).stale)
+            } finally { repo.close() }
+        } finally { file.delete() }
+    }
+
+    @Test fun overAgeActorSnapshotIsNeverPublishedWhileRefreshing() = runTest {
+        val file = File.createTempFile("pandavideo-actor-expired-", ".db")
+        try {
+            val database = CatalogDatabase(file.absolutePath)
+            val actor = ActorRef("iqiyi:123", "演员")
+            database.writeResponse("actors:iqiyi:works:v2:${actor.id}",
+                Json.encodeToString(ActorFilmography(emptyList())),
+                currentEpochMillis() - 31L * 24 * 60 * 60 * 1000)
+            val repo = ContentRepository(HttpClient(mockEngine {
+                respond("", HttpStatusCode.ServiceUnavailable)
+            }), database)
+            try {
+                var published = false
+                assertFails { repo.actorWorks(actor) { published = true } }
+                assertFalse(published)
+            } finally { repo.close() }
+        } finally { file.delete() }
+    }
+
+    @Test fun actorCatalogSnapshotUsesShippedCastsAndCompleteCachedSubjectDetails() = runTest {
+        val file = File.createTempFile("pandavideo-actor-catalog-", ".db")
+        try {
+            val database = CatalogDatabase(file.absolutePath, initializeFromBundle = true)
+            val loaded = CatalogItem("新影片", "https://movie.douban.com/subject/999/", "2020",
+                casts = listOf("主演1", "主演2", "主演3"))
+            database.write("browse:movie:0", CatalogPage(listOf(loaded), 0, 20, false), currentEpochMillis())
+            database.writeResponse("artwork:douban:v2:999",
+                Json.encodeToString(loaded.copy(casts = loaded.casts + "阿米尔·汗")), currentEpochMillis())
+            val known = database.actorCatalogSnapshot()
+            val merged = ActorFilmography(emptyList()).withCatalogCredits(ActorRef("iqiyi:214466505", "阿米尔·汗"), known)
+            assertTrue(merged.works.map { it.title }.containsAll(listOf("三傻大闹宝莱坞", "摔跤吧！爸爸", "新影片")))
+            assertEquals("2016", merged.works.first { it.title == "摔跤吧！爸爸" }.year)
+            assertEquals(merged.works.size, merged.works.map { it.subjectId }.distinct().size)
+        } finally { file.delete() }
+    }
+
     @Test fun verifiedSearchPosterSurvivesSparseDetailAndFreshEmptyArtworkCache() = runTest {
         val file = File.createTempFile("pandavideo-actor-poster-", ".db")
         try {

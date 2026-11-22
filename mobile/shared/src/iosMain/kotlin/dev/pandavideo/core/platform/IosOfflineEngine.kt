@@ -22,7 +22,8 @@ import kotlin.coroutines.resumeWithException
 
 /**
  * AVFoundation downloads HLS as a playable asset package; NSURLSession streams MP4 to disk.
- * No full video is held in Kotlin memory. Interrupted iOS attempts restart explicitly.
+ * No full video is held in Kotlin memory. HLS tasks are suspended and recovered; file
+ * downloads persist Apple's opaque resume data when the server permits byte-range resume.
  */
 internal class IosOfflineEngine : OfflineEngine {
     private val files = NSFileManager.defaultManager
@@ -40,14 +41,24 @@ internal class IosOfflineEngine : OfflineEngine {
         val progress: (Float?) -> Unit, var location: String? = null,
     )
     private var pending: Pending? = null
+    private val retained = mutableMapOf<String, Pending>()
+    private val restoredTasks = mutableMapOf<String, NSURLSessionTask>()
+    private val restoredLocations = mutableMapOf<String, String>()
+    private val savingResume = mutableMapOf<String, CompletableDeferred<Unit>>()
     private val recovered = CompletableDeferred<Unit>()
 
     init {
         files.createDirectoryAtPath(root, true, null, null)
-        // Metadata restores interrupted entries as paused. Cancel orphaned system transfers
-        // before accepting another attempt, so they cannot publish a stale completion.
+        // Reattach background HLS tasks by opaque ID. The shared index restores them paused,
+        // so stop network work until the user resumes and the network gate authorizes it.
         hlsSession.getAllTasksWithCompletionHandler { tasks ->
-            tasks.orEmpty().filterIsInstance<NSURLSessionTask>().forEach { it.cancel() }
+            tasks.orEmpty().filterIsInstance<NSURLSessionTask>().forEach {
+                val id = it.taskDescription
+                if (id != null && id.matches(Regex("[a-z0-9-]+"))) {
+                    it.suspend()
+                    restoredTasks[id] = it
+                } else it.cancel()
+            }
             recovered.complete(Unit)
         }
     }
@@ -58,25 +69,42 @@ internal class IosOfflineEngine : OfflineEngine {
     }
     override suspend fun download(id: String, info: PlaybackInfo, progress: (Float?) -> Unit): String {
         recovered.await()
-        // iOS retries start a fresh asset. Remove a previous attempt's package before replacing
-        // its locator so a cancelled publication cannot leave an unreachable large file behind.
-        remove(id)
+        savingResume[id]?.await()
+        if (asset(id, id) != null) return id
         return suspendCancellableCoroutine { continuation ->
             try {
                 require(supports(info.kind))
                 check(pending == null)
                 val url = requireNotNull(NSURL.URLWithString(info.url))
+                files.createDirectoryAtPath(directory(id), true, null, null)
+                val previous = retained.remove(id)
+                val restored = restoredTasks.remove(id)
+                if (info.kind != "hls") {
+                    previous?.task?.cancel()
+                    previous?.location?.let { files.removeItemAtPath(it, null) }
+                    restored?.cancel()
+                    restoredLocations.remove(id)?.let { files.removeItemAtPath(it, null) }
+                }
+                val resumed = NSData.dataWithContentsOfFile(directory(id) + "/resume-data")
                 val task: NSURLSessionTask = if (info.kind == "hls") {
+                    previous?.task ?: restored ?:
                     requireNotNull(hlsSession.assetDownloadTaskWithURLAsset(
                         AVURLAsset(uRL = url, options = null), info.title, null, null,
                     ))
+                } else if (resumed != null) {
+                    fileSession.downloadTaskWithResumeData(resumed).also {
+                        // Consume once; an expired URL or rejected range must permit a fresh
+                        // resolved request on the next retry instead of looping on stale data.
+                        files.removeItemAtPath(directory(id) + "/resume-data", null)
+                    }
                 } else if (dev.pandavideo.core.player.BilibiliMedia.owns(info.url)) {
                     val request = NSMutableURLRequest.requestWithURL(url)
                     request.setValue(dev.pandavideo.core.player.BilibiliMedia.userAgent, "User-Agent")
                     fileSession.downloadTaskWithRequest(request)
                 } else fileSession.downloadTaskWithURL(url)
-                files.createDirectoryAtPath(directory(id), true, null, null)
-                pending = Pending(id, task, continuation, progress)
+                task.taskDescription = id
+                pending = Pending(id, task, continuation, progress,
+                    if (previous?.task == task) previous.location else restoredLocations.remove(id))
                 continuation.invokeOnCancellation { cancel(id) }
                 task.resume()
             } catch (error: Exception) { continuation.resumeWithException(error) }
@@ -86,12 +114,32 @@ internal class IosOfflineEngine : OfflineEngine {
     override fun cancel(id: String) {
         val current = pending?.takeIf { it.id == id } ?: return
         pending = null
-        current.task.cancel()
-        current.location?.let { files.removeItemAtPath(it, null) }
+        if (current.task is AVAssetDownloadTask) {
+            current.task.suspend()
+            retained[id] = current
+        } else if (current.task is NSURLSessionDownloadTask) {
+            // Cancellation finishes asynchronously. A replacement attempt must await this
+            // write, otherwise a fast resume could race and restart from byte zero.
+            val saved = CompletableDeferred<Unit>()
+            savingResume[id] = saved
+            current.task.cancelByProducingResumeData { data ->
+                data?.writeToFile(directory(id) + "/resume-data", true)
+                saved.complete(Unit)
+                savingResume.remove(id)
+            }
+        } else current.task.cancel()
         current.continuation.cancel()
     }
     override suspend fun remove(id: String) {
+        recovered.await()
         cancel(id)
+        savingResume[id]?.await()
+        retained.remove(id)?.let {
+            it.task.cancel()
+            it.location?.let { path -> files.removeItemAtPath(path, null) }
+        }
+        restoredTasks.remove(id)?.cancel()
+        restoredLocations.remove(id)?.let { files.removeItemAtPath(it, null) }
         withContext(Dispatchers.Default) {
             storedLocation(id)?.let {
                 if (files.fileExistsAtPath(it)) check(files.removeItemAtPath(it, null))
@@ -117,8 +165,14 @@ internal class IosOfflineEngine : OfflineEngine {
         didFinishDownloadingToURL: NSURL,
     ) {
         val current = pending?.takeIf { it.task == assetDownloadTask }
+            ?: retained.values.firstOrNull { it.task == assetDownloadTask }
         val path = didFinishDownloadingToURL.path ?: return
         if (current == null) {
+            val id = assetDownloadTask.taskDescription
+            if (id != null && restoredTasks[id] == assetDownloadTask) {
+                restoredLocations[id] = path
+                return
+            }
             // A cancelled old task can finish after a new task starts; never publish its package.
             files.removeItemAtPath(path, null)
         } else current.location = path
@@ -157,12 +211,31 @@ internal class IosOfflineEngine : OfflineEngine {
             current.location = destination
     }
     fun URLSession(session: NSURLSession, task: NSURLSessionTask, didCompleteWithError: NSError?) {
-        val current = pending?.takeIf { it.task == task } ?: return
-        pending = null
+        val current = pending?.takeIf { it.task == task }
+            ?: retained.values.firstOrNull { it.task == task }
+        if (current == null) {
+            val id = task.taskDescription ?: return
+            if (restoredTasks[id] != task) return
+            restoredTasks.remove(id)
+            val path = restoredLocations.remove(id) ?: return
+            // A background task can finish just before suspension is delivered on relaunch.
+            // Retain its completed package for explicit resume, without starting network work.
+            files.createDirectoryAtPath(directory(id), true, null, null)
+            if (didCompleteWithError != null || !NSString.create(
+                    string = path.removePrefix(NSHomeDirectory() + "/")).writeToFile(
+                    directory(id) + "/location", true, NSUTF8StringEncoding, null))
+                files.removeItemAtPath(path, null)
+            return
+        }
+        if (pending?.task == task) pending = null
+        retained.remove(current.id)
         val path = current.location
         if (didCompleteWithError != null || path == null || !files.fileExistsAtPath(path)) {
+            (didCompleteWithError?.userInfo?.get("NSURLSessionDownloadTaskResumeData") as? NSData)
+                ?.writeToFile(directory(current.id) + "/resume-data", true)
             path?.let { files.removeItemAtPath(it, null) }
-            current.continuation.resumeWithException(IllegalStateException("缓存失败"))
+            if (current.continuation.isActive)
+                current.continuation.resumeWithException(IllegalStateException("缓存失败"))
             return
         }
         // Save a sandbox-relative path: iOS can change the container UUID between installs.
@@ -170,10 +243,14 @@ internal class IosOfflineEngine : OfflineEngine {
         val written = NSString.create(string = relative).writeToFile(
             directory(current.id) + "/location", true, NSUTF8StringEncoding, null,
         )
-        if (written) current.continuation.resume(current.id)
+        if (written) {
+            files.removeItemAtPath(directory(current.id) + "/resume-data", null)
+            if (current.continuation.isActive) current.continuation.resume(current.id)
+        }
         else {
             files.removeItemAtPath(path, null)
-            current.continuation.resumeWithException(IllegalStateException("无法保存缓存"))
+            if (current.continuation.isActive)
+                current.continuation.resumeWithException(IllegalStateException("无法保存缓存"))
         }
     }
 
